@@ -55,6 +55,22 @@ func TestHardBreakAndLineStartEscaping(t *testing.T) {
 	}
 }
 
+func TestHardBreakInHeadingRendersAsSpace(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		want   string
+	}{
+		{`<h1>It's okay to be<br> a little jelly</h1>`, `# It's okay to be a little jelly`},
+		{`<h2>Everything you need.<br><em>Nothing you don’t.</em></h2>`, `## Everything you need. *Nothing you don’t.*`},
+		{`<h3><a href="/docs">Read<br>the docs</a></h3>`, `### [Read the docs](https://example.com/docs)`},
+	} {
+		r := convertHTML(t, tc.source)
+		if r.Markdown != tc.want {
+			t.Errorf("source %q: want %q, got %q", tc.source, tc.want, r.Markdown)
+		}
+	}
+}
+
 func TestUnsafeLinkIsRejectedAfterOutputLimit(t *testing.T) {
 	base, _ := url.Parse("https://example.com/")
 	r := convertHTMLConfig(t, `<p><a href="/safe">safe</a> <a href="javascript:alert(1)">unsafe</a></p>`, Config{
