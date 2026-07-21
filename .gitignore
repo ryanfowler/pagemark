@@ -1,0 +1,4 @@
+benchmarks/wcxb/data/
+benchmarks/reports/*.json
+benchmarks/reports/*.csv
+.DS_Store

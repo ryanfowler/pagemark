@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - run: go test ./...
+      - run: go test -race ./...
+      - run: go test . -run='^$' -fuzz=FuzzExtract -fuzztime=5s
+      - uses: dominikh/staticcheck-action@v1
+        with:
+          version: latest
+          install-go: false
