@@ -226,8 +226,8 @@ func TestTrailingArticleCardGridIsHardExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.PageType != PageTypeListing {
-		t.Fatalf("got page type %q, want listing from the ambiguous card-token evidence", doc.PageType)
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("got page type %q, want article", doc.PageType)
 	}
 	for _, want := range []string{"Primary report", "complete findings"} {
 		if !strings.Contains(doc.Text, want) {
@@ -237,6 +237,188 @@ func TestTrailingArticleCardGridIsHardExcluded(t *testing.T) {
 	for _, unwanted := range []string{"Unrelated article one", "different subject", "Unrelated article two", "positive content score"} {
 		if strings.Contains(doc.Text, unwanted) {
 			t.Errorf("included trailing card content %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestStrongArticleSignalsOutweighRelatedContentCards(t *testing.T) {
+	html := `<html><head><title>GitHub suddenly rejected my SSH key</title><meta property="og:type" content="article"><link rel="canonical" href="https://example.com/blog/github-rejected-ssh-key"></head><body><main><aside class="author-profile"><h2>Ada Example</h2><p>A software engineer writing about developer tools.</p></aside><article itemscope itemtype="https://schema.org/CreativeWork"><h1 itemprop="headline">GitHub suddenly rejected my SSH key</h1><p>Yesterday a working SSH key began failing without warning, even though the local configuration and repository permissions had not changed.</p><p>I compared the key fingerprint with the account settings, inspected the verbose client output, and found that the server was rejecting an outdated registration.</p><p>Removing that registration and uploading the current public key restored access. The diagnostic steps made the cause clear and avoided replacing unrelated credentials.</p></article><section class="related-content"><h2>You May Also Enjoy</h2><div class="story-card"><h3>Rotating deployment credentials</h3><p>This separate tutorial explains how another credential can be replaced safely.</p></div><div class="story-card"><h3>Debugging network access</h3><p>This unrelated excerpt discusses network diagnostics for remote services.</p></div><div class="story-card"><h3>Managing repository settings</h3><p>This recommendation describes settings on a different page.</p></div><div class="story-card"><h3>Understanding key formats</h3><p>This final related excerpt belongs to a fourth separate article.</p></div></section></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/read?id=42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("page type = %q, want article", doc.PageType)
+	}
+	if !strings.HasPrefix(doc.Text, "GitHub suddenly rejected my SSH key") {
+		t.Fatalf("article title was not first: %q", doc.Text)
+	}
+	for _, want := range []string{"working SSH key", "verbose client output", "restored access"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing article content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Ada Example", "You May Also Enjoy", "Rotating deployment credentials", "network diagnostics", "This recommendation", "final related excerpt"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included auxiliary content %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestJSONLDItemListEntriesDoNotMakePageAnArticle(t *testing.T) {
+	html := `<html><head><script type="application/ld+json">{"@type":"ItemList","itemListElement":[{"@type":"NewsArticle","headline":"First nested story","datePublished":"2025-01-01"},{"@type":"NewsArticle","headline":"Second nested story","datePublished":"2025-01-02"}]}</script></head><body><main><h1>Latest news</h1><ul><li><a href="/one">First nested story</a></li><li><a href="/two">Second nested story</a></li></ul></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeListing {
+		t.Fatalf("page type = %q, want listing", doc.PageType)
+	}
+}
+
+func TestMicrodataItemListEntriesDoNotMakePageAnArticle(t *testing.T) {
+	html := `<main itemscope itemtype="https://schema.org/ItemList"><h1>News archive</h1><article itemprop="itemListElement" itemscope itemtype="https://schema.org/NewsArticle"><h2 itemprop="headline">First archived story</h2><p>A summary of the first archived story.</p></article><article itemprop="itemListElement" itemscope itemtype="https://schema.org/NewsArticle"><h2 itemprop="headline">Second archived story</h2><p>A summary of the second archived story.</p></article></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/news/archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeListing {
+		t.Fatalf("page type = %q, want listing", doc.PageType)
+	}
+}
+
+func TestSiblingMicrodataArticlesAreListingRecords(t *testing.T) {
+	html := `<main><h1>Regional news archive</h1><div><article itemscope itemtype="https://schema.org/NewsArticle"><h2 itemprop="headline">Northern update</h2><p>The first regional report summarizes events in the north.</p></article><article itemscope itemtype="https://schema.org/NewsArticle"><h2 itemprop="headline">Southern update</h2><p>The second regional report summarizes events in the south.</p></article><article itemscope itemtype="https://schema.org/NewsArticle"><h2 itemprop="headline">Western update</h2><p>The third regional report summarizes events in the west.</p></article></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/news/archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeListing {
+		t.Fatalf("page type = %q, want listing", doc.PageType)
+	}
+}
+
+func TestPrimaryMicrodataArticleOutweighsSingleTeaser(t *testing.T) {
+	html := `<main><article itemscope itemtype="https://schema.org/Article"><h1 itemprop="headline">Primary investigation</h1><p>The investigation begins with a detailed account of the observed behavior and the evidence collected during the initial review.</p><p>Further analysis explains the underlying cause, the tests used to confirm it, and the change that resolved the problem.</p></article><div class="story-card" itemscope itemtype="https://schema.org/NewsArticle"><h2 itemprop="headline">Unrelated news update</h2><p>This teaser excerpt belongs to another page and must not become primary content.</p></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/read/primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("page type = %q, want article", doc.PageType)
+	}
+	for _, want := range []string{"Primary investigation", "observed behavior", "underlying cause"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing primary article content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Unrelated news update", "teaser excerpt"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included teaser content %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestDivMicrodataArticleCanDominateSemanticTeaser(t *testing.T) {
+	html := `<main><div itemscope itemtype="https://schema.org/Article"><h1 itemprop="headline">Primary report in a generic container</h1><p>The primary report provides a substantial description of the investigation, its evidence, and the circumstances that led to the final conclusion.</p><p>The follow-up analysis documents the verification process and explains why the resulting change solved the original problem reliably.</p></div><article class="story-card" itemscope itemtype="https://schema.org/NewsArticle"><h2 itemprop="headline">Separate teaser story</h2><p>This unrelated summary belongs to a linked story rather than the primary report.</p></article></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/reports/primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("page type = %q, want article", doc.PageType)
+	}
+	for _, want := range []string{"Primary report in a generic container", "substantial description", "verification process"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing primary article content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Separate teaser story", "unrelated summary"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included teaser content %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestWrappedSiblingMicrodataArticlesAreListingRecords(t *testing.T) {
+	html := `<main><h1>Technology news archive</h1><ul><li><article itemscope itemtype="https://schema.org/NewsArticle"><h2 itemprop="headline">Hardware update</h2><p>The first archive entry summarizes a hardware announcement.</p></article></li><li><article itemscope itemtype="https://schema.org/NewsArticle"><h2 itemprop="headline">Software update</h2><p>The second archive entry summarizes a software announcement.</p></article></li><li><article itemscope itemtype="https://schema.org/NewsArticle"><h2 itemprop="headline">Network update</h2><p>The third archive entry summarizes a network announcement.</p></article></li></ul></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/technology/archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeListing {
+		t.Fatalf("page type = %q, want listing", doc.PageType)
+	}
+	for _, want := range []string{"Hardware update", "Software update", "Network update"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing listing entry %q: %s", want, doc.Text)
+		}
+	}
+}
+
+func TestCyclicJSONLDMainEntityReferencesTerminate(t *testing.T) {
+	html := `<html><head><script type="application/ld+json">{"@graph":[{"@id":"#a","@type":"WebPage","mainEntity":{"@id":"#b"}},{"@id":"#b","@type":"Article","headline":"Cyclic article","mainEntity":{"@id":"#a"}}]}</script></head><body><main><h1>Cyclic article</h1><p>The page remains extractable despite malformed cyclic structured data.</p></main></body></html>`
+	if _, err := ExtractBytes([]byte(html), "https://example.com/cycle"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestJSONLDIDResolutionPrefersCompleteEntity(t *testing.T) {
+	article := `{"@id":"#article","@type":"Article","headline":"Resolved article"}`
+	page := `{"@id":"#page","@type":"WebPage","mainEntity":{"@id":"#article"}}`
+	for _, graph := range []string{article + `,` + page, page + `,` + article} {
+		html := `<html><head><script type="application/ld+json">{"mainEntity":{"@id":"#article"},"@graph":[` + graph + `]}</script></head><body><main><p>The complete linked article entity supplies reliable page metadata.</p></main></body></html>`
+		doc, err := ExtractBytes([]byte(html), "https://example.com/resolved")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if doc.PageType != PageTypeArticle {
+			t.Fatalf("page type = %q, want article", doc.PageType)
+		}
+		if doc.Title != "Resolved article" {
+			t.Fatalf("title = %q, want resolved article headline", doc.Title)
+		}
+	}
+}
+
+func TestJSONLDIDResolutionMergesEqualPartialEntities(t *testing.T) {
+	name := `{"@id":"#article","name":"Partial article"}`
+	typeOf := `{"@id":"#article","@type":"Article"}`
+	for _, graph := range []string{name + `,` + typeOf, typeOf + `,` + name} {
+		html := `<html><head><script type="application/ld+json">{"mainEntity":{"@id":"#article"},"@graph":[` + graph + `]}</script></head><body><main><h1>Partial article</h1><p>The split JSON-LD entity still identifies this page consistently.</p></main></body></html>`
+		doc, err := ExtractBytes([]byte(html), "https://example.com/partial")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if doc.PageType != PageTypeArticle {
+			t.Fatalf("page type = %q, want article", doc.PageType)
+		}
+	}
+}
+
+func TestCreativeWorkAloneIsNotAnArticleSignal(t *testing.T) {
+	html := `<main itemscope itemtype="https://schema.org/CreativeWork"><h1>Acme drawing application</h1><p>A downloadable program for creating diagrams and illustrations.</p></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/software/acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType == PageTypeArticle {
+		t.Fatalf("page type = %q, CreativeWork alone must not imply article", doc.PageType)
+	}
+}
+
+func TestStandaloneRelatedResultsRemainAListing(t *testing.T) {
+	html := `<main><h1>Related results</h1><section class="related-results"><div class="story-card"><h2>Result one</h2><p>The first matching record has useful details.</p></div><div class="story-card"><h2>Result two</h2><p>The second matching record has useful details.</p></div><div class="story-card"><h2>Result three</h2><p>The third matching record has useful details.</p></div></section></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/search/related")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeListing {
+		t.Fatalf("page type = %q, want listing", doc.PageType)
+	}
+	for _, want := range []string{"Result one", "Result two", "Result three"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing primary listing record %q: %s", want, doc.Text)
 		}
 	}
 }
