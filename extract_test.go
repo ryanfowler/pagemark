@@ -200,6 +200,89 @@ func TestAuxiliarySectionsAndCallsToActionAreRemoved(t *testing.T) {
 	}
 }
 
+func TestArticleAuxiliaryLabelsAreHardExcluded(t *testing.T) {
+	html := `<main><article><h1>Primary analysis</h1><p>The analysis explains the important result with enough detail for readers.</p><p>Readers can read more about the underlying method in this sentence.</p></article><section><h2>Related posts</h2><article><h3>Other result</h3><p>A substantial summary of a different post that must not overcome boilerplate penalties.</p></article></section><section><h2>Read more</h2><p>A long promotional description for an unrelated report.</p></section><aside aria-label="Share"><p>Share this story on several social networks.</p></aside><section><h2>More by Ada Writer</h2><p>Updates, podcasts, and interviews from the same author.</p></section></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/analysis", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Primary analysis", "important result", "read more about the underlying method"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing article content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Related posts", "Other result", "substantial summary", "Read more", "promotional description", "Share this story", "More by Ada Writer", "podcasts"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included auxiliary content %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestTrailingArticleCardGridIsHardExcluded(t *testing.T) {
+	html := `<main><article><h1>Primary report</h1><p>The report contains the complete findings and detailed conclusions for the reader, including the evidence, methodology, limitations, and practical consequences of the result.</p></article><section class="promotions"><div class="article-card"><h2>Unrelated article one</h2><p>This card has substantial prose about a different subject and should not leak.</p></div><div class="article-card"><h2>Unrelated article two</h2><p>This second card also contains enough prose to receive a positive content score.</p></div></section></main>`
+	// Do not force the page type: card tokens can make this otherwise look like
+	// a listing, but the structurally trailing grid must still be excluded.
+	doc, err := ExtractBytes([]byte(html), "https://example.com/report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeListing {
+		t.Fatalf("got page type %q, want listing from the ambiguous card-token evidence", doc.PageType)
+	}
+	for _, want := range []string{"Primary report", "complete findings"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing article content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Unrelated article one", "different subject", "Unrelated article two", "positive content score"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included trailing card content %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestInferredListingKeepsCardsAfterFeaturedArticle(t *testing.T) {
+	html := `<main><article class="featured"><h1>Featured story</h1><p>The featured story introduces this news index with a detailed account long enough to stand on its own while directing readers toward the rest of the current coverage.</p></article><section class="results"><article class="story-card"><h2>Story one</h2><p>The first story has useful listing details.</p></article><article class="story-card"><h2>Story two</h2><p>The second story has useful listing details.</p></article></section></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeListing {
+		t.Fatalf("got page type %q, want listing", doc.PageType)
+	}
+	for _, want := range []string{"Featured story", "Story one", "first story", "Story two", "second story"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing inferred listing content %q: %s", want, doc.Text)
+		}
+	}
+}
+
+func TestListingKeepsCardsAfterFeaturedArticle(t *testing.T) {
+	html := `<main><article class="featured"><h1>Featured product</h1><p>The featured product introduces this catalog and explains the collection in enough detail for shoppers to understand the available selection and its purpose.</p></article><section class="results"><article class="product-card"><h2>Product one</h2><p>The first product has useful listing details.</p></article><article class="product-card"><h2>Product two</h2><p>The second product has useful listing details.</p></article></section></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/products", WithPageType(PageTypeListing))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Featured product", "Product one", "first product", "Product two", "second product"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing listing content %q: %s", want, doc.Text)
+		}
+	}
+}
+
+func TestNonArticleShareAndReadMoreSectionsAreRetained(t *testing.T) {
+	html := `<main><h1>Web API reference</h1><section><h2>Share</h2><p>The Share interface sends data to a user-selected destination and returns a promise.</p></section><section><h2>Read more</h2><p>The Read more component expands truncated documentation without navigating away.</p></section></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/docs/share", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Share", "sends data", "Read more", "expands truncated documentation"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing non-article subject content %q: %s", want, doc.Text)
+		}
+	}
+}
+
 func TestArticleKeepsAdjacentH1BelowScoreThreshold(t *testing.T) {
 	html := `<html><head><title>Agent swarms and the new model economics | Cursor</title></head><body><header><h1>Agent swarms and the new model economics</h1></header><article><p>There are important changes in the cost of coordinating many capable software agents.</p><p>The article body remains selected because it contains useful explanatory prose.</p></article></body></html>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
