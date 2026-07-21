@@ -317,6 +317,62 @@ func TestSuperscriptHasReadableRepresentation(t *testing.T) {
 	}
 }
 
+func TestLinkedSuperscriptsRenderAsNormalLinks(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, markdown, text string
+	}{
+		{
+			"numeric footnote",
+			`<p>Sentence<sup><a href="#fn1">1</a></sup>.</p>`,
+			`Sentence[1](https://example.com/base/#fn1).`,
+			`Sentence1.`,
+		},
+		{
+			"symbolic footnote",
+			`<p>Sentence<sup><a href="#note">†</a></sup>.</p>`,
+			`Sentence[†](https://example.com/base/#note).`,
+			`Sentence†.`,
+		},
+		{
+			"linked footnote inside formatting",
+			`<p>Sentence<sup><strong><em><a href="#fn1">1</a></em></strong></sup>.</p>`,
+			`Sentence***[1](https://example.com/base/#fn1)***.`,
+			`Sentence1.`,
+		},
+		{
+			"mixed linked and non-linked content",
+			`<p>x<sup>2 <a href="/source">source</a></sup>.</p>`,
+			`x^2 [source](https://example.com/source).`,
+			`x^2 source.`,
+		},
+		{
+			"ordinal superscript",
+			`<p>It came 2<sup>nd</sup>.</p>`,
+			`It came 2^nd.`,
+			`It came 2^nd.`,
+		},
+		{
+			"mathematical superscript",
+			`<p>x<sup>2</sup> + y<sup>2</sup> = z<sup>2</sup></p>`,
+			`x^2 + y^2 = z^2`,
+			`x^2 + y^2 = z^2`,
+		},
+		{
+			"surrounding punctuation and whitespace",
+			`<p>Before <sup><a href="#note">*</a></sup>, after.</p>`,
+			`Before [\*](https://example.com/base/#note), after.`,
+			`Before *, after.`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := convertHTML(t, tc.source)
+			if r.Markdown != tc.markdown || r.Text != tc.text {
+				t.Fatalf("markdown: want %q, got %q; text: want %q, got %q", tc.markdown, r.Markdown, tc.text, r.Text)
+			}
+		})
+	}
+}
+
 func TestSuperscriptWhitespaceAndAdjacentText(t *testing.T) {
 	for _, tc := range []struct {
 		source string

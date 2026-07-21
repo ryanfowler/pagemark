@@ -1203,10 +1203,15 @@ func renderInlineWithHardBreak(ns []*Node, hardBreak string) string {
 			value = renderDelimited(renderInlineWithHardBreak(n.Children, hardBreak), "**")
 		case Superscript:
 			value = renderInlineWithHardBreak(n.Children, hardBreak)
-			if superscriptNeedsBounds(ns, i) {
-				value = "^(" + value + ")"
-			} else {
-				value = "^" + value
+			// A superscript made entirely from linked content commonly represents
+			// a footnote reference. Adding a caret would create the invalid hybrid
+			// ^[label](URL), so render that narrow case as ordinary linked text.
+			if !superscriptIsLinkedReference(n) {
+				if superscriptNeedsBounds(ns, i) {
+					value = "^(" + value + ")"
+				} else {
+					value = "^" + value
+				}
 			}
 		case InlineCode:
 			v := n.Value
@@ -1354,7 +1359,11 @@ func plain(n *Node) string {
 	}
 	switch n.Kind {
 	case Superscript:
-		return clean("^" + plainInlineNode(n))
+		value := plainInlineNode(n)
+		if superscriptIsLinkedReference(n) {
+			return clean(value)
+		}
+		return clean("^" + value)
 	case Heading, Paragraph, Text, Emphasis, Strong, InlineCode, Link, Image, HardBreak, TableCell:
 		return clean(plainInlineNode(n))
 	}
@@ -1374,7 +1383,7 @@ func plainInlineNodes(ns []*Node) string {
 	var b strings.Builder
 	for i, n := range ns {
 		value := plainInlineNode(n)
-		if n.Kind == Superscript {
+		if n.Kind == Superscript && !superscriptIsLinkedReference(n) {
 			if superscriptNeedsBounds(ns, i) {
 				value = "^(" + value + ")"
 			} else {
@@ -1401,6 +1410,36 @@ func plainInlineNode(n *Node) string {
 		return plainInlineNodes(n.Children)
 	}
 	return plain(n)
+}
+
+func superscriptIsLinkedReference(n *Node) bool {
+	if n == nil {
+		return false
+	}
+	hasLink := false
+	var linkedOrWhitespace func([]*Node) bool
+	linkedOrWhitespace = func(nodes []*Node) bool {
+		for _, child := range nodes {
+			switch child.Kind {
+			case Link:
+				hasLink = true
+			case Text:
+				if strings.TrimSpace(child.Value) != "" {
+					return false
+				}
+			case HardBreak:
+				// A line break is whitespace rather than meaningful reference text.
+			case Emphasis, Strong:
+				if !linkedOrWhitespace(child.Children) {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+		return true
+	}
+	return linkedOrWhitespace(n.Children) && hasLink
 }
 
 func superscriptNeedsBounds(ns []*Node, i int) bool {
