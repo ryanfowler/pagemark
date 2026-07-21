@@ -880,6 +880,82 @@ func TestProseHeavyDocumentationContainerIsInferredAsDocumentation(t *testing.T)
 	}
 }
 
+func TestArticleCommentRegionIsProfileSpecific(t *testing.T) {
+	source, err := os.ReadFile("testdata/article-with-comments.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	articleOptions := [][]Option{nil, {WithPageType(PageTypeArticle)}}
+	for _, opts := range articleOptions {
+		doc, err := ExtractBytes(source, "https://example.com/2026/07/20/careful-measurements/", opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if doc.PageType != PageTypeArticle {
+			t.Fatalf("page type = %q, want article", doc.PageType)
+		}
+		if !strings.Contains(doc.Text, "central conclusion of the article") {
+			t.Errorf("article prose missing: %s", doc.Text)
+		}
+		for _, unwanted := range []string{"Responses", "Ada's comment", "Ben's comment", "Reply", "Like", "Leave a comment", "Post comment"} {
+			if strings.Contains(doc.Text, unwanted) {
+				t.Errorf("article included %q: %s", unwanted, doc.Text)
+			}
+		}
+	}
+
+	discussion, err := ExtractBytes(source, "https://example.com/2026/07/20/careful-measurements/", WithPageType(PageTypeDiscussion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Ada's comment", "Ben's comment"} {
+		if !strings.Contains(discussion.Text, want) {
+			t.Errorf("discussion missing %q: %s", want, discussion.Text)
+		}
+	}
+}
+
+func TestShortRepeatedCommentsAreRemovedFromArticle(t *testing.T) {
+	html := `<main><article><h1>A complete field report</h1><p>The report records the observations, explains the method used to verify them, and presents the conclusion supported by the collected evidence.</p></article><div class="feedback"><div class="comment"><p>Thanks!</p></div><div class="comment"><p>Well written.</p></div></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/articles/field-report", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "The report records the observations") {
+		t.Fatalf("article prose missing: %s", doc.Text)
+	}
+	for _, unwanted := range []string{"Thanks!", "Well written."} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("short comment %q was retained: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestResponsesTokenDoesNotRemoveArticleSection(t *testing.T) {
+	html := `<main><article><h1>Survey findings</h1><p>The survey compared results across several groups and checked each aggregate against the complete response data.</p><section id="responses"><h2>Responses by age group</h2><p>Primary survey results show that participation increased in every age group included in the study.</p></section></article></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/articles/survey-findings", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Responses by age group", "Primary survey results"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("article section content %q was removed: %s", want, doc.Text)
+		}
+	}
+}
+
+func TestReplyControlsDoNotMakeArticleSectionACommentRegion(t *testing.T) {
+	html := `<main><article><h1>Interactive annotations</h1><p>The introduction explains how readers can inspect annotations while preserving the complete argument presented by the author.</p><section><h2>Reviewing the evidence</h2><p>This section contains primary article prose that must remain even though its interactive annotations provide reply actions.</p><a class="reply" href="#first">Reply to first annotation</a><a class="reply" href="#second">Reply to second annotation</a></section></article></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/articles/interactive-annotations", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "This section contains primary article prose") {
+		t.Fatalf("article section was removed: %s", doc.Text)
+	}
+}
+
 func TestDiscussionKeepsComments(t *testing.T) {
 	html := `<main><h1>How?</h1><article class="post"><p>The question has useful detail.</p></article><article class="comment"><h2>Ada</h2><p>Use the documented method.</p><button>Reply</button></article><article class="comment"><h2>Bob</h2><p>This answer adds an example.</p></article></main>`
 	d, e := ExtractBytes([]byte(html), "https://example.com/forum/1", WithPageType(PageTypeDiscussion))
