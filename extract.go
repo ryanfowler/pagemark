@@ -40,6 +40,7 @@ type analysis struct {
 	blocks                                          []block
 	meta                                            metadata
 	diag                                            *Diagnostics
+	irrelevant                                      map[*html.Node]bool
 }
 
 type metadata struct{ title, description, author, site, language, published, canonical, schemaType string }
@@ -115,7 +116,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		}
 		page = u
 	}
-	a := &analysis{o: o, root: root, pageURL: page, base: page}
+	a := &analysis{o: o, root: root, pageURL: page, base: page, irrelevant: make(map[*html.Node]bool)}
 	if o.diagnostics {
 		a.diag = &Diagnostics{ProfileVersion: "1", Fallback: "primary"}
 	}
@@ -161,7 +162,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	if len(selected) == 0 {
 		return nil, ErrNoContent
 	}
-	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: append([]string(nil), o.urlPolicy.Schemes...), AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}}
+	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: append([]string(nil), o.urlPolicy.Schemes...), AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: a.isIrrelevantNode}
 	mr := markdown.Convert(selected, cfg)
 	if strings.TrimSpace(mr.Text) == "" {
 		return nil, ErrNoContent
@@ -323,6 +324,10 @@ func (a *analysis) score(pt PageType) {
 			score = 0.4 + math.Min(2, float64(length)/250)
 		}
 		b.reasons = append(b.reasons, "content shape")
+		if a.hasIrrelevantAncestor(b.node) {
+			score -= 8
+			b.reasons = append(b.reasons, "auxiliary content")
+		}
 		links, total := linkTextLength(b.node), max(1, length)
 		density := float64(links) / float64(total)
 		for p := b.node.Parent; p != nil; p = p.Parent {
@@ -737,7 +742,223 @@ func metadataNodes(m metadata) []*html.Node {
 	return append(nodes, n)
 }
 
-var badTokens = []string{"cookie", "cookies", "consent", "banner", "share", "social", "newsletter", "signup", "sign-up", "login", "advert", "promo", "related", "recommend", "recommendations", "suggested", "similar", "breadcrumb", "pagination", "toolbar", "copyright"}
+var badTokens = []string{"cookie", "cookies", "consent", "banner", "share", "social", "newsletter", "signup", "sign-up", "promo", "copyright", "toc"}
+
+// These labels introduce navigational or promotional regions rather than the
+// subject of the page. Matching is deliberately exact so ordinary prose that
+// happens to contain the same words is retained.
+var auxiliaryLabels = map[string]bool{
+	"on this page": true, "in this article": true, "table of contents": true,
+	"more news": true, "latest news": true, "related news": true,
+	"related articles": true, "related content": true, "recommended for you": true,
+	"you may also like": true, "read next": true, "more stories": true,
+	"latest stories": true, "see also": true,
+}
+
+var callToActionLabels = map[string]bool{
+	"read more": true, "learn more": true, "continue reading": true,
+	"view more": true, "see more": true,
+}
+
+// TOC is a sufficiently specific structural convention to exclude by itself.
+// Other structural names need navigational evidence because they are also
+// common documentation subjects.
+var structuralBoilerplateTokens = []string{"toc"}
+var navigationStructureTokens = []string{"breadcrumb", "pagination", "toolbar"}
+
+func irrelevantNode(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	tag := strings.ToLower(n.Data)
+	if tag == "nav" || tag == "footer" {
+		return true
+	}
+	role := strings.ToLower(attrValue(n, "role"))
+	if containsAny(role, "navigation", "complementary", "contentinfo") {
+		return true
+	}
+	tokens := elementTokens(n)
+	if containsToken(tokens, structuralBoilerplateTokens) {
+		return true
+	}
+	if containsToken(tokens, navigationStructureTokens) && !headingDocumentsStructure(n, tokens) && hasNavigationShape(n) {
+		return true
+	}
+	label := normalizedLabel(firstNonempty(attrValue(n, "aria-label"), attrValue(n, "title")))
+	if auxiliaryLabels[label] {
+		return true
+	}
+	if tag == "a" || tag == "button" || isHeadingTag(tag) {
+		text := normalizedLabel(nodeText(n))
+		if (tag == "a" || tag == "button") && (callToActionLabels[text] || auxiliaryLabels[text]) {
+			return true
+		}
+		if isHeadingTag(tag) && auxiliaryLabels[text] {
+			return true
+		}
+	}
+	if tag == "div" || tag == "section" || tag == "aside" {
+		if heading := firstRegionHeading(n); auxiliaryLabels[heading] {
+			return true
+		}
+	}
+	return false
+}
+
+func headingDocumentsStructure(n *html.Node, tokens string) bool {
+	if n == nil || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "section") {
+		return false
+	}
+	heading := firstRegionHeading(n)
+	if heading == "" {
+		return false
+	}
+	for _, token := range navigationStructureTokens {
+		if containsAny(tokens, token) && containsAny(heading, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNavigationShape(n *html.Node) bool {
+	textLength := utf8.RuneCountInString(normalizeText(nodeText(n)))
+	if textLength > 0 && float64(linkTextLength(n))/float64(textLength) >= .6 {
+		return true
+	}
+	return controls(n) > 1
+}
+
+func (a *analysis) isIrrelevantNode(n *html.Node) bool {
+	if irrelevant, ok := a.irrelevant[n]; ok {
+		return irrelevant
+	}
+	irrelevant := irrelevantNode(n)
+	a.irrelevant[n] = irrelevant
+	return irrelevant
+}
+
+func (a *analysis) hasIrrelevantAncestor(n *html.Node) bool {
+	for p := n; p != nil; p = p.Parent {
+		if a.isIrrelevantNode(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstRegionHeading(n *html.Node) string {
+	// Inspect the first content-bearing element in document order, including
+	// headings inside transparent layout wrappers. A heading that follows body
+	// text or belongs to a nested semantic region does not label the parent.
+	budget := 64
+	var find func(*html.Node) (string, bool)
+	find = func(parent *html.Node) (string, bool) {
+		for ch := parent.FirstChild; ch != nil && budget > 0; ch = ch.NextSibling {
+			if hardHidden(ch) {
+				continue
+			}
+			if ch.Type == html.TextNode {
+				if strings.TrimSpace(ch.Data) != "" {
+					return "", true
+				}
+				continue
+			}
+			if ch.Type != html.ElementNode {
+				continue
+			}
+			budget--
+			tag := strings.ToLower(ch.Data)
+			if isHeadingTag(tag) {
+				return normalizedLabel(nodeText(ch)), true
+			}
+			if isRegionBoundary(tag) || isBlockTag(tag) {
+				return "", true
+			}
+			// A generic child with siblings can be an independent region (for
+			// example, a div-based sidebar). Do not let its heading label the
+			// shared parent layout. Within a semantic region, however, a div
+			// containing only a heading is a transparent title wrapper.
+			if !isOnlyContentChild(parent, ch) {
+				if tag == "div" && headerLabelsRegion(parent) {
+					if heading, ok := headingOnlyWrapper(ch); ok {
+						return heading, true
+					}
+				}
+				if tag != "header" || !headerLabelsRegion(parent) {
+					return "", true
+				}
+			}
+			if heading, done := find(ch); done {
+				return heading, true
+			}
+		}
+		return "", false
+	}
+	heading, _ := find(n)
+	return heading
+}
+
+func isRegionBoundary(tag string) bool {
+	switch tag {
+	case "article", "aside", "main", "nav", "section":
+		return true
+	}
+	return false
+}
+
+func isOnlyContentChild(parent, child *html.Node) bool {
+	for ch := parent.FirstChild; ch != nil; ch = ch.NextSibling {
+		if hardHidden(ch) || ch.Type == html.CommentNode || (ch.Type == html.TextNode && strings.TrimSpace(ch.Data) == "") {
+			continue
+		}
+		if ch != child {
+			return false
+		}
+	}
+	return true
+}
+
+func headerLabelsRegion(parent *html.Node) bool {
+	if parent == nil || parent.Type != html.ElementNode {
+		return false
+	}
+	switch strings.ToLower(parent.Data) {
+	case "aside", "section":
+		return true
+	}
+	return false
+}
+
+func headingOnlyWrapper(n *html.Node) (string, bool) {
+	for n != nil && n.Type == html.ElementNode {
+		if isHeadingTag(strings.ToLower(n.Data)) {
+			return normalizedLabel(nodeText(n)), true
+		}
+		var only *html.Node
+		for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+			if hardHidden(ch) || ch.Type == html.CommentNode || (ch.Type == html.TextNode && strings.TrimSpace(ch.Data) == "") {
+				continue
+			}
+			if only != nil || ch.Type != html.ElementNode {
+				return "", false
+			}
+			only = ch
+		}
+		n = only
+	}
+	return "", false
+}
+
+func isHeadingTag(tag string) bool {
+	return len(tag) == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6'
+}
+
+func normalizedLabel(s string) string {
+	s = strings.ToLower(normalizeText(s))
+	return strings.Trim(s, " .:;!?–—-\u00a0")
+}
 
 func nearestTokenAncestor(n *html.Node, values ...string) *html.Node {
 	for p := n; p != nil; p = p.Parent {

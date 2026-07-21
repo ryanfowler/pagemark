@@ -84,6 +84,173 @@ func TestNestedAndMultiParagraphList(t *testing.T) {
 	}
 }
 
+func TestAuxiliarySectionsAndCallsToActionAreRemoved(t *testing.T) {
+	html := `<main><article><h1>City budget approved</h1><p>The council approved the annual budget after a detailed public debate.</p><p>Residents can read more about the adopted transport plan in the report.</p></article><aside><h2>On this page</h2><ul><li><a href="#budget">Budget</a></li><li><a href="#transport">Transport</a></li></ul></aside><section><h2>More news</h2><article><h3>Unrelated sports result</h3><p>A summary from another story.</p><a href="/sports">Read more</a></article></section><div class="story-card"><h2>Budget documents</h2><p>The resolution and voting record are available.</p><a href="/documents">Read more</a></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/news/budget", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"City budget approved", "council approved", "read more about", "Budget documents", "resolution and voting record"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing relevant content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"On this page", "More news", "Unrelated sports result", "another story", "Read more"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included auxiliary content %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestNestedAuxiliaryRegionDoesNotExcludeSharedLayout(t *testing.T) {
+	html := `<main><div class="layout"><aside><h2>On this page</h2><ul><li>Overview</li></ul></aside><article><h1>Actual article</h1><p>The article contains the relevant details that readers need.</p></article></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Actual article", "relevant details"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"On this page", "Overview"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestDivSidebarDoesNotExcludeSharedLayout(t *testing.T) {
+	html := `<main><div class="layout"><div class="sidebar"><h2>On this page</h2><ul><li>Overview</li></ul></div><article><h1>Actual article</h1><p>The article remains relevant when a div-based sidebar comes first.</p></article></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Actual article", "article remains relevant"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"On this page", "Overview"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestSiblingHeaderDoesNotExcludeSharedLayout(t *testing.T) {
+	html := `<main><div class="layout"><header><h2>On this page</h2></header><article><h1>Actual article</h1><p>The article remains relevant when an auxiliary header comes first.</p></article></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Actual article", "article remains relevant"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing %q: %s", want, doc.Text)
+		}
+	}
+	if strings.Contains(doc.Text, "On this page") {
+		t.Errorf("included auxiliary header: %s", doc.Text)
+	}
+}
+
+func TestSubjectNamedLikeBoilerplateIsRetained(t *testing.T) {
+	html := `<main><h1>Authentication reference</h1><section id="login"><h2>Login API</h2><p>The login endpoint exchanges user credentials for an access token.</p></section><section class="related"><h2>Related records</h2><p>The related records field connects an account to its organization.</p></section><section id="advertisement"><h2>Advertisement model</h2><p>The advertisement model documents campaign properties and status values.</p></section></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/docs/auth", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Login API", "login endpoint", "Related records", "related records field", "Advertisement model", "campaign properties"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing subject content %q: %s", want, doc.Text)
+		}
+	}
+}
+
+func TestStructuralNamesUsedAsDocumentationSubjectsAreRetained(t *testing.T) {
+	html := `<main><h1>Component reference</h1><section id="pagination"><h2>Pagination</h2><p>The pagination component divides large result sets into separate pages.</p></section><section id="toolbar"><h2>Toolbar</h2><p>The toolbar component groups commands used to edit a document.</p></section><section id="breadcrumb"><h2>Breadcrumb</h2><p>The breadcrumb component displays the current location within a hierarchy.</p></section></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/docs/components", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Pagination", "divides large result sets", "Toolbar", "groups commands", "Breadcrumb", "current location"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing component documentation %q: %s", want, doc.Text)
+		}
+	}
+}
+
+func TestInteractiveToolbarDocumentationIsRetained(t *testing.T) {
+	html := `<main><h1>Component reference</h1><section id="toolbar"><h2>Toolbar</h2><p>The toolbar groups editing commands for the document.</p><div role="toolbar"><button>Bold</button><button>Italic</button></div><p>Use arrow keys to move between commands.</p></section></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/docs/toolbar", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Toolbar", "groups editing commands", "Use arrow keys"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing interactive documentation %q: %s", want, doc.Text)
+		}
+	}
+}
+
+func TestExcludedCallsToActionInStructuredFallbacks(t *testing.T) {
+	html := `<main><h1>Reference</h1><dl><dt>Option</dt><dd>Useful explanation <a href="/details">Read more</a></dd></dl><table><tr><td>Useful table value <a href="/table-details">Read more</a></td></tr></table></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/docs/reference", WithPageType(PageTypeDocumentation), WithIncludeTables(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Useful explanation", "Useful table value"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing %q: %s", want, doc.Text)
+		}
+	}
+	if strings.Contains(doc.Text, "Read more") {
+		t.Errorf("included excluded call to action: %s", doc.Text)
+	}
+}
+
+func TestTOCOnlySemanticFallbackProducesNoContent(t *testing.T) {
+	html := `<main><div id="toc"><h2>Contents</h2><ul><li>Install</li><li>Configure</li></ul></div></main>`
+	_, err := ExtractBytes([]byte(html), "https://example.com/docs/empty", WithPageType(PageTypeDocumentation))
+	if !errors.Is(err, ErrNoContent) {
+		t.Fatalf("got %v, want ErrNoContent", err)
+	}
+}
+
+func TestWrappedAuxiliaryHeadingExcludesSection(t *testing.T) {
+	html := `<main><article><h1>Primary report</h1><p>The report contains the relevant findings and conclusions.</p></article><section><div class="section-title"><h2>More news</h2></div><div class="cards"><h3>Unrelated update</h3><p>This card describes a different news story.</p></div></section></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/report", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Primary report", "relevant findings"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"More news", "Unrelated update", "different news story"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestTokenLabeledAuxiliaryRegionIsRemoved(t *testing.T) {
+	html := `<main><h1>Installation</h1><p>Install the package with the command below.</p><div id="toc"><h2>Contents</h2><ul><li>Install</li><li>Configure</li></ul></div><div role="complementary"><h2>Related guides</h2><p>Upgrade an older system.</p></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/docs/install", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "Install the package") {
+		t.Fatal(doc.Text)
+	}
+	for _, unwanted := range []string{"Contents", "Configure", "Related guides", "Upgrade an older"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
 func TestDiscussionKeepsComments(t *testing.T) {
 	html := `<main><h1>How?</h1><article class="post"><p>The question has useful detail.</p></article><article class="comment"><h2>Ada</h2><p>Use the documented method.</p><button>Reply</button></article><article class="comment"><h2>Bob</h2><p>This answer adds an example.</p></article></main>`
 	d, e := ExtractBytes([]byte(html), "https://example.com/forum/1", WithPageType(PageTypeDiscussion))

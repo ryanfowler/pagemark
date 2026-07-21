@@ -55,6 +55,9 @@ type Config struct {
 	Links, Images, Tables                        bool
 	MaxLinks, MaxImages, MaxTableCells, MaxBytes int
 	Policy                                       URLPolicy
+	// Exclude removes extraction-specific boilerplate subtrees. Hidden DOM
+	// handling remains built in to the converter.
+	Exclude func(*html.Node) bool
 }
 type Result struct {
 	Markdown, Text string
@@ -88,8 +91,12 @@ func Convert(nodes []*html.Node, cfg Config) Result {
 	return r
 }
 
+func (c *converter) skip(n *html.Node) bool {
+	return n == nil || dom.Hidden(n) || (c.cfg.Exclude != nil && c.cfg.Exclude(n))
+}
+
 func (c *converter) block(n *html.Node) *Node {
-	if n == nil || dom.Hidden(n) {
+	if c.skip(n) {
 		return nil
 	}
 	if n.Type == html.TextNode {
@@ -140,7 +147,7 @@ func (c *converter) block(n *html.Node) *Node {
 func (c *converter) blocks(n *html.Node) []*Node {
 	var out []*Node
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-		if dom.Hidden(ch) {
+		if c.skip(ch) {
 			continue
 		}
 		if ch.Type == html.TextNode {
@@ -172,7 +179,7 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 	var out []*Node
 	var walk func(*html.Node)
 	walk = func(x *html.Node) {
-		if dom.Hidden(x) {
+		if c.skip(x) {
 			return
 		}
 		if x.Type == html.TextNode {
@@ -194,7 +201,7 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 		case "form", "button", "input", "select", "textarea":
 			return
 		case "a":
-			label := clean(nodeText(x))
+			label := clean(c.nodeText(x))
 			href := attr(x, "href")
 			if c.cfg.Links && label != "" && c.linkCount < c.cfg.MaxLinks {
 				if safe, ok := c.safeURL(href); ok {
@@ -238,7 +245,7 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 func (c *converter) listItems(n *html.Node) []*Node {
 	var out []*Node
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-		if dom.Hidden(ch) {
+		if c.skip(ch) {
 			continue
 		}
 		if ch.Type == html.ElementNode && strings.EqualFold(ch.Data, "li") {
@@ -257,7 +264,7 @@ func (c *converter) mixedItem(n *html.Node) []*Node {
 		pending = nil
 	}
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-		if dom.Hidden(ch) {
+		if c.skip(ch) {
 			continue
 		}
 		if ch.Type == html.ElementNode && isListItemBlock(strings.ToLower(ch.Data)) {
@@ -288,14 +295,14 @@ func (c *converter) definitionItems(n *html.Node) []*Node {
 	var out []*Node
 	var term string
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-		if dom.Hidden(ch) || ch.Type != html.ElementNode {
+		if c.skip(ch) || ch.Type != html.ElementNode {
 			continue
 		}
 		if strings.EqualFold(ch.Data, "dt") {
-			term = clean(nodeText(ch))
+			term = clean(c.nodeText(ch))
 		}
 		if strings.EqualFold(ch.Data, "dd") {
-			v := clean(nodeText(ch))
+			v := clean(c.nodeText(ch))
 			if term != "" {
 				v = term + ": " + v
 			}
@@ -309,13 +316,13 @@ func (c *converter) table(n *html.Node) *Node {
 	var rows [][]*html.Node
 	var walk func(*html.Node)
 	walk = func(x *html.Node) {
-		if dom.Hidden(x) {
+		if c.skip(x) {
 			return
 		}
 		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "tr") {
 			var row []*html.Node
 			for ch := x.FirstChild; ch != nil; ch = ch.NextSibling {
-				if !dom.Hidden(ch) && ch.Type == html.ElementNode && (strings.EqualFold(ch.Data, "td") || strings.EqualFold(ch.Data, "th")) {
+				if !c.skip(ch) && ch.Type == html.ElementNode && (strings.EqualFold(ch.Data, "td") || strings.EqualFold(ch.Data, "th")) {
 					row = append(row, ch)
 				}
 			}
@@ -356,11 +363,11 @@ func (c *converter) fallbackTable(n *html.Node) *Node {
 	var items []*Node
 	var walk func(*html.Node)
 	walk = func(x *html.Node) {
-		if dom.Hidden(x) {
+		if c.skip(x) {
 			return
 		}
 		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "tr") {
-			v := clean(nodeText(x))
+			v := clean(c.nodeText(x))
 			if v != "" {
 				items = append(items, &Node{Kind: ListItem, Children: []*Node{{Kind: Paragraph, Children: []*Node{{Kind: Text, Value: v}}}}})
 			}
@@ -441,11 +448,11 @@ func inlineText(s string) string {
 	}
 	return v
 }
-func nodeText(n *html.Node) string {
+func (c *converter) nodeText(n *html.Node) string {
 	var values []string
 	var walk func(*html.Node)
 	walk = func(x *html.Node) {
-		if dom.Hidden(x) {
+		if c.skip(x) {
 			return
 		}
 		if x.Type == html.TextNode {
