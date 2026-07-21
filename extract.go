@@ -20,7 +20,6 @@ import (
 	"github.com/ryanfowler/pagemark/internal/markdown"
 	"github.com/ryanfowler/readability"
 	"golang.org/x/net/html"
-	"golang.org/x/net/html/charset"
 )
 
 type block struct {
@@ -45,7 +44,8 @@ type analysis struct {
 
 type metadata struct{ title, description, author, site, language, published, canonical, schemaType string }
 
-// Extract reads HTML and extracts useful content.
+// Extract reads UTF-8 HTML and extracts useful content. Callers must decode
+// input in other character encodings before calling Extract.
 func Extract(input io.Reader, pageURL string, opts ...Option) (*Document, error) {
 	o := applyOptions(opts)
 	if input == nil {
@@ -62,11 +62,10 @@ func Extract(input io.Reader, pageURL string, opts ...Option) (*Document, error)
 	if o.maxInput > 0 && int64(len(data)) > o.maxInput {
 		return nil, &LimitError{"input bytes", int64(len(data)), o.maxInput}
 	}
-	r, err := charset.NewReader(bytes.NewReader(data), "")
-	if err != nil {
-		return nil, fmt.Errorf("pagemark: decode HTML: %w", err)
-	}
-	root, err := html.Parse(r)
+	// Extract accepts UTF-8. Callers with another encoding must decode it before
+	// extraction; attempting to sniff here can misinterpret UTF-8 as Windows-1252
+	// and can decode input a second time.
+	root, err := html.Parse(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("pagemark: parse HTML: %w", err)
 	}
@@ -77,7 +76,7 @@ func Extract(input io.Reader, pageURL string, opts ...Option) (*Document, error)
 	return doc, err
 }
 
-// ExtractBytes extracts useful content from HTML bytes.
+// ExtractBytes extracts useful content from UTF-8 HTML bytes.
 func ExtractBytes(input []byte, pageURL string, opts ...Option) (*Document, error) {
 	return Extract(bytes.NewReader(input), pageURL, opts...)
 }

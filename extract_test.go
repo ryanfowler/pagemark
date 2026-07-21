@@ -33,6 +33,40 @@ func TestExtractStructuresAndSafety(t *testing.T) {
 	}
 }
 
+func TestExtractTreatsInputAsUTF8(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name:   "HTML without charset metadata",
+			source: `<!doctype html><html><body><main><h1>The Psychology of Software Teams</h1><p>You’ll read “the team’s guide” ↩</p></main></body></html>`,
+		},
+		{
+			name:   "XHTML",
+			source: `<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><body><main><h1>The Psychology of Software Teams</h1><p>You’ll read “the team’s guide” ↩</p></main></body></html>`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			doc, err := Extract(strings.NewReader(test.source), "https://example.com/teams", WithPageType(PageTypeArticle))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"You’ll", "“the team’s guide”", "↩"} {
+				if !strings.Contains(doc.Markdown, want) {
+					t.Errorf("Markdown does not contain %q:\n%s", want, doc.Markdown)
+				}
+			}
+			for _, mojibake := range []string{"â€™", "â€œ", "â†©"} {
+				if strings.Contains(doc.Markdown, mojibake) {
+					t.Errorf("Markdown contains mojibake %q:\n%s", mojibake, doc.Markdown)
+				}
+			}
+		})
+	}
+}
+
 func TestDistributedServiceAndHiddenContent(t *testing.T) {
 	html := `<html><body><header><p>Site menu words</p></header><section><h1>Cloud Service</h1><p>Build and ship applications quickly.</p></section><section><h2>Features</h2><p>Reliable storage and simple deployment.</p></section><div hidden><p>secret</p></div><div class="cookie-banner"><p>Accept all cookies now.</p></div><section><h2>FAQ</h2><p>Cancel at any time.</p></section></body></html>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/service", WithPageType(PageTypeService))
