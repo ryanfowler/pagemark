@@ -38,6 +38,8 @@ type analysis struct {
 	elements, attrs, attrBytes, textBytes, maxDepth int
 	blocks                                          []block
 	meta                                            metadata
+	pageType                                        PageType
+	pageTypeExplicit                                bool
 	diag                                            *Diagnostics
 	irrelevant                                      map[*html.Node]bool
 	discussionBodyDescendants                       map[*html.Node]uint8
@@ -130,10 +132,15 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	if o.pageType != "" {
 		pageType = o.pageType
 		confidence = 1
+		a.pageTypeExplicit = true
 	}
 	if a.diag != nil {
 		a.diag.PageCandidates = candidates
 	}
+	// Auxiliary-region detection has a small number of article-specific rules.
+	// Record the final type before scoring so those regions are hard exclusions,
+	// rather than relying on score penalties that long card copy can overcome.
+	a.pageType = pageType
 	a.score(pageType)
 	selected, repeatedExcluded, repeatedDropped := a.selectedNodes(pageType)
 	fallback := "primary"
@@ -1038,15 +1045,33 @@ func metadataNodes(m metadata) []*html.Node {
 
 var badTokens = []string{"cookie", "cookies", "consent", "banner", "share", "social", "newsletter", "signup", "sign-up", "promo", "copyright", "toc"}
 
-// These labels introduce navigational or promotional regions rather than the
-// subject of the page. Matching is deliberately exact so ordinary prose that
-// happens to contain the same words is retained.
+// These labels introduce navigational or promotional regions regardless of
+// page type. Matching is deliberately exact so subject sections that happen to
+// use similar words are retained.
 var auxiliaryLabels = map[string]bool{
 	"on this page": true, "in this article": true, "table of contents": true,
 	"more news": true, "latest news": true, "related news": true,
 	"related articles": true, "related content": true, "recommended for you": true,
 	"you may also like": true, "read next": true, "more stories": true,
 	"latest stories": true, "see also": true,
+}
+
+// These short labels are strong boilerplate signals on articles, but can name
+// legitimate sections on other page types (for example Web Share API docs).
+var articleAuxiliaryLabels = map[string]bool{
+	"related posts": true, "read more": true, "share": true,
+	"share this article": true, "share this post": true,
+	"share this story": true, "more by": true,
+}
+
+func isArticleAuxiliaryLabel(label string) bool {
+	if articleAuxiliaryLabels[label] {
+		return true
+	}
+	// Author recommendation headings include a name and therefore cannot be
+	// enumerated (for example, “More by Ben Thompson”). Keep the match anchored
+	// to the complete leading phrase so ordinary uses of "more" are unaffected.
+	return strings.HasPrefix(label, "more by ")
 }
 
 var callToActionLabels = map[string]bool{
@@ -1129,8 +1154,118 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 		return irrelevant
 	}
 	irrelevant := irrelevantNode(n)
+	if !irrelevant && a.pageType == PageTypeArticle {
+		irrelevant = articleAuxiliaryNode(n)
+	}
+	if !irrelevant && isTrailingArticleCardRegion(n) {
+		// A final article classification makes trailing cards auxiliary. When
+		// card tokens instead caused an inferred listing classification, require
+		// an explicit promotional-region marker. Never override a caller's
+		// listing/collection classification.
+		irrelevant = a.pageType == PageTypeArticle ||
+			(a.pageType == PageTypeListing && !a.pageTypeExplicit && isPromotionalCardRegion(n))
+	}
 	a.irrelevant[n] = irrelevant
 	return irrelevant
+}
+
+func articleAuxiliaryNode(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	tag := strings.ToLower(n.Data)
+	label := normalizedLabel(firstNonempty(attrValue(n, "aria-label"), attrValue(n, "title")))
+	if isArticleAuxiliaryLabel(label) {
+		return true
+	}
+	if tag == "a" || tag == "button" || isHeadingTag(tag) {
+		if isArticleAuxiliaryLabel(normalizedLabel(nodeText(n))) {
+			return true
+		}
+	}
+	if tag == "div" || tag == "section" || tag == "aside" {
+		return isArticleAuxiliaryLabel(firstRegionHeading(n))
+	}
+	return false
+}
+
+// isTrailingArticleCardRegion catches unlabeled recommendation and newsletter
+// grids after an article. Their summaries can contain enough prose to defeat
+// ordinary boilerplate penalties. Requiring multiple explicitly marked cards
+// and an earlier/containing semantic article avoids treating a single useful
+// card or a listing page as auxiliary content.
+func isTrailingArticleCardRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	switch strings.ToLower(n.Data) {
+	case "div", "section", "aside", "ul":
+	default:
+		return false
+	}
+	if countArticleCards(n, 2) < 2 {
+		return false
+	}
+	return hasSemanticArticleBeforeOrAround(n)
+}
+
+func isPromotionalCardRegion(n *html.Node) bool {
+	tokens := elementTokens(n)
+	if containsAny(tokens, "promo", "promotion", "promotions", "promotional", "related", "recommended", "recommendations") {
+		return true
+	}
+	return isArticleAuxiliaryLabel(firstRegionHeading(n))
+}
+
+func countArticleCards(root *html.Node, limit int) int {
+	count := 0
+	var visit func(*html.Node)
+	visit = func(parent *html.Node) {
+		for ch := parent.FirstChild; ch != nil && count < limit; ch = ch.NextSibling {
+			if hardHidden(ch) || ch.Type != html.ElementNode {
+				continue
+			}
+			tokens := elementTokens(ch)
+			isCard := containsAny(tokens, "card") &&
+				(strings.EqualFold(ch.Data, "article") || containsAny(tokens, "article", "post", "story", "newsletter"))
+			if isCard {
+				count++
+				continue // Do not count nested wrappers belonging to the same card.
+			}
+			visit(ch)
+		}
+	}
+	visit(root)
+	return count
+}
+
+func hasSemanticArticleBeforeOrAround(n *html.Node) bool {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type == html.ElementNode && strings.EqualFold(p.Data, "article") && !containsAny(elementTokens(p), "card") {
+			return true
+		}
+	}
+	// At each ancestor level, previous siblings are entirely before n in
+	// document order. Search them for the primary semantic article.
+	for branch := n; branch != nil && branch.Parent != nil; branch = branch.Parent {
+		for sibling := branch.PrevSibling; sibling != nil; sibling = sibling.PrevSibling {
+			found := false
+			walk(sibling, func(x *html.Node) bool {
+				if found || hardHidden(x) {
+					return false
+				}
+				if x.Type == html.ElementNode && strings.EqualFold(x.Data, "article") && !containsAny(elementTokens(x), "card") {
+					found = true
+					return false
+				}
+				return true
+			})
+			if found {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (a *analysis) hasIrrelevantAncestor(n *html.Node) bool {
