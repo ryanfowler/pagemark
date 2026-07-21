@@ -17,7 +17,31 @@ func Hidden(n *html.Node) bool {
 	case "script", "style", "template", "canvas", "svg", "iframe", "object", "embed":
 		return true
 	}
-	if hasAttr(n, "hidden") || hasAttr(n, "inert") || strings.EqualFold(strings.TrimSpace(attr(n, "aria-hidden")), "true") {
+	return hiddenByAttributes(n)
+}
+
+// AccessibleSVGLabel returns the concise label for an SVG that may be handled
+// as an opaque image. Hidden reports all SVG as hidden so generic DOM walkers
+// never descend into SVG text, links, or metadata; callers that explicitly
+// support this representation may use this function before their hidden check.
+func AccessibleSVGLabel(n *html.Node) string {
+	if n == nil || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "svg") ||
+		!strings.EqualFold(strings.TrimSpace(attr(n, "role")), "img") {
+		return ""
+	}
+	label := strings.TrimSpace(attr(n, "aria-label"))
+	if label == "" || hiddenByAttributes(n) {
+		return ""
+	}
+	return label
+}
+
+// hiddenByAttributes is shared by ordinary visibility checks and opaque SVG
+// handling so the latter cannot bypass part of the visibility policy.
+func hiddenByAttributes(n *html.Node) bool {
+	if hasAttr(n, "hidden") || hasAttr(n, "inert") ||
+		strings.EqualFold(strings.TrimSpace(attr(n, "aria-hidden")), "true") ||
+		strings.EqualFold(strings.TrimSpace(attr(n, "aria-modal")), "true") {
 		return true
 	}
 	style := strings.Map(func(r rune) rune {
@@ -26,10 +50,7 @@ func Hidden(n *html.Node) bool {
 		}
 		return unicode.ToLower(r)
 	}, attr(n, "style"))
-	if strings.Contains(style, "display:none") || strings.Contains(style, "visibility:hidden") {
-		return true
-	}
-	return strings.EqualFold(strings.TrimSpace(attr(n, "aria-modal")), "true")
+	return strings.Contains(style, "display:none") || strings.Contains(style, "visibility:hidden")
 }
 
 func attr(n *html.Node, key string) string {

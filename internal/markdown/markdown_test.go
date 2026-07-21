@@ -96,6 +96,45 @@ func TestFormattedLinkAndLinkedImage(t *testing.T) {
 	}
 }
 
+func TestAccessibleSVGTextFallback(t *testing.T) {
+	t.Run("labeled and escaped", func(t *testing.T) {
+		r := convertHTML(t, `<svg role="img" aria-label="System *flow* [v2]"><path></path></svg>`)
+		want := `Diagram: System \*flow\* \[v2\]`
+		if r.Markdown != want {
+			t.Fatalf("want %q, got %q", want, r.Markdown)
+		}
+		if len(r.Images) != 0 {
+			t.Fatalf("URL-less SVG unexpectedly reported as an image: %#v", r.Images)
+		}
+	})
+
+	t.Run("decorative hidden and disabled", func(t *testing.T) {
+		if got := convertHTML(t, `<p>before<svg role="img"><path></path></svg>after</p>`).Markdown; got != "beforeafter" {
+			t.Fatalf("unlabeled SVG output = %q", got)
+		}
+		if got := convertHTML(t, `<p>before<svg role="img" aria-label="Modal diagram" aria-modal="true"></svg>after</p>`).Markdown; got != "beforeafter" {
+			t.Fatalf("aria-modal SVG output = %q", got)
+		}
+		cfg := Config{Images: false, MaxImages: 100, Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096}}
+		if got := convertHTMLConfig(t, `<svg role="img" aria-label="Hidden diagram"></svg>`, cfg).Markdown; got != "" {
+			t.Fatalf("disabled SVG output = %q", got)
+		}
+	})
+
+	t.Run("shares image limit", func(t *testing.T) {
+		base, _ := url.Parse("https://example.com/")
+		cfg := Config{Base: base, Images: true, MaxImages: 1, Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096}}
+		r := convertHTMLConfig(t, `<p><svg role="img" aria-label="First diagram"></svg><img src="/second.png" alt="Second diagram"></p>`, cfg)
+		if r.Markdown != "Diagram: First diagram" || len(r.Images) != 0 {
+			t.Fatalf("SVG did not consume image limit: markdown=%q images=%#v", r.Markdown, r.Images)
+		}
+		cfg.MaxImages = 0
+		if got := convertHTMLConfig(t, `<svg role="img" aria-label="Limited diagram"></svg>`, cfg).Markdown; got != "" {
+			t.Fatalf("MaxImages=0 SVG output = %q", got)
+		}
+	})
+}
+
 func TestLinkWhitespaceIsOutsideLabel(t *testing.T) {
 	r := convertHTML(t, `<p>See <a href="/docs">the guide </a>and <a href="/more"> <strong>more</strong> </a> now.</p>`)
 	want := `See [the guide](https://example.com/docs) and [**more**](https://example.com/more) now.`

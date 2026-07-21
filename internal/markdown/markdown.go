@@ -103,7 +103,15 @@ func Convert(nodes []*html.Node, cfg Config) Result {
 }
 
 func (c *converter) skip(n *html.Node) bool {
-	return n == nil || dom.Hidden(n) || (c.cfg.Exclude != nil && c.cfg.Exclude(n))
+	if n == nil || (c.cfg.Exclude != nil && c.cfg.Exclude(n)) {
+		return true
+	}
+	if dom.Hidden(n) {
+		// SVG is opaque to all generic traversal. The converter only admits its
+		// accessible label through the dedicated SVG branch below.
+		return !(c.cfg.Images && dom.AccessibleSVGLabel(n) != "")
+	}
+	return false
 }
 
 func (c *converter) block(n *html.Node) *Node {
@@ -123,6 +131,10 @@ func (c *converter) block(n *html.Node) *Node {
 		return &Node{Kind: Heading, Level: int(tag[1] - '0'), Children: c.inlines(n)}
 	case "p", "figcaption", "caption", "dt", "dd":
 		return &Node{Kind: Paragraph, Children: c.inlines(n)}
+	case "img", "svg":
+		// A visual may be a direct child of article/main rather than wrapped in a
+		// paragraph. Process the element itself as inline content.
+		return &Node{Kind: Paragraph, Children: c.inlineNodes([]*html.Node{n})}
 	case "pre":
 		return &Node{Kind: CodeBlock, Value: c.textRaw(n), Info: codeInfo(n)}
 	case "blockquote":
@@ -273,6 +285,18 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 			if c.cfg.Images && alt != "" && c.imageCount < c.cfg.MaxImages {
 				if safe, ok := c.safeURL(src); ok {
 					out = append(out, &Node{Kind: Image, Value: alt, URL: safe})
+					c.imageCount++
+				}
+			}
+			return
+		case "svg":
+			// Inline SVG has no image URL to report. Preserve an accessible name
+			// as a concise textual stand-in rather than silently dropping a
+			// meaningful diagram. It still consumes the image budget so SVG cannot
+			// bypass the configured visual-output limit.
+			if c.cfg.Images && c.imageCount < c.cfg.MaxImages {
+				if label := clean(dom.AccessibleSVGLabel(x)); label != "" {
+					out = append(out, &Node{Kind: Text, Value: "Diagram: " + label})
 					c.imageCount++
 				}
 			}

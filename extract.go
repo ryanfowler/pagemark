@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -28,6 +29,7 @@ type block struct {
 	kind, text string
 	score      float64
 	selected   bool
+	imageOnly  bool
 	reasons    []string
 }
 
@@ -187,7 +189,8 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	exclude := func(n *html.Node) bool {
 		discussionAuxiliary := pageType == PageTypeDiscussion &&
 			(isDiscussionControlNode(n) || a.hasStandaloneMessageAncestor(n))
-		return a.isIrrelevantNode(n) || repeatedExcluded[n] || discussionAuxiliary
+		visualAuxiliary := o.includeImages && isVisualElement(n) && !meaningfulVisual(n)
+		return a.isIrrelevantNode(n) || repeatedExcluded[n] || discussionAuxiliary || visualAuxiliary
 	}
 	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: append([]string(nil), o.urlPolicy.Schemes...), AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude}
 	if pageType == PageTypeArticle {
@@ -275,11 +278,20 @@ func (a *analysis) index(n *html.Node, depth int) error {
 
 func (a *analysis) segment(n *html.Node, excluded bool) {
 	if n.Type == html.ElementNode {
-		excluded = excluded || hardHidden(n)
+		tag := strings.ToLower(n.Data)
+		// SVG remains hidden to generic DOM walkers so its internals cannot affect
+		// scoring. Only this explicit opaque-image path may bypass that rule.
+		opaqueSVG := a.o.includeImages && tag == "svg" && meaningfulVisual(n)
+		excluded = excluded || (hardHidden(n) && !opaqueSVG)
 		if excluded {
 			return
 		}
-		tag := strings.ToLower(n.Data)
+		// A visual does not need a paragraph or figure wrapper in HTML. Segment it
+		// directly when no selected wrapper has already stopped traversal above.
+		if a.o.includeImages && isVisualElement(n) && meaningfulVisual(n) {
+			a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: n, kind: "image", imageOnly: true})
+			return
+		}
 		// Forum software often puts a post's prose directly in a generic div,
 		// using <br> (and occasionally <hr>) rather than paragraphs. Prefer the
 		// innermost explicitly marked body over its wrappers and enclosing table.
@@ -293,8 +305,9 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 		}
 		if isBlockTag(tag) && !hasPostBody {
 			text := normalizeText(nodeText(n))
-			if text != "" || tag == "hr" {
-				a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: n, kind: tag, text: text})
+			imageOnly := text == "" && a.o.includeImages && hasMeaningfulVisual(n)
+			if text != "" || tag == "hr" || imageOnly {
+				a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: n, kind: tag, text: text, imageOnly: imageOnly})
 				return
 			}
 		}
@@ -378,6 +391,90 @@ func isBlockTag(tag string) bool {
 }
 func hardHidden(n *html.Node) bool { return dom.Hidden(n) }
 
+// hasMeaningfulVisual recognizes visuals that can produce useful output. It is
+// deliberately stricter than the Markdown converter: selection must not make
+// avatars, logos, icons, or tracking pixels eligible merely because they have
+// alt text.
+func hasMeaningfulVisual(n *html.Node) bool {
+	found := false
+	walk(n, func(x *html.Node) bool {
+		if found {
+			return false
+		}
+		// Check the opaque SVG representation before the generic hidden rule,
+		// which intentionally hides every SVG subtree.
+		if isVisualElement(x) && meaningfulVisual(x) {
+			found = true
+			return false
+		}
+		return !hardHidden(x)
+	})
+	return found
+}
+
+func isVisualElement(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	tag := strings.ToLower(n.Data)
+	return tag == "img" || (tag == "svg" && strings.EqualFold(attrValue(n, "role"), "img"))
+}
+
+func meaningfulVisual(n *html.Node) bool {
+	if !isVisualElement(n) {
+		return false
+	}
+	label := normalizeText(attrValue(n, "alt"))
+	if strings.EqualFold(n.Data, "svg") {
+		label = normalizeText(dom.AccessibleSVGLabel(n))
+	} else if dom.Hidden(n) {
+		return false
+	}
+	if label == "" {
+		return false
+	}
+	if containsAny(strings.ToLower(label), "avatar", "logo", "icon") {
+		return false
+	}
+	if strings.EqualFold(n.Data, "img") && explicitlyTinyImage(n) {
+		return false
+	}
+	for p := n; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		tag := strings.ToLower(p.Data)
+		if tag == "nav" || tag == "footer" || tag == "aside" {
+			return false
+		}
+		if containsAny(elementTokens(p), "author", "profile", "avatar", "logo", "icon", "social", "share", "sidebar", "tracking", "pixel", "related", "recommended") {
+			return false
+		}
+	}
+	return true
+}
+
+func explicitlyTinyImage(n *html.Node) bool {
+	dimension := func(key string) int {
+		value := strings.TrimSpace(attrValue(n, key))
+		// Numeric HTML dimensions may have an optional CSS pixel suffix in
+		// real-world markup. Other units and responsive values are inconclusive.
+		value = strings.TrimSpace(strings.TrimSuffix(strings.ToLower(value), "px"))
+		size, err := strconv.Atoi(value)
+		if err != nil || size <= 0 {
+			return 0
+		}
+		return size
+	}
+	width, height := dimension("width"), dimension("height")
+	if width > 0 && height > 0 {
+		return width <= 32 && height <= 32
+	}
+	// A lone 1px-style dimension is still strong tracking-pixel evidence, while
+	// one ordinary small dimension may describe a legitimate narrow diagram.
+	return width > 0 && width <= 8 || height > 0 && height <= 8
+}
+
 func (a *analysis) score(pt PageType) {
 	seen := map[string]bool{}
 	for i := range a.blocks {
@@ -395,10 +492,19 @@ func (a *analysis) score(pt PageType) {
 			score = 1.3
 		case "blockquote", "figure":
 			score = 1.1
+		case "image":
+			score = .7
 		case "generic":
 			score = 0.4 + math.Min(2, float64(length)/250)
 		}
 		b.reasons = append(b.reasons, "content shape")
+		if b.imageOnly {
+			// Descriptive image-only paragraphs have no text length with which to
+			// earn the normal prose score. The remaining ancestry and boilerplate
+			// signals still decide whether this is primary content.
+			score += .4
+			b.reasons = append(b.reasons, "descriptive image")
+		}
 		if a.hasIrrelevantAncestor(b.node) {
 			score -= 8
 			b.reasons = append(b.reasons, "auxiliary content")

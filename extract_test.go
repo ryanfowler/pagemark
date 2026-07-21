@@ -1080,6 +1080,96 @@ func TestMaxRepeatedLimitsRecordsInsideListsAndTables(t *testing.T) {
 	}
 }
 
+func TestImageOnlyArticleBlocks(t *testing.T) {
+	html := `<main><article>
+		<h1>How the system works</h1>
+		<p>This article explains the system architecture and the path each request takes through its components.</p>
+		<p><img src="images/architecture.png" alt="Request flow through the system" width="800" height="450"></p>
+		<p>The diagram above connects the first stage to the processing stage described in the following section.</p>
+		<figure><img src="/images/result.png" alt="Result of the processing pipeline"><figcaption>The completed processing pipeline.</figcaption></figure>
+		<p><img src="/images/divider.png" alt=""></p>
+		<aside class="author-profile"><img src="/people/author.jpg" alt="Jane Doe" width="128" height="128"><p>About the author</p></aside>
+	</article></main>`
+
+	doc, err := ExtractBytes([]byte(html), "https://example.com/posts/entry/", WithPageType(PageTypeArticle), WithIncludeImages(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`![Request flow through the system](https://example.com/posts/entry/images/architecture.png)`,
+		`![Result of the processing pipeline](https://example.com/images/result.png)`,
+	} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Fatalf("missing content image %q:\n%s", want, doc.Markdown)
+		}
+	}
+	if len(doc.Images) != 2 {
+		t.Fatalf("images = %#v, want two content images", doc.Images)
+	}
+	if doc.Images[0].Alt != "Request flow through the system" || doc.Images[0].URL != "https://example.com/posts/entry/images/architecture.png" ||
+		doc.Images[1].Alt != "Result of the processing pipeline" || doc.Images[1].URL != "https://example.com/images/result.png" {
+		t.Fatalf("unexpected images: %#v", doc.Images)
+	}
+	for _, unwanted := range []string{"author.jpg", "divider.png", "Jane Doe"} {
+		if strings.Contains(doc.Markdown, unwanted) {
+			t.Fatalf("auxiliary image %q survived:\n%s", unwanted, doc.Markdown)
+		}
+	}
+
+	without, err := ExtractBytes([]byte(html), "https://example.com/posts/entry/", WithPageType(PageTypeArticle), WithIncludeImages(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(without.Images) != 0 || strings.Contains(without.Markdown, "![") || strings.Contains(without.Markdown, "architecture.png") || strings.Contains(without.Markdown, "result.png") {
+		t.Fatalf("images survived WithIncludeImages(false): %#v\n%s", without.Images, without.Markdown)
+	}
+}
+
+func TestUnwrappedArticleImageIsSelected(t *testing.T) {
+	html := `<article>
+		<p>Introductory prose explains the system before presenting its architecture and major components.</p>
+		<img src="/diagram.png" alt="System architecture" width="900" height="500">
+		<p>Following prose explains how requests move through the architecture shown above.</p>
+	</article>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithIncludeImages(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `![System architecture](https://example.com/diagram.png)`
+	if !strings.Contains(doc.Markdown, want) {
+		t.Fatalf("missing direct article image %q:\n%s", want, doc.Markdown)
+	}
+	if len(doc.Images) != 1 || doc.Images[0].Alt != "System architecture" || doc.Images[0].URL != "https://example.com/diagram.png" {
+		t.Fatalf("unexpected images: %#v", doc.Images)
+	}
+}
+
+func TestAccessibleSVGInternalsRemainOpaque(t *testing.T) {
+	internal := strings.Repeat("INTERNAL CHART METADATA SHOULD NOT AFFECT EXTRACTION ", 100)
+	html := `<article>
+		<p>Introductory prose establishes the article context before the diagram.</p>
+		<svg role="img" aria-label="Request lifecycle"><text>` + internal + `</text><a href="/internal-link"><text>hidden link</text></a></svg>
+		<p>Following prose explains the request lifecycle after the diagram.</p>
+	</article>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithIncludeImages(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Markdown, "Diagram: Request lifecycle") {
+		t.Fatalf("missing accessible SVG label:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Markdown, "INTERNAL") || strings.Contains(doc.Text, "INTERNAL") || strings.Contains(doc.Markdown, "internal-link") {
+		t.Fatalf("SVG internals affected extraction:\n%s\ntext=%q", doc.Markdown, doc.Text)
+	}
+	baseline, err := ExtractBytes([]byte(strings.Replace(html, internal, "", 1)), "https://example.com/article", WithPageType(PageTypeArticle), WithIncludeImages(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Quality != baseline.Quality || doc.PageType != baseline.PageType {
+		t.Fatalf("SVG internals changed analysis: quality %v vs %v, type %v vs %v", doc.Quality, baseline.Quality, doc.PageType, baseline.PageType)
+	}
+}
+
 func TestTruncationKeepsViewsConsistent(t *testing.T) {
 	html := `<main><h1>Title</h1><p><a href="/kept">Kept link</a> <img src="/kept.png" alt="Kept image"> short text.</p><p><a href="/omitted">Omitted link</a> <img src="/omitted.png" alt="Omitted image"> ` + strings.Repeat("long ", 30) + `</p></main>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com", WithPageType(PageTypeDocumentation), WithIncludeImages(true), WithMaxOutputBytes(180))
