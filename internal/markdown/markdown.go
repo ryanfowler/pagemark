@@ -898,57 +898,75 @@ func needsLiteralOrdinals(n *Node) bool {
 func renderInline(ns []*Node) string {
 	var b strings.Builder
 	for _, n := range ns {
+		var value string
 		switch n.Kind {
 		case Text:
-			b.WriteString(escape(n.Value))
+			value = escape(n.Value)
 		case Emphasis:
-			b.WriteString(renderDelimited(renderInline(n.Children), "*"))
+			value = renderDelimited(renderInline(n.Children), "*")
 		case Strong:
-			b.WriteString(renderDelimited(renderInline(n.Children), "**"))
+			value = renderDelimited(renderInline(n.Children), "**")
 		case InlineCode:
 			v := n.Value
 			tick := "`"
 			for strings.Contains(v, tick) {
 				tick += "`"
 			}
-			b.WriteString(tick)
+			var code strings.Builder
+			code.WriteString(tick)
 			needsPadding := strings.HasPrefix(v, "`") || strings.HasSuffix(v, "`") ||
 				((strings.HasPrefix(v, " ") || strings.HasSuffix(v, " ")) && strings.Trim(v, " ") != "")
 			if needsPadding {
-				b.WriteByte(' ')
+				code.WriteByte(' ')
 			}
-			b.WriteString(v)
+			code.WriteString(v)
 			if needsPadding {
-				b.WriteByte(' ')
+				code.WriteByte(' ')
 			}
-			b.WriteString(tick)
+			code.WriteString(tick)
+			value = code.String()
 		case Link:
-			b.WriteString("[")
-			b.WriteString(renderInline(n.Children))
-			b.WriteString("](")
-			b.WriteString(markdownDestination(n.URL))
-			b.WriteString(")")
+			label := renderInline(n.Children)
+			value = renderWrapped(label, "[", "]("+markdownDestination(n.URL)+")")
 		case Image:
-			b.WriteString("![")
-			b.WriteString(escape(n.Value))
-			b.WriteString("](")
-			b.WriteString(markdownDestination(n.URL))
-			b.WriteString(")")
+			value = "![" + escape(n.Value) + "](" + markdownDestination(n.URL) + ")"
 		case HardBreak:
-			b.WriteString("\\\n")
+			value = "\\\n"
 		}
+		writeInline(&b, value)
 	}
 	return b.String()
 }
 
+// writeInline preserves whitespace moved outside Markdown delimiters without
+// duplicating whitespace that already occurs at an adjacent node boundary.
+func writeInline(b *strings.Builder, value string) {
+	if b.Len() > 0 {
+		last, _ := utf8.DecodeLastRuneInString(b.String())
+		first, _ := utf8.DecodeRuneInString(value)
+		if isHorizontalSpace(last) && isHorizontalSpace(first) {
+			value = strings.TrimLeftFunc(value, isHorizontalSpace)
+		}
+	}
+	b.WriteString(value)
+}
+
 func renderDelimited(value, delimiter string) string {
-	if strings.TrimSpace(value) == "" {
+	return renderWrapped(value, delimiter, delimiter)
+}
+
+func renderWrapped(value, leftDelimiter, rightDelimiter string) string {
+	if strings.TrimFunc(value, isHorizontalSpace) == "" {
 		return value
 	}
-	left := value[:len(value)-len(strings.TrimLeftFunc(value, unicode.IsSpace))]
-	right := value[len(strings.TrimRightFunc(value, unicode.IsSpace)):]
-	core := strings.TrimSpace(value)
-	return left + delimiter + core + delimiter + right
+	left := value[:len(value)-len(strings.TrimLeftFunc(value, isHorizontalSpace))]
+	right := value[len(strings.TrimRightFunc(value, isHorizontalSpace)):]
+	core := strings.TrimFunc(value, isHorizontalSpace)
+	return left + leftDelimiter + core + rightDelimiter + right
+}
+
+func isHorizontalSpace(r rune) bool {
+	return unicode.IsSpace(r) && r != '\n' && r != '\r'
 }
 
 func markdownDestination(value string) string {

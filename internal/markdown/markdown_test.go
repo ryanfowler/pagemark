@@ -80,6 +80,29 @@ func TestFormattedLinkAndLinkedImage(t *testing.T) {
 	}
 }
 
+func TestLinkWhitespaceIsOutsideLabel(t *testing.T) {
+	r := convertHTML(t, `<p>See <a href="/docs">the guide </a>and <a href="/more"> <strong>more</strong> </a> now.</p>`)
+	want := `See [the guide](https://example.com/docs) and [**more**](https://example.com/more) now.`
+	if r.Markdown != want {
+		t.Fatalf("want %q, got %q", want, r.Markdown)
+	}
+}
+
+func TestLinkPreservesTrailingHardBreak(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		want   string
+	}{
+		{`<p><a href="/docs">guide<br></a>after</p>`, "[guide\\\n](https://example.com/docs)after"},
+		{`<p><a href="/docs">guide<br> </a>after</p>`, "[guide\\\n](https://example.com/docs) after"},
+	} {
+		r := convertHTML(t, tc.source)
+		if r.Markdown != tc.want {
+			t.Errorf("source %q: want %q, got %q", tc.source, tc.want, r.Markdown)
+		}
+	}
+}
+
 func TestOrderedListAttributesAndIndentation(t *testing.T) {
 	r := convertHTML(t, `<ol start="9"><li>nine</li><li>ten<ul><li>nested</li></ul></li></ol>`)
 	want := "9. nine\n10. ten\n    - nested"
