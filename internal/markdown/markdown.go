@@ -522,16 +522,31 @@ func cellAlignment(n *html.Node) string {
 	return ""
 }
 func (c *converter) fallbackTable(n *html.Node) *Node {
-	var items []*Node
+	type rowItem struct {
+		item     *Node
+		level    int
+		hasLevel bool
+	}
+	var rows []rowItem
 	var walk func(*html.Node)
 	walk = func(x *html.Node) {
 		if c.skip(x) {
 			return
 		}
 		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "tr") {
-			v := clean(c.nodeText(x))
-			if v != "" {
-				items = append(items, &Node{Kind: ListItem, Children: []*Node{{Kind: Paragraph, Children: []*Node{{Kind: Text, Value: v}}}}})
+			// Layout tables commonly wrap each logical record in another table.
+			// A wrapper row has no content of its own, so descend rather than
+			// collapsing all of its nested rows into one enormous list item.
+			if hasDescendantRow(x) && !c.tableRowHasOwnRenderableContent(x) {
+				for ch := x.FirstChild; ch != nil; ch = ch.NextSibling {
+					walk(ch)
+				}
+				return
+			}
+			item := &Node{Kind: ListItem, Children: c.mixedItem(x)}
+			if clean(plain(item)) != "" {
+				level, ok := tableRowLevel(x)
+				rows = append(rows, rowItem{item: item, level: level, hasLevel: ok})
 			}
 			return
 		}
@@ -540,7 +555,113 @@ func (c *converter) fallbackTable(n *html.Node) *Node {
 		}
 	}
 	walk(n)
-	return &Node{Kind: UnorderedList, Children: items}
+
+	root := &Node{Kind: UnorderedList}
+	lists := []*Node{root}
+	var previous *Node
+	previousLevel := 0
+	for _, row := range rows {
+		level := 0
+		if row.hasLevel {
+			level = row.level
+			if level < 0 {
+				level = 0
+			}
+			// A missing ancestor must not create empty list levels.
+			if previous == nil || level > previousLevel+1 {
+				level = previousLevel + 1
+			}
+		}
+		if !row.hasLevel || previous == nil {
+			level = 0
+		}
+		if level > previousLevel && previous != nil {
+			nested := &Node{Kind: UnorderedList}
+			previous.Children = append(previous.Children, nested)
+			lists = append(lists[:previousLevel+1], nested)
+		} else if level < len(lists)-1 {
+			lists = lists[:level+1]
+		}
+		lists[level].Children = append(lists[level].Children, row.item)
+		previous, previousLevel = row.item, level
+	}
+	return root
+}
+
+// tableRowHasOwnRenderableContent distinguishes a presentational wrapper row
+// from a record which happens to contain a table. Nested tables are ignored,
+// but visible text and non-text Markdown content outside them keep the row.
+func (c *converter) tableRowHasOwnRenderableContent(n *html.Node) bool {
+	var text []string
+	renderable := false
+	var walk func(*html.Node)
+	walk = func(x *html.Node) {
+		if renderable || c.skip(x) {
+			return
+		}
+		if x != n && x.Type == html.ElementNode && strings.EqualFold(x.Data, "table") {
+			return
+		}
+		if x.Type == html.TextNode {
+			text = append(text, x.Data)
+			return
+		}
+		if x.Type == html.ElementNode {
+			switch strings.ToLower(x.Data) {
+			case "hr", "pre":
+				renderable = true
+				return
+			case "img":
+				if c.cfg.Images && c.imageCount < c.cfg.MaxImages && clean(attr(x, "alt")) != "" {
+					_, renderable = c.safeURL(attr(x, "src"))
+				}
+				return
+			}
+		}
+		for ch := x.FirstChild; ch != nil; ch = ch.NextSibling {
+			walk(ch)
+		}
+	}
+	walk(n)
+	return renderable || clean(strings.Join(text, " ")) != ""
+}
+
+func hasDescendantRow(n *html.Node) bool {
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		if ch.Type == html.ElementNode && strings.EqualFold(ch.Data, "tr") || hasDescendantRow(ch) {
+			return true
+		}
+	}
+	return false
+}
+
+// tableRowLevel recognizes common explicit hierarchy annotations on the row
+// or its leading cell. It intentionally does not inspect arbitrary descendants:
+// attributes such as aria-level may describe a heading inside a cell rather
+// than the row's relationship to adjacent records.
+func tableRowLevel(n *html.Node) (int, bool) {
+	if level, ok := hierarchyLevel(n); ok {
+		return level, true
+	}
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		if ch.Type != html.ElementNode || (!strings.EqualFold(ch.Data, "td") && !strings.EqualFold(ch.Data, "th")) {
+			continue
+		}
+		return hierarchyLevel(ch)
+	}
+	return 0, false
+}
+
+func hierarchyLevel(n *html.Node) (int, bool) {
+	for _, key := range []string{"aria-level", "data-depth", "data-level", "depth", "indent"} {
+		if level, ok := parseIntegerAttr(n, key); ok {
+			if key == "aria-level" {
+				level--
+			}
+			return level, true
+		}
+	}
+	return 0, false
 }
 
 func (c *converter) safeURL(raw string) (string, bool) {

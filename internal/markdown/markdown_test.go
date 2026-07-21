@@ -172,6 +172,38 @@ func TestTableWithoutHeaderOrWithSpansFallsBack(t *testing.T) {
 	}
 }
 
+func TestFallbackTableIgnoresContentAriaLevels(t *testing.T) {
+	r := convertHTML(t, `<table><tr><td><h2 aria-level="2">A</h2></td></tr><tr><td><h3 aria-level="3">B</h3></td></tr></table>`)
+	want := "- ## A\n- ### B"
+	if r.Markdown != want {
+		t.Fatalf("content aria-level changed row hierarchy: want %q, got %q", want, r.Markdown)
+	}
+}
+
+func TestNestedTableWrapperRetainsOwnImage(t *testing.T) {
+	r := convertHTML(t, `<table><tr><td><img src="/badge.png" alt="Badge"><table><tr><td>Nested row</td></tr></table></td></tr></table>`)
+	want := "- ![Badge](https://example.com/badge.png)\n  - Nested row"
+	if r.Markdown != want {
+		t.Fatalf("wrapper image was not retained: want %q, got %q", want, r.Markdown)
+	}
+}
+
+func TestNestedLayoutTablePreservesRecordsAndHierarchy(t *testing.T) {
+	source := `<table><tr><td><table class="records">` +
+		`<tr><td><table><tr><td indent="0"></td><td><div><a href="/user/a">alice</a> <time>1 hour ago</time></div><div><p>First post.</p><p>More detail.</p></div></td></tr></table></td></tr>` +
+		`<tr><td><table><tr><td indent="1"></td><td><div><a href="/user/b">bob</a> <time>30 minutes ago</time></div><div><p>A reply.</p></div></td></tr></table></td></tr>` +
+		`<tr><td><table><tr><td indent="0"></td><td><div><a href="/user/c">carol</a> <time>now</time></div><div><p>Another root.</p></div></td></tr></table></td></tr>` +
+		`</table></td></tr></table>`
+	r := convertHTML(t, source)
+	want := "- [alice](https://example.com/user/a) 1 hour ago\n  First post.\n  More detail.\n  - [bob](https://example.com/user/b) 30 minutes ago\n    A reply.\n- [carol](https://example.com/user/c) now\n  Another root."
+	if r.Markdown != want {
+		t.Fatalf("want:\n%s\ngot:\n%s", want, r.Markdown)
+	}
+	if strings.Count(r.Markdown, "\n- ")+strings.Count(r.Markdown, "\n  - ")+1 != 3 {
+		t.Fatalf("records were flattened: %q", r.Markdown)
+	}
+}
+
 func TestDefinitionListPreservesGroupsAndFormatting(t *testing.T) {
 	r := convertHTML(t, `<dl><dt>One</dt><dd><em>First</em> <a href="/one">link</a></dd><dt>Two</dt><dd>Second</dd></dl>`)
 	want := "- **One**: *First* [link](https://example.com/one)\n- **Two**: Second"
