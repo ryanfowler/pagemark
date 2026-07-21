@@ -43,6 +43,8 @@ type analysis struct {
 	diag                                            *Diagnostics
 	irrelevant                                      map[*html.Node]bool
 	discussionBodyDescendants                       map[*html.Node]uint8
+	articleCommentRegions, commentRecordCounts      map[*html.Node]uint8
+	semanticArticleDescendants                      map[*html.Node]uint8
 	microdataArticleRecords                         map[*html.Node]bool
 	dominantMicrodataArticle                        *html.Node
 }
@@ -1021,11 +1023,11 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 		// Recommendations are page furniture, not records belonging to the page's
 		// subject. In particular, do not let every heading and excerpt in a card
 		// grid cast another vote for a listing classification.
-		if inferenceAuxiliaryBlock(b.node) || a.hasMicrodataArticleRecordAncestor(b.node) {
+		if a.inferenceAuxiliaryBlock(b.node) || a.hasMicrodataArticleRecordAncestor(b.node) {
 			continue
 		}
 		counts[b.kind]++
-		article := primaryArticleAncestor(b.node)
+		article := a.primaryArticleAncestor(b.node)
 		if article == nil && nodeWithin(b.node, a.dominantMicrodataArticle) {
 			article = a.dominantMicrodataArticle
 		}
@@ -1199,7 +1201,7 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 
 func (a *analysis) extractMetadata() {
 	m := metadata{}
-	microdataEntities, repeatedMicrodataArticles, microdataRecords, dominantMicrodata := pageMicrodataEntities(a.root)
+	microdataEntities, repeatedMicrodataArticles, microdataRecords, dominantMicrodata := a.pageMicrodataEntities(a.root)
 	m.microdataListing = repeatedMicrodataArticles
 	a.microdataArticleRecords = microdataRecords
 	a.dominantMicrodataArticle = dominantMicrodata
@@ -1404,7 +1406,7 @@ func (a *analysis) readJSONLD(raw string, m *metadata) {
 	}
 	visit(v, true)
 }
-func pageMicrodataEntities(root *html.Node) (map[*html.Node]bool, bool, map[*html.Node]bool, *html.Node) {
+func (a *analysis) pageMicrodataEntities(root *html.Node) (map[*html.Node]bool, bool, map[*html.Node]bool, *html.Node) {
 	entities := map[*html.Node]bool{}
 	records := map[*html.Node]bool{}
 	var articleEntities []*html.Node
@@ -1412,7 +1414,7 @@ func pageMicrodataEntities(root *html.Node) (map[*html.Node]bool, bool, map[*htm
 		if n.Type != html.ElementNode || (!hasHTMLAttr(n, "itemscope") && attrValue(n, "itemtype") == "") {
 			return true
 		}
-		if inferenceAuxiliaryBlock(n) || !isPageMicrodataEntity(n) {
+		if a.inferenceAuxiliaryBlock(n) || !isPageMicrodataEntity(n) {
 			return true
 		}
 		entities[n] = true
@@ -1724,7 +1726,7 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 	}
 	irrelevant := irrelevantNode(n)
 	if !irrelevant && a.pageType == PageTypeArticle {
-		irrelevant = articleAuxiliaryNode(n) || a.microdataArticleRecords[n]
+		irrelevant = a.articleAuxiliaryNode(n) || a.microdataArticleRecords[n]
 	}
 	if !irrelevant && isTrailingArticleCardRegion(n) {
 		// A final article classification makes trailing cards auxiliary. When
@@ -1742,12 +1744,15 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 // other pages. This is intentionally independent of the eventual page type so
 // recommendation cards cannot cause that type to become a listing in the first
 // place.
-func inferenceAuxiliaryBlock(n *html.Node) bool {
+func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 	for p := n; p != nil; p = p.Parent {
 		if irrelevantNode(p) {
 			return true
 		}
-		if articleAuxiliaryNode(p) && (!isRelatedCardRegion(p) || hasSemanticArticleBeforeOrAround(p)) {
+		// Comment regions are profile-specific and remain page-type evidence here;
+		// otherwise an automatically detected discussion would lose its posts.
+		if a.articleAuxiliaryNode(p) && !a.isArticleCommentRegion(p) &&
+			(!isRelatedCardRegion(p) || hasSemanticArticleBeforeOrAround(p)) {
 			return true
 		}
 		if isPromotionalCardRegion(p) && isTrailingArticleCardRegion(p) {
@@ -1757,10 +1762,10 @@ func inferenceAuxiliaryBlock(n *html.Node) bool {
 	return false
 }
 
-func primaryArticleAncestor(n *html.Node) *html.Node {
+func (a *analysis) primaryArticleAncestor(n *html.Node) *html.Node {
 	for p := n; p != nil; p = p.Parent {
 		if p.Type == html.ElementNode && strings.EqualFold(p.Data, "article") &&
-			!containsAny(elementTokens(p), "card") && !inferenceAuxiliaryBlock(p) {
+			!containsAny(elementTokens(p), "card") && !a.inferenceAuxiliaryBlock(p) {
 			return p
 		}
 	}
@@ -1774,9 +1779,12 @@ func isRelatedCardRegion(n *html.Node) bool {
 	return containsAny(elementTokens(n), "related", "recommended", "recommendations") && countMarkedCards(n, 2) >= 2
 }
 
-func articleAuxiliaryNode(n *html.Node) bool {
+func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
+	}
+	if a.isArticleCommentRegion(n) {
+		return true
 	}
 	tag := strings.ToLower(n.Data)
 	label := normalizedLabel(firstNonempty(attrValue(n, "aria-label"), attrValue(n, "title")))
@@ -1807,6 +1815,213 @@ func articleAuxiliaryNode(n *html.Node) bool {
 		}
 	}
 	return false
+}
+
+// isArticleCommentRegion identifies the region containing reader responses,
+// rather than trying to filter every reply, like, and form control separately.
+// These signals are deliberately article-only: the same records are primary
+// content when the selected profile is a discussion.
+func (a *analysis) isArticleCommentRegion(n *html.Node) (result bool) {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	if state := a.articleCommentRegions[n]; state != 0 {
+		return state == 2
+	}
+	if a.articleCommentRegions == nil {
+		a.articleCommentRegions = make(map[*html.Node]uint8)
+	}
+	defer func() {
+		if result {
+			a.articleCommentRegions[n] = 2
+		} else {
+			a.articleCommentRegions[n] = 1
+		}
+	}()
+
+	tokens := elementTokens(n)
+	// Plural comment markers and established comment-list conventions are
+	// sufficiently specific on article pages. “Responses” and “replies” are
+	// ambiguous (for example, survey responses), so they require the heading or
+	// repeated-record evidence checked below.
+	if containsAny(tokens, "comments", "commentlist") ||
+		(containsAny(tokens, "comment") && containsAny(tokens, "list")) {
+		return true
+	}
+
+	// A schema.org Comment is unambiguous even when the publisher uses neutral
+	// classes. Excluding the record also removes controls nested in that record.
+	if containsAny(strings.ToLower(attrValue(n, "itemtype")), "comment") {
+		return true
+	}
+	if isPlausibleCommentRecord(n) && !hasNonCardArticleAncestor(n) &&
+		a.belongsToRepeatedCommentRecords(n) {
+		return true
+	}
+
+	tag := strings.ToLower(n.Data)
+	switch tag {
+	case "div", "section", "aside", "ol", "ul":
+		if isCommentRegionHeading(firstRegionHeading(n)) {
+			return true
+		}
+		// Some systems omit a comments heading and expose only repeated records.
+		// Do not apply this to a layout that also contains the semantic article;
+		// otherwise a page-wide wrapper could hide the article along with replies.
+		if !a.hasSemanticArticleDescendant(n) && a.commentRecordCount(n) >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func isCommentRegionHeading(label string) bool {
+	if label == "comments" || label == "responses" || label == "replies" ||
+		label == "leave a comment" || label == "leave a reply" {
+		return true
+	}
+	fields := strings.Fields(label)
+	return len(fields) >= 2 && allASCIIDigits(fields[0]) &&
+		(fields[1] == "comments" || fields[1] == "responses" || fields[1] == "replies")
+}
+
+func (a *analysis) belongsToRepeatedCommentRecords(n *html.Node) bool {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if a.commentRecordCount(p) >= 2 {
+			return true
+		}
+		if p.Type == html.ElementNode && (strings.EqualFold(p.Data, "main") || strings.EqualFold(p.Data, "body")) {
+			break
+		}
+	}
+	return false
+}
+
+// commentRecordCount returns a count capped at two, which is all region
+// classification needs. Caching each subtree keeps ancestor checks linear in
+// the size of the DOM rather than rescanning descendants for every block.
+func (a *analysis) commentRecordCount(root *html.Node) int {
+	if root == nil || hardHidden(root) {
+		return 0
+	}
+	if state := a.commentRecordCounts[root]; state != 0 {
+		return int(state - 1)
+	}
+	if a.commentRecordCounts == nil {
+		a.commentRecordCounts = make(map[*html.Node]uint8)
+	}
+	count := 0
+	for ch := root.FirstChild; ch != nil && count < 2; ch = ch.NextSibling {
+		if hardHidden(ch) || ch.Type != html.ElementNode {
+			continue
+		}
+		if isPlausibleCommentRecord(ch) {
+			count++
+			continue // Nested reply/body wrappers belong to the same record.
+		}
+		count += a.commentRecordCount(ch)
+		if count > 2 {
+			count = 2
+		}
+	}
+	a.commentRecordCounts[root] = uint8(count + 1)
+	return count
+}
+
+func isPlausibleCommentRecord(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	// Record markers belong on content containers. In particular, links and
+	// buttons commonly use .reply but are controls, not repeated replies.
+	switch strings.ToLower(n.Data) {
+	case "article", "li", "div", "section":
+	default:
+		return false
+	}
+	if containsAny(strings.ToLower(attrValue(n, "itemtype")), "comment") {
+		return true
+	}
+	if !containsAny(elementTokens(n), "comment", "reply") {
+		return false
+	}
+	// A paragraph or quotation supplies record shape even for a very short
+	// response such as “Thanks!”. The rune threshold remains a fallback for
+	// div-based comments that use text and <br> instead of prose elements.
+	return hasCommentRecordProse(n) || commentRecordTextLength(n) >= 20
+}
+
+func hasCommentRecordProse(n *html.Node) bool {
+	found := false
+	walk(n, func(x *html.Node) bool {
+		if found || hardHidden(x) {
+			return false
+		}
+		if x != n && x.Type == html.ElementNode {
+			switch strings.ToLower(x.Data) {
+			case "a", "button", "form", "input", "select", "textarea":
+				return false
+			case "p", "blockquote":
+				if commentRecordTextLength(x) > 0 {
+					found = true
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func commentRecordTextLength(n *html.Node) int {
+	var text strings.Builder
+	walk(n, func(x *html.Node) bool {
+		if hardHidden(x) {
+			return false
+		}
+		if x != n && x.Type == html.ElementNode {
+			switch strings.ToLower(x.Data) {
+			case "a", "button", "form", "input", "select", "textarea":
+				return false
+			}
+		}
+		if x.Type == html.TextNode {
+			text.WriteString(x.Data)
+			text.WriteByte(' ')
+		}
+		return true
+	})
+	return utf8.RuneCountInString(normalizeText(text.String()))
+}
+
+func (a *analysis) hasSemanticArticleDescendant(root *html.Node) bool {
+	if root == nil || hardHidden(root) {
+		return false
+	}
+	if state := a.semanticArticleDescendants[root]; state != 0 {
+		return state == 2
+	}
+	if a.semanticArticleDescendants == nil {
+		a.semanticArticleDescendants = make(map[*html.Node]uint8)
+	}
+	found := false
+	for ch := root.FirstChild; ch != nil && !found; ch = ch.NextSibling {
+		if hardHidden(ch) || ch.Type != html.ElementNode {
+			continue
+		}
+		if strings.EqualFold(ch.Data, "article") &&
+			!containsAny(elementTokens(ch), "card", "comment", "reply") {
+			found = true
+			break
+		}
+		found = a.hasSemanticArticleDescendant(ch)
+	}
+	if found {
+		a.semanticArticleDescendants[root] = 2
+	} else {
+		a.semanticArticleDescendants[root] = 1
+	}
+	return found
 }
 
 // isTrailingArticleCardRegion catches unlabeled recommendation and newsletter
