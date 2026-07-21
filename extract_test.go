@@ -1,0 +1,256 @@
+package pagemark
+
+import (
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+)
+
+func TestExtractStructuresAndSafety(t *testing.T) {
+	html := `<!doctype html><html lang="en"><head><title>API Guide</title><base href="https://example.com/docs/"><meta name="author" content="Ada"><link rel="canonical" href="guide"></head><body>
+<header><nav><a href="/">Home</a></nav></header><main><h1>API Guide</h1><p>Use <strong>this API</strong> safely.</p><pre>go test
+` + "```" + `</pre><ul><li>First</li><li>Second</li></ul><table><tr><th>Name</th><th>Value</th></tr><tr><td>Mode</td><td>Fast</td></tr></table><p><a href="next?utm_source=x">Next page</a> <a href="javascript:alert(1)">bad</a></p></main><footer>Copyright</footer></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/start", WithPageType(PageTypeDocumentation), WithDiagnostics(true), WithURLPolicy(URLPolicy{Schemes: []string{"https"}, MaxLength: 1000, StripTracking: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# API Guide", "**this API** safely", "````\ngo test\n```\n````", "- First", "| Name | Value |", "https://example.com/docs/next"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("Markdown does not contain %q:\n%s", want, doc.Markdown)
+		}
+	}
+	for _, bad := range []string{"Home", "Copyright", "javascript:", "utm_source", "<table"} {
+		if strings.Contains(doc.Markdown, bad) {
+			t.Errorf("Markdown contains %q:\n%s", bad, doc.Markdown)
+		}
+	}
+	if doc.Title != "API Guide" || doc.Author != "Ada" || doc.CanonicalURL != "https://example.com/docs/guide" {
+		t.Fatalf("bad metadata: %#v", doc)
+	}
+	if doc.Diagnostics == nil || len(doc.Diagnostics.RejectedLinks) == 0 {
+		t.Fatal("missing rejected-link diagnostic")
+	}
+}
+
+func TestDistributedServiceAndHiddenContent(t *testing.T) {
+	html := `<html><body><header><p>Site menu words</p></header><section><h1>Cloud Service</h1><p>Build and ship applications quickly.</p></section><section><h2>Features</h2><p>Reliable storage and simple deployment.</p></section><div hidden><p>secret</p></div><div class="cookie-banner"><p>Accept all cookies now.</p></div><section><h2>FAQ</h2><p>Cancel at any time.</p></section></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/service", WithPageType(PageTypeService))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Cloud Service", "Build and ship", "Features", "Reliable storage", "FAQ", "Cancel at any time"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing %q: %s", want, doc.Text)
+		}
+	}
+	for _, bad := range []string{"Site menu", "secret", "Accept all cookies"} {
+		if strings.Contains(doc.Text, bad) {
+			t.Errorf("included %q: %s", bad, doc.Text)
+		}
+	}
+}
+
+func TestHiddenDescendantsNeverAppear(t *testing.T) {
+	html := `<main><h1>Visibility</h1><p>Visible <span hidden>INLINE_SECRET</span><span aria-hidden="true">ARIA_SECRET</span><span inert>INERT_SECRET</span><span style="display: none">DISPLAY_SECRET</span><span style="visibility: hidden">VISIBILITY_SECRET</span> text.</p><ul><li>Shown</li><li hidden>LIST_SECRET</li><li>Item <span hidden>LIST_INLINE_SECRET</span>end</li></ul><table><tr><th>Name</th><th>Value</th></tr><tr><td>Shown</td><td><span hidden>TABLE_SECRET</span>Safe</td></tr><tr hidden><td>ROW_SECRET</td><td>Bad</td></tr></table></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com", WithPageType(PageTypeDocumentation), WithDiagnostics(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Visible", "Shown", "Safe"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing %q: %s", want, doc.Text)
+		}
+	}
+	for _, secret := range []string{"INLINE_SECRET", "ARIA_SECRET", "INERT_SECRET", "DISPLAY_SECRET", "VISIBILITY_SECRET", "LIST_SECRET", "LIST_INLINE_SECRET", "TABLE_SECRET", "ROW_SECRET"} {
+		if strings.Contains(doc.Markdown, secret) || strings.Contains(doc.Text, secret) {
+			t.Errorf("hidden value %q appeared: %s", secret, doc.Markdown)
+		}
+	}
+}
+
+func TestNestedAndMultiParagraphList(t *testing.T) {
+	html := `<main><h1>Steps</h1><ul><li>Parent<p>More detail.</p><ul><li>Child</li></ul></li></ul></main>`
+	doc, err := ExtractBytes([]byte(html), "", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "- Parent\n  More detail.\n  - Child"
+	if !strings.Contains(doc.Markdown, want) {
+		t.Fatalf("want %q in:\n%s", want, doc.Markdown)
+	}
+	if strings.Count(doc.Text, "Child") != 1 {
+		t.Fatalf("nested item was duplicated: %q", doc.Text)
+	}
+}
+
+func TestDiscussionKeepsComments(t *testing.T) {
+	html := `<main><h1>How?</h1><article class="post"><p>The question has useful detail.</p></article><article class="comment"><h2>Ada</h2><p>Use the documented method.</p><button>Reply</button></article><article class="comment"><h2>Bob</h2><p>This answer adds an example.</p></article></main>`
+	d, e := ExtractBytes([]byte(html), "https://example.com/forum/1", WithPageType(PageTypeDiscussion))
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, s := range []string{"The question", "Use the documented", "This answer"} {
+		if !strings.Contains(d.Text, s) {
+			t.Errorf("missing %q", s)
+		}
+	}
+	if strings.Contains(d.Text, "Reply") {
+		t.Error("included control")
+	}
+}
+
+func TestMalformedHTTPDestinationIsPlainText(t *testing.T) {
+	doc, err := ExtractBytes([]byte(`<main><p><a href="http:opaque">Label</a> and useful text.</p></main>`), "https://example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(doc.Markdown, "](http:") || !strings.Contains(doc.Text, "Label") {
+		t.Fatal(doc.Markdown)
+	}
+}
+
+func TestURLControlCharactersAreRejected(t *testing.T) {
+	html := `<main><p><a href="java&#10;script:bad">scheme</a> <a href="https://exa&#9;mple.com/path">host</a> <a href="https://example.com/a&#10;b">path</a> <a href="https://example.com/?a=one&#13;two">query</a> <a href="/safe">safe</a></p></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/base", WithDiagnostics(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Links) != 1 || doc.Links[0].URL != "https://example.com/safe" {
+		t.Fatalf("unsafe links were retained: %#v", doc.Links)
+	}
+	if len(doc.Diagnostics.RejectedLinks) < 4 {
+		t.Fatalf("missing rejected links: %#v", doc.Diagnostics.RejectedLinks)
+	}
+	for _, label := range []string{"scheme", "host", "path", "query", "safe"} {
+		if !strings.Contains(doc.Text, label) {
+			t.Errorf("missing plain label %q", label)
+		}
+	}
+}
+
+func TestTruncationKeepsViewsConsistent(t *testing.T) {
+	html := `<main><h1>Title</h1><p><a href="/kept">Kept link</a> <img src="/kept.png" alt="Kept image"> short text.</p><p><a href="/omitted">Omitted link</a> <img src="/omitted.png" alt="Omitted image"> ` + strings.Repeat("long ", 30) + `</p></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com", WithPageType(PageTypeDocumentation), WithIncludeImages(true), WithMaxOutputBytes(180))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Markdown, "Kept link") || strings.Contains(doc.Markdown, "Omitted") {
+		t.Fatalf("unexpected output:\n%s", doc.Markdown)
+	}
+	if len(doc.Links) != 1 || strings.Contains(doc.Links[0].URL, "omitted") {
+		t.Fatalf("links do not match output: %#v", doc.Links)
+	}
+	if len(doc.Images) != 1 || strings.Contains(doc.Images[0].URL, "omitted") {
+		t.Fatalf("images do not match output: %#v", doc.Images)
+	}
+	for _, section := range doc.Sections {
+		if strings.Contains(section.Heading, "Omitted") || strings.Contains(section.Text, "Omitted") {
+			t.Fatalf("sections do not match output: %#v", doc.Sections)
+		}
+	}
+	if strings.Contains(doc.Text, "Omitted") {
+		t.Fatalf("text does not match output: %q", doc.Text)
+	}
+}
+
+func TestLimitsAndInvalidURL(t *testing.T) {
+	_, e := ExtractBytes([]byte(strings.Repeat("x", 20)), "", WithMaxInputBytes(10))
+	var le *LimitError
+	if !errors.As(e, &le) {
+		t.Fatalf("got %v", e)
+	}
+	_, e = ExtractBytes([]byte(`<p>text</p>`), "/relative")
+	if !errors.Is(e, ErrInvalidURL) {
+		t.Fatalf("got %v", e)
+	}
+	_, e = ExtractBytes([]byte(`<div><div><p>deep text here</p></div></div>`), "", WithMaxDepth(2))
+	if !errors.Is(e, ErrLimit) {
+		t.Fatalf("got %v", e)
+	}
+}
+
+func TestOutputLimitIsUTF8Safe(t *testing.T) {
+	html := `<main><h1>Title</h1><p>` + strings.Repeat("界", 100) + `</p><p>later block</p></main>`
+	d, e := ExtractBytes([]byte(html), "", WithMaxOutputBytes(40))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(d.Markdown) > 40 {
+		t.Fatalf("output has %d bytes", len(d.Markdown))
+	}
+	if !strings.Contains(d.Markdown, "Title") {
+		t.Fatal(d.Markdown)
+	}
+	if len(d.Warnings) == 0 {
+		t.Fatal("missing truncation warning")
+	}
+}
+
+func TestMetadataFallback(t *testing.T) {
+	html := `<html><head><title>Client App</title><meta name="description" content="Content supplied for clients without script execution."></head><body><div id="app"></div></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/app", WithDiagnostics(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Diagnostics.Fallback != "metadata" || !strings.Contains(doc.Text, "Content supplied") {
+		t.Fatalf("%#v", doc)
+	}
+}
+
+func TestJSONLDMetadata(t *testing.T) {
+	html := `<html><head><script type="application/ld+json">{"@type":"Article","author":{"name":"Grace"},"datePublished":"2024-01-02"}</script></head><body><main><h1>Long article title</h1><p>This is enough useful article text for extraction and metadata verification.</p></main></body></html>`
+	d, e := ExtractBytes([]byte(html), "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if d.Author != "Grace" || d.PublishedTime != "2024-01-02" || d.PageType != PageTypeArticle {
+		t.Fatalf("%#v", d)
+	}
+}
+
+func TestConcurrentExtraction(t *testing.T) {
+	src := []byte(`<main><h1>Title</h1><p>A useful paragraph has enough content.</p></main>`)
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d, e := ExtractBytes(src, "")
+			if e != nil || d.Text == "" {
+				t.Errorf("result=%v error=%v", d, e)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func FuzzExtract(f *testing.F) {
+	f.Add([]byte(`<main><p>Hello world with useful text.</p></main>`))
+	f.Add([]byte(`<p><a href="java&#x0a;script:x">bad</a></p>`))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if len(b) > 100000 {
+			t.Skip()
+		}
+		d, e := ExtractBytes(b, "https://example.com", WithMaxInputBytes(100000), WithMaxElements(5000), WithMaxDepth(100), WithMaxOutputBytes(10000))
+		if e == nil {
+			if len(d.Markdown) > 10000 {
+				t.Fatal("output limit")
+			}
+			low := strings.ToLower(d.Markdown)
+			if strings.Contains(low, "](javascript:") || strings.Contains(low, "](data:") || strings.Contains(low, "\n<script") {
+				t.Fatal("unsafe output")
+			}
+		}
+	})
+}
+
+func BenchmarkExtract(b *testing.B) {
+	src := []byte(`<main><h1>Guide</h1><p>This guide contains useful content for a benchmark.</p><pre>go test ./...</pre></main>`)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, e := ExtractBytes(src, "https://example.com/docs"); e != nil {
+			b.Fatal(e)
+		}
+	}
+}

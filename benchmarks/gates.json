@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "unsafe_url_violations_max": 0,
+  "raw_html_violations_max": 0,
+  "valid_input_panics_max": 0,
+  "wcxb_dev_f1_min": 0.75,
+  "article_f1_min": 0.84,
+  "page_type_regression_max": 0.02
+}
