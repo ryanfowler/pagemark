@@ -43,11 +43,13 @@ type analysis struct {
 	diag                                            *Diagnostics
 	irrelevant                                      map[*html.Node]bool
 	discussionBodyDescendants                       map[*html.Node]uint8
+	microdataArticleRecords                         map[*html.Node]bool
+	dominantMicrodataArticle                        *html.Node
 }
 
 type metadata struct {
 	title, description, author, site, language, published, canonical, schemaType string
-	articlePublished                                                             bool
+	articlePublished, articleType, headline, microdataListing                    bool
 }
 
 // Extract reads UTF-8 HTML and extracts useful content. Callers must decode
@@ -581,6 +583,18 @@ func adjacentSelectedBlockDistance(blocks []block, headingIndex int, selected []
 	return 0
 }
 
+func nodeWithin(n, ancestor *html.Node) bool {
+	if ancestor == nil {
+		return false
+	}
+	for p := n; p != nil; p = p.Parent {
+		if p == ancestor {
+			return true
+		}
+	}
+	return false
+}
+
 func representedBySelection(n *html.Node, selected []*html.Node) bool {
 	for _, root := range selected {
 		for p := n; p != nil; p = p.Parent {
@@ -798,9 +812,26 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	discussionRecords := map[*html.Node]bool{}
 	discussionContext := false
 	documentationContext := false
-	proseChars, codeChars := 0, 0
+	proseChars, codeChars, primaryArticleProse := 0, 0, 0
+	primaryArticles := map[*html.Node]bool{}
 	for _, b := range a.blocks {
+		// Recommendations are page furniture, not records belonging to the page's
+		// subject. In particular, do not let every heading and excerpt in a card
+		// grid cast another vote for a listing classification.
+		if inferenceAuxiliaryBlock(b.node) || a.hasMicrodataArticleRecordAncestor(b.node) {
+			continue
+		}
 		counts[b.kind]++
+		article := primaryArticleAncestor(b.node)
+		if article == nil && nodeWithin(b.node, a.dominantMicrodataArticle) {
+			article = a.dominantMicrodataArticle
+		}
+		if article != nil {
+			primaryArticles[article] = true
+			if b.kind == "p" {
+				primaryArticleProse += utf8.RuneCountInString(b.text)
+			}
+		}
 		switch b.kind {
 		case "p":
 			proseChars += utf8.RuneCountInString(b.text)
@@ -856,15 +887,10 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 		// evidence, including on sites that use neutral /guide/ URLs.
 		scores[PageTypeDocumentation] += 3
 	}
-	sectionCount, articleCount := 0, 0
+	sectionCount := 0
 	walk(a.root, func(n *html.Node) bool {
-		if n.Type == html.ElementNode {
-			switch strings.ToLower(n.Data) {
-			case "section":
-				sectionCount++
-			case "article":
-				articleCount++
-			}
+		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "section") {
+			sectionCount++
 		}
 		return true
 	})
@@ -877,7 +903,7 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	if len(linkedRecords) >= 4 {
 		scores[PageTypeListing] += 2
 	}
-	if strings.Contains(schema, "article") || strings.Contains(schema, "news") {
+	if a.meta.articleType || strings.Contains(schema, "article") || strings.Contains(schema, "news") {
 		scores[PageTypeArticle] += 5
 	}
 	if strings.Contains(schema, "product") {
@@ -886,7 +912,7 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	if strings.Contains(schema, "discussion") || strings.Contains(schema, "question") {
 		scores[PageTypeDiscussion] += 5
 	}
-	if strings.Contains(schema, "itemlist") {
+	if strings.Contains(schema, "itemlist") || a.meta.microdataListing {
 		scores[PageTypeListing] += 5
 	}
 	// Prefer a canonical path when present: the supplied URL may be an archive,
@@ -917,7 +943,16 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	if !documentationContext && counts["p"] >= 4 && proseChars >= 600 && proseChars >= codeChars {
 		scores[PageTypeArticle] += 2
 	}
-	if articleCount == 1 && counts["p"] >= 2 {
+	if len(primaryArticles) == 1 && (counts["p"] >= 2 || primaryArticleProse >= 120) {
+		scores[PageTypeArticle] += 2
+	}
+	// A headline attached to a real prose region is much stronger than headings
+	// repeated by cards. Require body text so a bare schema template does not
+	// turn an archive into an article.
+	if a.meta.headline && (primaryArticleProse >= 120 || proseChars >= 300) {
+		scores[PageTypeArticle] += 2
+	}
+	if primaryArticleProse >= 300 {
 		scores[PageTypeArticle] += 2
 	}
 	if a.meta.articlePublished {
@@ -961,6 +996,10 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 
 func (a *analysis) extractMetadata() {
 	m := metadata{}
+	microdataEntities, repeatedMicrodataArticles, microdataRecords, dominantMicrodata := pageMicrodataEntities(a.root)
+	m.microdataListing = repeatedMicrodataArticles
+	a.microdataArticleRecords = microdataRecords
+	a.dominantMicrodataArticle = dominantMicrodata
 	walk(a.root, func(n *html.Node) bool {
 		if n.Type != html.ElementNode {
 			return true
@@ -973,6 +1012,20 @@ func (a *analysis) extractMetadata() {
 			m.title = normalizeText(nodeText(n))
 		}
 		itemprop := strings.ToLower(attrValue(n, "itemprop"))
+		itemtype := strings.ToLower(attrValue(n, "itemtype"))
+		pageEntity := microdataEntities[n]
+		if itemtype != "" && pageEntity && m.schemaType == "" {
+			m.schemaType = itemtype
+		}
+		if pageEntity && containsAny(itemtype, "article", "newsarticle", "blogposting") {
+			m.articleType = true
+		}
+		if containsAny(itemprop, "headline") && isPageMicrodataProperty(n, microdataEntities) {
+			m.headline = true
+			if m.title == "" {
+				m.title = normalizeText(firstNonempty(attrValue(n, "content"), nodeText(n)))
+			}
+		}
 		if itemprop == "name" && hasAncestorItemprop(n, "author") {
 			if visible := normalizeText(nodeText(n)); visible != "" {
 				m.author = visible
@@ -1010,6 +1063,9 @@ func (a *analysis) extractMetadata() {
 				}
 			case "og:type":
 				m.schemaType = v
+				if strings.EqualFold(v, "article") || strings.Contains(strings.ToLower(v), "article") {
+					m.articleType = true
+				}
 			}
 		}
 		if tag == "link" && containsAny(strings.ToLower(attrValue(n, "rel")), "canonical") {
@@ -1027,19 +1083,71 @@ func (a *analysis) readJSONLD(raw string, m *metadata) {
 	if json.Unmarshal([]byte(raw), &v) != nil {
 		return
 	}
-	var visit func(any)
-	visit = func(x any) {
+
+	// Resolve @id references used by a page entity's mainEntity without treating
+	// every sibling in @graph as page-level metadata.
+	entities := map[string]map[string]any{}
+	var index func(any)
+	index = func(x any) {
 		switch z := x.(type) {
 		case []any:
 			for _, q := range z {
-				visit(q)
+				index(q)
 			}
 		case map[string]any:
-			typeName, _ := z["@type"].(string)
-			if typeName != "" && m.schemaType == "" {
-				m.schemaType = typeName
+			if id, ok := z["@id"].(string); ok && id != "" {
+				// JSON-LD permits one entity to be split across several node objects.
+				// Merge complementary properties so resolution is independent of the
+				// order of full entities, partial entities, and @id-only references.
+				if existing := entities[id]; existing == nil {
+					entities[id] = z
+				} else {
+					for key, value := range z {
+						if _, exists := existing[key]; !exists {
+							existing[key] = value
+						}
+					}
+				}
 			}
-			articleType := strings.Contains(strings.ToLower(typeName), "article") || strings.EqualFold(typeName, "NewsArticle") || strings.EqualFold(typeName, "BlogPosting")
+			for _, q := range z {
+				index(q)
+			}
+		}
+	}
+	index(v)
+
+	activeIDs := map[string]bool{}
+	var visit func(any, bool)
+	visit = func(x any, pageEntity bool) {
+		switch z := x.(type) {
+		case []any:
+			for _, q := range z {
+				visit(q, pageEntity)
+			}
+		case map[string]any:
+			var typeNames []string
+			switch types := z["@type"].(type) {
+			case string:
+				typeNames = append(typeNames, types)
+			case []any:
+				for _, value := range types {
+					if name, ok := value.(string); ok {
+						typeNames = append(typeNames, name)
+					}
+				}
+			}
+			articleType := false
+			for _, typeName := range typeNames {
+				if strings.Contains(strings.ToLower(typeName), "article") || strings.EqualFold(typeName, "BlogPosting") {
+					articleType = true
+				}
+			}
+			if pageEntity && len(typeNames) > 0 && m.schemaType == "" {
+				m.schemaType = typeNames[0]
+			}
+			if pageEntity && articleType {
+				m.articleType = true
+			}
 			if m.author == "" {
 				switch au := z["author"].(type) {
 				case string:
@@ -1050,14 +1158,15 @@ func (a *analysis) readJSONLD(raw string, m *metadata) {
 					}
 				}
 			}
-			if s, ok := z["datePublished"].(string); ok && (m.published == "" || articleType) {
+			if s, ok := z["datePublished"].(string); ok && (m.published == "" || (pageEntity && articleType)) {
 				m.published = s
-				if articleType {
+				if pageEntity && articleType {
 					m.articlePublished = true
 				}
 			}
-			if m.title == "" {
-				if s, ok := z["headline"].(string); ok {
+			if s, ok := z["headline"].(string); pageEntity && ok && normalizeText(s) != "" {
+				m.headline = true
+				if m.title == "" {
 					m.title = normalizeText(s)
 				}
 			}
@@ -1066,13 +1175,189 @@ func (a *analysis) readJSONLD(raw string, m *metadata) {
 					m.description = normalizeText(s)
 				}
 			}
-			for _, q := range z {
-				visit(q)
+			for key, q := range z {
+				if key == "@graph" {
+					visit(q, false)
+					continue
+				}
+				mainEntity := strings.EqualFold(key, "mainEntity")
+				if mainEntity {
+					if ref, ok := q.(map[string]any); ok {
+						id, hasID := ref["@id"].(string)
+						currentID, _ := z["@id"].(string)
+						if hasID && entities[id] != nil && id != currentID {
+							if !activeIDs[id] {
+								activeIDs[id] = true
+								visit(entities[id], true)
+								delete(activeIDs, id)
+							}
+							continue
+						}
+					}
+				}
+				visit(q, mainEntity)
 			}
 		}
 	}
-	visit(v)
+	visit(v, true)
 }
+func pageMicrodataEntities(root *html.Node) (map[*html.Node]bool, bool, map[*html.Node]bool, *html.Node) {
+	entities := map[*html.Node]bool{}
+	records := map[*html.Node]bool{}
+	var articleEntities []*html.Node
+	walk(root, func(n *html.Node) bool {
+		if n.Type != html.ElementNode || (!hasHTMLAttr(n, "itemscope") && attrValue(n, "itemtype") == "") {
+			return true
+		}
+		if inferenceAuxiliaryBlock(n) || !isPageMicrodataEntity(n) {
+			return true
+		}
+		entities[n] = true
+		itemtype := strings.ToLower(attrValue(n, "itemtype"))
+		if containsAny(itemtype, "article", "newsarticle", "blogposting") {
+			articleEntities = append(articleEntities, n)
+		}
+		return true
+	})
+	// Listing records are frequently wrapped individually (for example,
+	// ul > li > article), so immediate parent equality is not meaningful. More
+	// than one unnested article scope in the primary content region represents a
+	// repeated set; only an explicitly designated mainEntity remains eligible
+	// to supply page-level article metadata.
+	if len(articleEntities) < 2 {
+		return entities, false, records, nil
+	}
+
+	// A substantial primary article may have one or more sibling teaser cards.
+	// Those cards are records from other pages, but they do not make this page a
+	// listing. Prefer an explicit mainEntity; otherwise require exactly one
+	// substantial non-record article and record-shaped remaining entities.
+	var dominant *html.Node
+	for _, entity := range articleEntities {
+		if containsAny(strings.ToLower(attrValue(entity, "itemprop")), "mainentity") {
+			if dominant != nil {
+				dominant = nil
+				break
+			}
+			dominant = entity
+		}
+	}
+	if dominant == nil {
+		for _, entity := range articleEntities {
+			if !microdataRecordShape(entity) && substantialArticleScope(entity) {
+				if dominant != nil {
+					dominant = nil
+					break
+				}
+				dominant = entity
+			}
+		}
+	}
+	if dominant != nil {
+		onlyRecordsRemain := true
+		for _, entity := range articleEntities {
+			if entity != dominant && !microdataRecordShape(entity) {
+				onlyRecordsRemain = false
+				break
+			}
+		}
+		if onlyRecordsRemain {
+			for _, entity := range articleEntities {
+				if entity != dominant {
+					entities[entity] = false
+					records[entity] = true
+				}
+			}
+			return entities, false, records, dominant
+		}
+	}
+
+	for _, entity := range articleEntities {
+		if !containsAny(strings.ToLower(attrValue(entity, "itemprop")), "mainentity") {
+			entities[entity] = false
+			records[entity] = true
+		}
+	}
+	return entities, true, records, nil
+}
+
+func microdataRecordShape(n *html.Node) bool {
+	for p := n; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		tag := strings.ToLower(p.Data)
+		if tag == "aside" || tag == "li" || containsAny(elementTokens(p), "card", "result", "item", "teaser", "archive") {
+			return true
+		}
+		if p != n && (tag == "main" || tag == "article") {
+			break
+		}
+	}
+	return false
+}
+
+func substantialArticleScope(n *html.Node) bool {
+	paragraphs, chars := 0, 0
+	walk(n, func(x *html.Node) bool {
+		if x != n && x.Type == html.ElementNode && hasHTMLAttr(x, "itemscope") {
+			return false
+		}
+		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "p") {
+			paragraphs++
+			chars += utf8.RuneCountInString(normalizeText(nodeText(x)))
+		}
+		return true
+	})
+	return chars >= 120 || (paragraphs >= 2 && chars >= 80)
+}
+
+func isPageMicrodataEntity(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	// Records in a collection describe linked items, not the containing page.
+	for p := n; p != nil; p = p.Parent {
+		property := strings.ToLower(attrValue(p, "itemprop"))
+		if containsAny(property, "itemlistelement", "recommendation", "recommendations") ||
+			(p != n && containsAny(strings.ToLower(attrValue(p, "itemtype")), "itemlist")) {
+			return false
+		}
+	}
+	if containsAny(strings.ToLower(attrValue(n, "itemprop")), "mainentity") {
+		return true
+	}
+	// A nested scoped entity is normally an author, image, card, or other
+	// property of the outer page entity. It must not become page-level metadata.
+	for p := n.Parent; p != nil; p = p.Parent {
+		if hasHTMLAttr(p, "itemscope") || attrValue(p, "itemtype") != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func isPageMicrodataProperty(n *html.Node, entities map[*html.Node]bool) bool {
+	for p := n; p != nil; p = p.Parent {
+		if hasHTMLAttr(p, "itemscope") || attrValue(p, "itemtype") != "" {
+			return entities[p]
+		}
+	}
+	return true
+}
+
+func hasHTMLAttr(n *html.Node, key string) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	for _, attr := range n.Attr {
+		if strings.EqualFold(attr.Key, key) {
+			return true
+		}
+	}
+	return false
+}
+
 func hasAncestorItemprop(n *html.Node, value string) bool {
 	for p := n.Parent; p != nil; p = p.Parent {
 		if containsAny(strings.ToLower(attrValue(p, "itemprop")), value) {
@@ -1133,7 +1418,7 @@ var auxiliaryLabels = map[string]bool{
 	"on this page": true, "in this article": true, "table of contents": true,
 	"more news": true, "latest news": true, "related news": true,
 	"related articles": true, "related content": true, "recommended for you": true,
-	"you may also like": true, "read next": true, "more stories": true,
+	"you may also like": true, "you may also enjoy": true, "read next": true, "more stories": true,
 	"latest stories": true, "see also": true,
 }
 
@@ -1236,7 +1521,7 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 	}
 	irrelevant := irrelevantNode(n)
 	if !irrelevant && a.pageType == PageTypeArticle {
-		irrelevant = articleAuxiliaryNode(n)
+		irrelevant = articleAuxiliaryNode(n) || a.microdataArticleRecords[n]
 	}
 	if !irrelevant && isTrailingArticleCardRegion(n) {
 		// A final article classification makes trailing cards auxiliary. When
@@ -1248,6 +1533,42 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 	}
 	a.irrelevant[n] = irrelevant
 	return irrelevant
+}
+
+// inferenceAuxiliaryBlock identifies regions whose repeated records describe
+// other pages. This is intentionally independent of the eventual page type so
+// recommendation cards cannot cause that type to become a listing in the first
+// place.
+func inferenceAuxiliaryBlock(n *html.Node) bool {
+	for p := n; p != nil; p = p.Parent {
+		if irrelevantNode(p) {
+			return true
+		}
+		if articleAuxiliaryNode(p) && (!isRelatedCardRegion(p) || hasSemanticArticleBeforeOrAround(p)) {
+			return true
+		}
+		if isPromotionalCardRegion(p) && isTrailingArticleCardRegion(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func primaryArticleAncestor(n *html.Node) *html.Node {
+	for p := n; p != nil; p = p.Parent {
+		if p.Type == html.ElementNode && strings.EqualFold(p.Data, "article") &&
+			!containsAny(elementTokens(p), "card") && !inferenceAuxiliaryBlock(p) {
+			return p
+		}
+	}
+	return nil
+}
+
+func isRelatedCardRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	return containsAny(elementTokens(n), "related", "recommended", "recommendations") && countMarkedCards(n, 2) >= 2
 }
 
 func articleAuxiliaryNode(n *html.Node) bool {
@@ -1265,7 +1586,22 @@ func articleAuxiliaryNode(n *html.Node) bool {
 		}
 	}
 	if tag == "div" || tag == "section" || tag == "aside" {
-		return isArticleAuxiliaryLabel(firstRegionHeading(n))
+		if isArticleAuxiliaryLabel(firstRegionHeading(n)) {
+			return true
+		}
+		tokens := elementTokens(n)
+		itemtype := strings.ToLower(attrValue(n, "itemtype"))
+		// Author profiles commonly precede the article in a sidebar. Microformats
+		// use h-card while schema.org uses Person; neither is article content when
+		// the profile sits outside the semantic article.
+		personProfile := containsAny(itemtype, "person") || containsAny(tokens, "h-card")
+		if !hasNonCardArticleAncestor(n) && (personProfile ||
+			(tag == "aside" && containsAny(tokens, "author", "byline", "bio", "profile"))) {
+			return true
+		}
+		if isRelatedCardRegion(n) {
+			return true
+		}
 	}
 	return false
 }
@@ -1275,6 +1611,15 @@ func articleAuxiliaryNode(n *html.Node) bool {
 // ordinary boilerplate penalties. Requiring multiple explicitly marked cards
 // and an earlier/containing semantic article avoids treating a single useful
 // card or a listing page as auxiliary content.
+func hasNonCardArticleAncestor(n *html.Node) bool {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type == html.ElementNode && strings.EqualFold(p.Data, "article") && !containsAny(elementTokens(p), "card") {
+			return true
+		}
+	}
+	return false
+}
+
 func isTrailingArticleCardRegion(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
@@ -1296,6 +1641,25 @@ func isPromotionalCardRegion(n *html.Node) bool {
 		return true
 	}
 	return isArticleAuxiliaryLabel(firstRegionHeading(n))
+}
+
+func countMarkedCards(root *html.Node, limit int) int {
+	count := 0
+	var visit func(*html.Node)
+	visit = func(parent *html.Node) {
+		for ch := parent.FirstChild; ch != nil && count < limit; ch = ch.NextSibling {
+			if hardHidden(ch) || ch.Type != html.ElementNode {
+				continue
+			}
+			if containsAny(elementTokens(ch), "card") {
+				count++
+				continue
+			}
+			visit(ch)
+		}
+	}
+	visit(root)
+	return count
 }
 
 func countArticleCards(root *html.Node, limit int) int {
@@ -1344,6 +1708,15 @@ func hasSemanticArticleBeforeOrAround(n *html.Node) bool {
 			if found {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func (a *analysis) hasMicrodataArticleRecordAncestor(n *html.Node) bool {
+	for p := n; p != nil; p = p.Parent {
+		if a.microdataArticleRecords[p] {
+			return true
 		}
 	}
 	return false
