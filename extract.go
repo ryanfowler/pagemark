@@ -45,7 +45,10 @@ type analysis struct {
 	discussionBodyDescendants                       map[*html.Node]uint8
 }
 
-type metadata struct{ title, description, author, site, language, published, canonical, schemaType string }
+type metadata struct {
+	title, description, author, site, language, published, canonical, schemaType string
+	articlePublished                                                             bool
+}
 
 // Extract reads UTF-8 HTML and extracts useful content. Callers must decode
 // input in other character encodings before calling Extract.
@@ -792,16 +795,32 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	counts := map[string]int{}
 	productRecords := map[*html.Node]bool{}
 	linkedRecords := map[*html.Node]bool{}
+	discussionRecords := map[*html.Node]bool{}
+	discussionContext := false
+	documentationContext := false
+	proseChars, codeChars := 0, 0
 	for _, b := range a.blocks {
 		counts[b.kind]++
+		switch b.kind {
+		case "p":
+			proseChars += utf8.RuneCountInString(b.text)
+		case "pre":
+			codeChars += utf8.RuneCountInString(b.text)
+		}
 		tok := elementTokens(b.node)
 		for p := b.node.Parent; p != nil; p = p.Parent {
 			if p.Type == html.ElementNode {
 				tok += " " + elementTokens(p)
 			}
 		}
-		if containsAny(tok, "comment", "answer", "thread", "discussion", "post", "topic", "reply") {
-			scores[PageTypeDiscussion] += 2
+		// A comment or post class is also commonly used for annotations and blog
+		// article wrappers. Count distinct records rather than every block below
+		// such a wrapper, and treat unambiguous discussion vocabulary separately.
+		if record := nearestTokenAncestor(b.node, "comment", "answer", "post", "reply", "message"); record != nil {
+			discussionRecords[record] = true
+		}
+		if containsAny(tok, "answer", "thread", "discussion", "topic", "reply", "message") {
+			discussionContext = true
 		}
 		if containsAny(tok, "product", "price", "sku") {
 			scores[PageTypeProduct] += 1.5
@@ -810,7 +829,7 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 			}
 		}
 		if containsAny(tok, "docs", "documentation", "api", "reference") {
-			scores[PageTypeDocumentation] += 1.5
+			documentationContext = true
 		}
 		if containsAny(tok, "card", "result", "listing", "item") {
 			scores[PageTypeListing]++
@@ -819,10 +838,33 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 			}
 		}
 	}
-	sectionCount := 0
+	if discussionContext {
+		scores[PageTypeDiscussion] += 2
+	}
+	switch len(discussionRecords) {
+	case 0:
+	case 1:
+		scores[PageTypeDiscussion] += .5
+	default:
+		// Repeated comment-like records are useful evidence, but are capped so
+		// annotations cannot overwhelm publication and dominant-prose signals.
+		scores[PageTypeDiscussion] += math.Min(4, float64(len(discussionRecords)))
+	}
+	if documentationContext {
+		// Ancestor tokens describe one region, not each descendant block. An
+		// explicit documentation container is nevertheless strong page-level
+		// evidence, including on sites that use neutral /guide/ URLs.
+		scores[PageTypeDocumentation] += 3
+	}
+	sectionCount, articleCount := 0, 0
 	walk(a.root, func(n *html.Node) bool {
-		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "section") {
-			sectionCount++
+		if n.Type == html.ElementNode {
+			switch strings.ToLower(n.Data) {
+			case "section":
+				sectionCount++
+			case "article":
+				articleCount++
+			}
 		}
 		return true
 	})
@@ -847,20 +889,51 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	if strings.Contains(schema, "itemlist") {
 		scores[PageTypeListing] += 5
 	}
+	// Prefer a canonical path when present: the supplied URL may be an archive,
+	// redirect, or tracking URL that says little about the page itself.
+	if canonical, err := url.Parse(a.meta.canonical); err == nil && canonical.Path != "" {
+		urlPath = strings.ToLower(canonical.Path)
+	}
+	title := strings.ToLower(a.meta.title)
 	if counts["pre"] > 1 {
-		scores[PageTypeDocumentation] += 3
+		// Code is common in technical articles. It is strong documentation
+		// evidence only when it dominates the prose structure.
+		if counts["p"] <= 2 || codeChars > proseChars {
+			scores[PageTypeDocumentation] += 2
+		} else {
+			scores[PageTypeDocumentation] += .5
+		}
 	}
 	if counts["table"] > 0 {
 		scores[PageTypeProduct]++
 		scores[PageTypeDocumentation]++
 	}
-	if counts["p"] > 4 {
+	// Paragraph volume is ambiguous inside an explicit documentation region;
+	// guides should not become articles merely because they explain a topic in
+	// prose. Strong article metadata and structure below can still prevail.
+	if !documentationContext && counts["p"] > 4 {
 		scores[PageTypeArticle] += 2
+	}
+	if !documentationContext && counts["p"] >= 4 && proseChars >= 600 && proseChars >= codeChars {
+		scores[PageTypeArticle] += 2
+	}
+	if articleCount == 1 && counts["p"] >= 2 {
+		scores[PageTypeArticle] += 2
+	}
+	if a.meta.articlePublished {
+		// Generic <time> elements occur on comments, products, and events. Only
+		// publication metadata with article-specific provenance gets this bonus.
+		scores[PageTypeArticle] += 4
 	}
 	if strings.Contains(urlPath, "/docs") || strings.Contains(urlPath, "/api") {
 		scores[PageTypeDocumentation] += 3
 	}
-	title := strings.ToLower(a.meta.title)
+	if containsAny(title, "documentation", "reference") || (containsAny(title, "api") && containsAny(title, "guide", "reference")) {
+		scores[PageTypeDocumentation] += 2
+	}
+	if articleURLPath(urlPath) {
+		scores[PageTypeArticle] += 2
+	}
 	if strings.Contains(urlPath, "forum") || strings.Contains(urlPath, "question") || strings.Contains(urlPath, "issue") || strings.Contains(urlPath, "/t/") || strings.Contains(title, " forum") {
 		scores[PageTypeDiscussion] += 3
 	}
@@ -922,7 +995,12 @@ func (a *analysis) extractMetadata() {
 				}
 			case "og:site_name":
 				m.site = v
-			case "article:published_time", "datepublished":
+			case "article:published_time":
+				if v != "" {
+					m.published = v
+					m.articlePublished = true
+				}
+			case "datepublished":
 				if m.published == "" {
 					m.published = v
 				}
@@ -957,9 +1035,11 @@ func (a *analysis) readJSONLD(raw string, m *metadata) {
 				visit(q)
 			}
 		case map[string]any:
-			if t, ok := z["@type"].(string); ok && m.schemaType == "" {
-				m.schemaType = t
+			typeName, _ := z["@type"].(string)
+			if typeName != "" && m.schemaType == "" {
+				m.schemaType = typeName
 			}
+			articleType := strings.Contains(strings.ToLower(typeName), "article") || strings.EqualFold(typeName, "NewsArticle") || strings.EqualFold(typeName, "BlogPosting")
 			if m.author == "" {
 				switch au := z["author"].(type) {
 				case string:
@@ -970,9 +1050,10 @@ func (a *analysis) readJSONLD(raw string, m *metadata) {
 					}
 				}
 			}
-			if m.published == "" {
-				if s, ok := z["datePublished"].(string); ok {
-					m.published = s
+			if s, ok := z["datePublished"].(string); ok && (m.published == "" || articleType) {
+				m.published = s
+				if articleType {
+					m.articlePublished = true
 				}
 			}
 			if m.title == "" {
@@ -1387,6 +1468,28 @@ func isHeadingTag(tag string) bool {
 func normalizedLabel(s string) string {
 	s = strings.ToLower(normalizeText(s))
 	return strings.Trim(s, " .:;!?–—-\u00a0")
+}
+
+func articleURLPath(path string) bool {
+	parts := strings.FieldsFunc(strings.ToLower(path), func(r rune) bool { return r == '/' })
+	for i, part := range parts {
+		if i+1 < len(parts) && (part == "blog" || part == "article" || part == "articles" || part == "posts") {
+			return true
+		}
+		if i+2 < len(parts) && len(part) == 4 && len(parts[i+1]) == 2 && allASCIIDigits(part) && allASCIIDigits(parts[i+1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func allASCIIDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 func nearestTokenAncestor(n *html.Node, values ...string) *html.Node {
