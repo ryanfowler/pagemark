@@ -822,7 +822,7 @@ func renderBlock(n *Node, depth int) string {
 		if l > 6 {
 			l = 6
 		}
-		return strings.Repeat("#", l) + " " + renderInline(n.Children)
+		return strings.Repeat("#", l) + " " + renderInlineWithHardBreak(n.Children, " ")
 	case Paragraph:
 		return renderInline(n.Children)
 	case CodeBlock:
@@ -905,6 +905,12 @@ func needsLiteralOrdinals(n *Node) bool {
 }
 
 func renderInline(ns []*Node) string {
+	return renderInlineWithHardBreak(ns, "\\\n")
+}
+
+// renderInlineWithHardBreak lets contexts that cannot contain Markdown line
+// breaks, such as ATX headings, render an HTML break as horizontal whitespace.
+func renderInlineWithHardBreak(ns []*Node, hardBreak string) string {
 	var b strings.Builder
 	for _, n := range ns {
 		var value string
@@ -912,9 +918,9 @@ func renderInline(ns []*Node) string {
 		case Text:
 			value = escape(n.Value)
 		case Emphasis:
-			value = renderDelimited(renderInline(n.Children), "*")
+			value = renderDelimited(renderInlineWithHardBreak(n.Children, hardBreak), "*")
 		case Strong:
-			value = renderDelimited(renderInline(n.Children), "**")
+			value = renderDelimited(renderInlineWithHardBreak(n.Children, hardBreak), "**")
 		case InlineCode:
 			v := n.Value
 			tick := "`"
@@ -935,12 +941,12 @@ func renderInline(ns []*Node) string {
 			code.WriteString(tick)
 			value = code.String()
 		case Link:
-			label := renderInline(n.Children)
+			label := renderInlineWithHardBreak(n.Children, hardBreak)
 			value = renderWrapped(label, "[", "]("+markdownDestination(n.URL)+")")
 		case Image:
 			value = "![" + escape(n.Value) + "](" + markdownDestination(n.URL) + ")"
 		case HardBreak:
-			value = "\\\n"
+			value = hardBreak
 		}
 		writeInline(&b, value)
 	}
