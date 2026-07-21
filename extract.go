@@ -40,6 +40,7 @@ type analysis struct {
 	meta                                            metadata
 	diag                                            *Diagnostics
 	irrelevant                                      map[*html.Node]bool
+	discussionBodyDescendants                       map[*html.Node]uint8
 }
 
 type metadata struct{ title, description, author, site, language, published, canonical, schemaType string }
@@ -169,7 +170,11 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	if len(selected) == 0 {
 		return nil, ErrNoContent
 	}
-	exclude := func(n *html.Node) bool { return a.isIrrelevantNode(n) || repeatedExcluded[n] }
+	exclude := func(n *html.Node) bool {
+		discussionAuxiliary := pageType == PageTypeDiscussion &&
+			(isDiscussionControlNode(n) || a.hasStandaloneMessageAncestor(n))
+		return a.isIrrelevantNode(n) || repeatedExcluded[n] || discussionAuxiliary
+	}
 	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: append([]string(nil), o.urlPolicy.Schemes...), AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude}
 	mr := markdown.Convert(selected, cfg)
 	if strings.TrimSpace(mr.Text) == "" {
@@ -258,14 +263,25 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 			return
 		}
 		tag := strings.ToLower(n.Data)
-		if isBlockTag(tag) {
+		// Forum software often puts a post's prose directly in a generic div,
+		// using <br> (and occasionally <hr>) rather than paragraphs. Prefer the
+		// innermost explicitly marked body over its wrappers and enclosing table.
+		hasPostBody := a.hasDiscussionBodyDescendant(n)
+		if isDiscussionBodyContainer(n) && !hasPostBody {
+			text := normalizeText(nodeText(n))
+			if text != "" {
+				a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: n, kind: "generic", text: text})
+				return
+			}
+		}
+		if isBlockTag(tag) && !hasPostBody {
 			text := normalizeText(nodeText(n))
 			if text != "" || tag == "hr" {
 				a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: n, kind: tag, text: text})
 				return
 			}
 		}
-		if isGenericContainer(tag) && !hasBlockDescendant(n) {
+		if isGenericContainer(tag) && !hasPostBody && !hasBlockDescendant(n) {
 			text := normalizeText(nodeText(n))
 			if utf8.RuneCountInString(text) >= 12 {
 				a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: n, kind: "generic", text: text})
@@ -285,6 +301,41 @@ func isGenericContainer(tag string) bool {
 	}
 	return false
 }
+
+func isDiscussionBodyContainer(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || !isGenericContainer(strings.ToLower(n.Data)) {
+		return false
+	}
+	tokens := elementTokens(n)
+	bodyToken := containsAny(tokens, "body", "content", "text")
+	return bodyToken && containsAny(tokens, "post", "comment", "answer", "reply", "message")
+}
+
+func (a *analysis) hasDiscussionBodyDescendant(n *html.Node) bool {
+	if n == nil {
+		return false
+	}
+	if state := a.discussionBodyDescendants[n]; state != 0 {
+		return state == 2
+	}
+	if a.discussionBodyDescendants == nil {
+		a.discussionBodyDescendants = make(map[*html.Node]uint8)
+	}
+	// Mark false before descending. HTML trees cannot normally cycle, but doing
+	// so also prevents malformed caller-built trees from recursing forever.
+	a.discussionBodyDescendants[n] = 1
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		if hardHidden(ch) {
+			continue
+		}
+		if isDiscussionBodyContainer(ch) || a.hasDiscussionBodyDescendant(ch) {
+			a.discussionBodyDescendants[n] = 2
+			return true
+		}
+	}
+	return false
+}
+
 func hasBlockDescendant(n *html.Node) bool {
 	found := false
 	for ch := n.FirstChild; ch != nil && !found; ch = ch.NextSibling {
@@ -370,6 +421,21 @@ func (a *analysis) score(pt PageType) {
 		}
 		if b.kind == "p" && (pt == PageTypeArticle || pt == PageTypeDocumentation || pt == PageTypeDiscussion || pt == PageTypeProduct || pt == PageTypeService) {
 			score += 0.35
+		}
+		if pt == PageTypeDiscussion && isDiscussionBodyContainer(b.node) {
+			score += 3
+			b.reasons = append(b.reasons, "discussion post body")
+		}
+		if pt == PageTypeDiscussion && a.hasStandaloneMessageAncestor(b.node) {
+			// A standalone .message is a UI notice, not a message-body convention.
+			// Make this absolute rather than relative: deeply nested thread/main
+			// context must not raise it above the selection threshold.
+			score = -8
+			b.reasons = append(b.reasons, "discussion notice")
+		}
+		if pt == PageTypeDiscussion && !isDiscussionBodyContainer(b.node) && isDiscussionControlBlock(b.node) {
+			score -= 6
+			b.reasons = append(b.reasons, "discussion controls")
 		}
 		if density > .75 && pt != PageTypeListing && pt != PageTypeCollection && pt != PageTypeDocumentation {
 			score -= 2
@@ -1067,6 +1133,45 @@ func containsAny(s string, values ...string) bool {
 	}
 	return false
 }
+func isDiscussionControlNode(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	tokens := elementTokens(n)
+	return containsAny(tokens, "rating", "forumjump") ||
+		(containsAny(tokens, "thread") && containsAny(tokens, "tools"))
+}
+
+func isDiscussionControlBlock(n *html.Node) bool {
+	found := false
+	walk(n, func(x *html.Node) bool {
+		if hardHidden(x) {
+			return false
+		}
+		if isDiscussionControlNode(x) {
+			found = true
+			return false
+		}
+		return !found
+	})
+	return found
+}
+
+func (a *analysis) hasStandaloneMessageAncestor(n *html.Node) bool {
+	for p := n; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode || !isGenericContainer(strings.ToLower(p.Data)) {
+			continue
+		}
+		tokens := elementTokens(p)
+		if containsAny(tokens, "message") &&
+			!containsAny(tokens, "body", "content", "text", "post", "comment", "answer", "reply") &&
+			!a.hasDiscussionBodyDescendant(p) {
+			return true
+		}
+	}
+	return false
+}
+
 func controls(n *html.Node) int {
 	v := 0
 	walk(n, func(x *html.Node) bool {
