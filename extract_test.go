@@ -465,6 +465,55 @@ func TestNonArticleShareAndReadMoreSectionsAreRetained(t *testing.T) {
 	}
 }
 
+func TestTitleEquivalentDecorations(t *testing.T) {
+	tests := []struct {
+		name, heading, title, site string
+		want                       bool
+	}{
+		{"site suffix with tilde", "Article title", "Article title ~ Site Name", "Site Name", true},
+		{"site suffix with pipe", "Article title", "Article title | Site Name", "Site Name", true},
+		{"site prefix with em dash", "Article title", "Site Name — Article title", "Site Name", true},
+		{"year and site suffix", "Article title", "Article title in 2026 ~ Site Name", "Site Name", true},
+		{"different subtitle", "Article title", "Article title | A different story", "Site Name", false},
+		{"different title", "Article title", "Article title with additional details", "Site Name", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := titleEquivalent(tc.heading, tc.title, tc.site); got != tc.want {
+				t.Fatalf("titleEquivalent(%q, %q, %q) = %v, want %v", tc.heading, tc.title, tc.site, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestArticleDecoratedBrowserTitleDoesNotDuplicateH1(t *testing.T) {
+	html := `<html><head><title>95 reasons for having your own website in 2026 ~ Bell Kiosk</title><meta property="og:site_name" content="Bell Kiosk"><meta property="og:type" content="article"></head><body><article><h1>95 reasons for having your own website</h1><p>Having an independent website gives its owner a durable place to publish useful work and communicate directly with readers.</p><p>The article continues with practical reasons and examples that make the primary prose substantial enough for extraction.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://bellkiosk.website/blog/reasons-to-website.html", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(doc.Markdown, "# 95 reasons for having your own website") != 1 {
+		t.Fatalf("decorated browser title duplicated the visible heading:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Markdown, "in 2026 ~ Bell Kiosk") {
+		t.Fatalf("decorated browser title was emitted instead of the visible heading:\n%s", doc.Markdown)
+	}
+}
+
+func TestArticleHeadingWinsWhenSiteNameDiffersFromTitleBranding(t *testing.T) {
+	html := `<html><head><title>Article title | NYTimes.com</title><meta property="og:site_name" content="The New York Times"><meta property="og:type" content="article"></head><body><article><h1>Article title</h1><p>This selected article paragraph contains enough substantive reporting to establish that the enclosed heading labels the primary prose.</p><p>Further article content ensures the source heading and body are retained by extraction.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(doc.Text, "Article title") != 1 {
+		t.Fatalf("differently branded browser title duplicated the article heading: %q", doc.Text)
+	}
+	if strings.Contains(doc.Text, "NYTimes.com") {
+		t.Fatalf("browser title was emitted instead of the structural article heading: %q", doc.Text)
+	}
+}
+
 func TestArticleKeepsAdjacentH1BelowScoreThreshold(t *testing.T) {
 	html := `<html><head><title>Agent swarms and the new model economics | Cursor</title></head><body><header><h1>Agent swarms and the new model economics</h1></header><article><p>There are important changes in the cost of coordinating many capable software agents.</p><p>The article body remains selected because it contains useful explanatory prose.</p></article></body></html>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
