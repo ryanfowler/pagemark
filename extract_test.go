@@ -200,6 +200,123 @@ func TestAuxiliarySectionsAndCallsToActionAreRemoved(t *testing.T) {
 	}
 }
 
+func TestArticleKeepsAdjacentH1BelowScoreThreshold(t *testing.T) {
+	html := `<html><head><title>Agent swarms and the new model economics | Cursor</title></head><body><header><h1>Agent swarms and the new model economics</h1></header><article><p>There are important changes in the cost of coordinating many capable software agents.</p><p>The article body remains selected because it contains useful explanatory prose.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Agent swarms and the new model economics\n") {
+		t.Fatalf("article title was not restored before its body:\n%s", doc.Markdown)
+	}
+	if strings.Count(doc.Text, "Agent swarms and the new model economics") != 1 {
+		t.Fatalf("article title was duplicated: %q", doc.Text)
+	}
+}
+
+func TestArticleDoesNotRestoreAdjacentSiteMasthead(t *testing.T) {
+	html := `<html><head><title>Actual Story</title></head><body><header><h1>Example News</h1></header><article><p>The actual story body contains useful reporting and explanatory prose.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Actual Story\n") {
+		t.Fatalf("metadata title was not used:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Text, "Example News") {
+		t.Fatalf("adjacent site masthead was restored as an article title: %q", doc.Text)
+	}
+}
+
+func TestArticleSitePrefixedTitleDoesNotDuplicateH1(t *testing.T) {
+	html := `<html><head><title>Cursor | Agent swarms and the new model economics</title></head><body><header><h1>Agent swarms and the new model economics</h1></header><article><p>There are important changes in the cost of coordinating many capable software agents.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(doc.Text, "Agent swarms and the new model economics") != 1 {
+		t.Fatalf("site-prefixed browser title duplicated the source h1: %q", doc.Text)
+	}
+	if strings.Contains(doc.Text, "Cursor |") {
+		t.Fatalf("site-prefixed metadata title was unnecessarily injected: %q", doc.Text)
+	}
+}
+
+func TestArticlePrependsMetadataTitleWhenHeadingIsMissing(t *testing.T) {
+	html := `<html><head><title>How to pack ternary numbers in 8-bit bytes</title></head><body><article><p>There are 3 possible values for each ternary digit in the packed representation.</p><p>The remaining article explains the encoding and decoding procedure in detail.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# How to pack ternary numbers in 8-bit bytes\n") {
+		t.Fatalf("metadata title was not prepended:\n%s", doc.Markdown)
+	}
+}
+
+func TestOversizedMetadataTitleDoesNotHideArticleBody(t *testing.T) {
+	html := `<html><head><title>` + strings.Repeat("A very long title ", 10) + `</title></head><body><article><p>Short valid article body.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithMaxOutputBytes(30))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "Short valid article body.") {
+		t.Fatalf("oversized synthesized title hid the article body: %q", doc.Markdown)
+	}
+}
+
+func TestRestoredSourceTitleDoesNotConsumeBodyBudget(t *testing.T) {
+	html := `<html><head><title>Short source title</title></head><body><header><h1>Short source title</h1></header><article><p>Body fits by itself.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithMaxOutputBytes(30))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "Body fits by itself.") {
+		t.Fatalf("restored source title consumed the article budget: %q", doc.Markdown)
+	}
+	if strings.Contains(doc.Text, "Short source title") {
+		t.Fatalf("source title should have been omitted to retain body content: %q", doc.Markdown)
+	}
+}
+
+func TestFittingMetadataTitleDoesNotConsumeBodyBudget(t *testing.T) {
+	html := `<html><head><title>123456789012345678901</title></head><body><article><p>Short valid body.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithMaxOutputBytes(30))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "Short valid body.") {
+		t.Fatalf("fitting synthesized title consumed the article budget: %q", doc.Markdown)
+	}
+	if strings.Contains(doc.Text, "123456789012345678901") {
+		t.Fatalf("synthetic title should have been omitted to retain body content: %q", doc.Markdown)
+	}
+}
+
+func TestSyntheticTitleAndSectionHeadingDoNotDisplaceProse(t *testing.T) {
+	html := `<html><head><title>Small metadata title</title></head><body><article><h2>Part</h2><p>Prose survives alone.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithMaxOutputBytes(32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "Prose survives alone.") {
+		t.Fatalf("headings displaced all substantive article content: %q", doc.Markdown)
+	}
+	if strings.Contains(doc.Text, "Small metadata title") {
+		t.Fatalf("synthetic title should have been omitted to retain prose: %q", doc.Markdown)
+	}
+}
+
+func TestArticleDoesNotDuplicateSurvivingTitleEquivalentHeading(t *testing.T) {
+	html := `<html><head><title>Refactoring English</title></head><body><article><h2>Refactoring English</h2><p>This article has enough useful prose to remain in the selected output.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(doc.Text, "Refactoring English") != 1 {
+		t.Fatalf("surviving title-equivalent heading was duplicated: %q", doc.Text)
+	}
+}
+
 func TestNestedAuxiliaryRegionDoesNotExcludeSharedLayout(t *testing.T) {
 	html := `<main><div class="layout"><aside><h2>On this page</h2><ul><li>Overview</li></ul></aside><article><h1>Actual article</h1><p>The article contains the relevant details that readers need.</p></article></div></main>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))

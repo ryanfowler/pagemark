@@ -68,13 +68,14 @@ type Config struct {
 	Exclude func(*html.Node) bool
 }
 type Result struct {
-	Markdown, Text string
-	Links          []LinkValue
-	Images         []ImageValue
-	Sections       []SectionValue
-	Rejected       []string
-	EmittedBlocks  int
-	Truncated      bool
+	Markdown, Text       string
+	Links                []LinkValue
+	Images               []ImageValue
+	Sections             []SectionValue
+	Rejected             []string
+	EmittedBlocks        int
+	EmittedContentBlocks int
+	Truncated            bool
 }
 type LinkValue struct{ Text, URL string }
 type ImageValue struct{ Alt, URL string }
@@ -731,10 +732,16 @@ func render(doc *Node, max int) Result {
 		}
 	}
 	links, images := retainedMedia(keptNodes)
+	contentBlocks := 0
+	for _, n := range keptNodes {
+		if n.Kind != Heading && n.Kind != ThematicBreak {
+			contentBlocks++
+		}
+	}
 	return Result{
 		Markdown: md, Text: clean(strings.Join(keptText, "\n")),
 		Links: links, Images: images, Sections: retainedSections(keptNodes),
-		EmittedBlocks: len(keptNodes), Truncated: truncated,
+		EmittedBlocks: len(keptNodes), EmittedContentBlocks: contentBlocks, Truncated: truncated,
 	}
 }
 

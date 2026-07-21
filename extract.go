@@ -176,6 +176,9 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		return a.isIrrelevantNode(n) || repeatedExcluded[n] || discussionAuxiliary
 	}
 	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: append([]string(nil), o.urlPolicy.Schemes...), AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude}
+	if pageType == PageTypeArticle {
+		selected = a.ensureArticleTitle(selected, cfg)
+	}
 	mr := markdown.Convert(selected, cfg)
 	if strings.TrimSpace(mr.Text) == "" {
 		return nil, ErrNoContent
@@ -466,6 +469,154 @@ func (a *analysis) score(pt PageType) {
 			a.diag.Blocks = append(a.diag.Blocks, BlockDiagnostic{ID: b.id, Kind: b.kind, Text: text, Score: score, Selected: b.selected, Reasons: append([]string(nil), b.reasons...)})
 		}
 	}
+}
+
+// ensureArticleTitle restores a source h1 next to selected article content.
+// Headings in a page-level header often score below the normal threshold even
+// when the adjacent article body scores well. If the source does not provide a
+// surviving title, metadata supplies one so article output does not begin in
+// the middle of the story.
+func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) []*html.Node {
+	if a.hasTitleEquivalentHeading(nodes) {
+		return nodes
+	}
+
+	// Prefer the source heading over metadata. Looking only a small number of
+	// segmented blocks away keeps a site masthead elsewhere on the page from
+	// being mistaken for the article title, while allowing a byline or
+	// breadcrumb between the heading and body.
+	bestIndex, bestDistance := -1, 3
+	bestEquivalent := false
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		if b.kind != "h1" || hardHidden(b.node) || a.hasIrrelevantAncestor(b.node) {
+			continue
+		}
+		distance := adjacentSelectedBlockDistance(a.blocks, i, nodes, 2)
+		if distance == 0 {
+			// No selected article block is close enough to make this h1 part of
+			// the extracted region.
+			continue
+		}
+		equivalent := titleEquivalent(b.text, a.meta.title)
+		// With authoritative metadata, a different adjacent h1 is usually the
+		// site's masthead rather than the article title.
+		if a.meta.title != "" && !equivalent {
+			continue
+		}
+		if bestIndex < 0 || (equivalent && !bestEquivalent) || (equivalent == bestEquivalent && distance < bestDistance) {
+			bestIndex, bestDistance, bestEquivalent = i, distance, equivalent
+		}
+	}
+	if bestIndex >= 0 {
+		withTitle := append([]*html.Node{a.blocks[bestIndex].node}, nodes...)
+		if titleLeavesOutputForContent(withTitle, cfg) {
+			return withTitle
+		}
+		// Do not replace an omitted source title with metadata: either title
+		// would consume budget intended for the article body.
+		return nodes
+	}
+	if a.meta.title == "" {
+		return nodes
+	}
+
+	title := &html.Node{Type: html.ElementNode, Data: "h1"}
+	title.AppendChild(&html.Node{Type: html.TextNode, Data: a.meta.title})
+	withTitle := append([]*html.Node{title}, nodes...)
+	if !titleLeavesOutputForContent(withTitle, cfg) {
+		return nodes
+	}
+	return withTitle
+}
+
+func titleLeavesOutputForContent(nodes []*html.Node, cfg markdown.Config) bool {
+	if cfg.MaxBytes <= 0 {
+		return true
+	}
+	// Rendering stops at the first block that exceeds the budget. Keep a title
+	// only when a paragraph, list, code block, or other substantive block also
+	// survives; another heading alone is not article content.
+	return markdown.Convert(nodes, cfg).EmittedContentBlocks > 0
+}
+
+func (a *analysis) hasTitleEquivalentHeading(nodes []*html.Node) bool {
+	found := false
+	for _, root := range nodes {
+		walk(root, func(n *html.Node) bool {
+			if found || hardHidden(n) || a.hasIrrelevantAncestor(n) {
+				return false
+			}
+			if n.Type == html.ElementNode && isHeadingTag(strings.ToLower(n.Data)) && titleEquivalent(nodeText(n), a.meta.title) {
+				found = true
+				return false
+			}
+			return true
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+func adjacentSelectedBlockDistance(blocks []block, headingIndex int, selected []*html.Node, maxDistance int) int {
+	for distance := 1; distance <= maxDistance; distance++ {
+		for _, i := range []int{headingIndex - distance, headingIndex + distance} {
+			if i >= 0 && i < len(blocks) && representedBySelection(blocks[i].node, selected) {
+				return distance
+			}
+		}
+	}
+	return 0
+}
+
+func representedBySelection(n *html.Node, selected []*html.Node) bool {
+	for _, root := range selected {
+		for p := n; p != nil; p = p.Parent {
+			if p == root {
+				return true
+			}
+		}
+		for p := root; p != nil; p = p.Parent {
+			if p == n {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func titleEquivalent(heading, title string) bool {
+	heading = normalizedLabel(heading)
+	title = normalizedLabel(title)
+	if heading == "" {
+		return false
+	}
+	if title == "" || heading == title {
+		return true
+	}
+	// Browser titles commonly put a site name before or after the visible h1.
+	for _, pair := range [][2]string{{heading, title}, {title, heading}} {
+		shorter, longer := pair[0], pair[1]
+		if strings.HasPrefix(longer, shorter) {
+			rest := []rune(strings.TrimSpace(strings.TrimPrefix(longer, shorter)))
+			if len(rest) > 0 && isTitleSeparator(rest[0]) {
+				return true
+			}
+		}
+		if strings.HasSuffix(longer, shorter) {
+			rest := []rune(strings.TrimSpace(strings.TrimSuffix(longer, shorter)))
+			if len(rest) > 0 && isTitleSeparator(rest[len(rest)-1]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isTitleSeparator(r rune) bool {
+	return strings.ContainsRune("|:-–—·•", r)
 }
 
 func (a *analysis) selectedNodes(pageType PageType) (nodes []*html.Node, excluded map[*html.Node]bool, dropped int) {
