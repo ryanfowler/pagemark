@@ -2,6 +2,7 @@ package pagemark
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -64,6 +65,69 @@ func TestExtractTreatsInputAsUTF8(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestJellyfinDiscussionPostBodies(t *testing.T) {
+	source, err := os.ReadFile("testdata/jellyfin-forum-thread.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://forum.jellyfin.org/t-project-leadership-changes", WithDiagnostics(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeDiscussion {
+		t.Fatalf("page type = %q, want discussion", doc.PageType)
+	}
+	for _, want := range []string{
+		"Hello everyone. Effective yesterday",
+		"For me personally, it was just time for a change",
+		"I truly hope Jellyfin outlives me",
+		"Thank you for everything!",
+		"Thank you very much Joshua, Anthony and Andrew",
+		"one of my favourite self-hosted projects",
+	} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing post body %q:\n%s", want, doc.Markdown)
+		}
+	}
+	for _, unwanted := range []string{
+		"0 Vote(s) - 0 Average",
+		"Forum Jump:",
+		"Private Messages",
+		"Rate this post",
+		"Quote this post",
+		"You must log in to reply.",
+	} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included discussion control %q:\n%s", unwanted, doc.Markdown)
+		}
+	}
+	postBodies := 0
+	for _, block := range doc.Diagnostics.Blocks {
+		for _, reason := range block.Reasons {
+			if reason == "discussion post body" && block.Selected {
+				postBodies++
+			}
+		}
+	}
+	if postBodies != 4 {
+		t.Errorf("selected %d discussion post bodies, want 4", postBodies)
+	}
+}
+
+func TestMessageWrapperRetainsDiscussionBody(t *testing.T) {
+	html := `<main><div class="thread"><div class="message"><div class="message-content">Actual forum reply from a participant.</div></div></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/forum/thread/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeDiscussion {
+		t.Fatalf("page type = %q, want discussion", doc.PageType)
+	}
+	if !strings.Contains(doc.Text, "Actual forum reply from a participant.") {
+		t.Fatalf("missing wrapped message content: %s", doc.Markdown)
 	}
 }
 
