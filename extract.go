@@ -510,7 +510,7 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 			// the extracted region.
 			continue
 		}
-		equivalent := titleEquivalent(b.text, a.meta.title)
+		equivalent := titleEquivalent(b.text, a.meta.title, a.meta.site)
 		credible := a.isCredibleArticleHeading(i, nodes)
 		// Metadata is only a fallback. A conflicting h1 is still authoritative
 		// when it is explicitly marked as a headline, belongs to the selected
@@ -571,7 +571,7 @@ func (a *analysis) hasTitleEquivalentHeading(nodes []*html.Node) bool {
 			if found || hardHidden(n) || a.hasIrrelevantAncestor(n) {
 				return false
 			}
-			if n.Type == html.ElementNode && isHeadingTag(strings.ToLower(n.Data)) && titleEquivalent(nodeText(n), a.meta.title) {
+			if n.Type == html.ElementNode && isHeadingTag(strings.ToLower(n.Data)) && titleEquivalent(nodeText(n), a.meta.title, a.meta.site) {
 				found = true
 				return false
 			}
@@ -589,12 +589,15 @@ func (a *analysis) hasTitleEquivalentHeading(nodes []*html.Node) bool {
 // evidence that the heading labels the selected prose.
 func (a *analysis) isCredibleArticleHeading(headingIndex int, selected []*html.Node) bool {
 	heading := a.blocks[headingIndex].node
-	if !hasHeadlineAttribute(heading) {
-		return false
-	}
-
 	region := primaryHeadingRegion(heading)
 	if region == nil {
+		return false
+	}
+	// An h1 inside the selected article is structural headline evidence even
+	// when the publisher did not add schema attributes. Outside an article,
+	// retain the explicit-headline requirement so a page masthead in <main>
+	// cannot override metadata.
+	if !strings.EqualFold(region.Data, "article") && !hasHeadlineAttribute(heading) {
 		return false
 	}
 	// A page header inside <main> is still commonly a site masthead. An article
@@ -716,7 +719,11 @@ func representedBySelection(n *html.Node, selected []*html.Node) bool {
 	return false
 }
 
-func titleEquivalent(heading, title string) bool {
+// titleEquivalent compares a visible heading with a metadata title. siteName is
+// optional to preserve the small helper's existing use in tests, but callers
+// with metadata should provide it: an exact site-name decoration can then be
+// removed without treating an arbitrary continuation as part of the title.
+func titleEquivalent(heading, title string, siteName ...string) bool {
 	heading = normalizedLabel(heading)
 	title = normalizedLabel(title)
 	if heading == "" {
@@ -725,7 +732,36 @@ func titleEquivalent(heading, title string) bool {
 	if title == "" || heading == title {
 		return true
 	}
-	// Browser titles commonly put a site name before or after the visible h1.
+
+	var site string
+	if len(siteName) > 0 {
+		site = normalizedLabel(siteName[0])
+	}
+	if site != "" {
+		// A site may decorate either value (although in practice this is usually
+		// the browser title). Consider both prefix and suffix forms.
+		heading = stripSiteTitleDecoration(heading, site)
+		title = stripSiteTitleDecoration(title, site)
+		if heading == title {
+			return true
+		}
+	}
+
+	// Publication dates are another common browser-only suffix. Keep this
+	// deliberately narrow: only a year/date at the end of an otherwise exact
+	// title is ignored.
+	if titleWithDateDecoration(heading, title) || titleWithDateDecoration(title, heading) {
+		return true
+	}
+
+	// Retain separator-based compatibility when SiteName is unavailable. The
+	// match remains exact on one complete side of the separator; ordinary prefix
+	// matches (for example, "Release notes" and "Release notes for v2") do not
+	// qualify. When SiteName is known, do not mistake a different separator-
+	// delimited subtitle for that site.
+	if site != "" {
+		return false
+	}
 	for _, pair := range [][2]string{{heading, title}, {title, heading}} {
 		shorter, longer := pair[0], pair[1]
 		if strings.HasPrefix(longer, shorter) {
@@ -744,8 +780,70 @@ func titleEquivalent(heading, title string) bool {
 	return false
 }
 
+func stripSiteTitleDecoration(title, site string) string {
+	for _, prefix := range []bool{true, false} {
+		var rest string
+		if prefix && strings.HasPrefix(title, site) {
+			rest = strings.TrimSpace(strings.TrimPrefix(title, site))
+		} else if !prefix && strings.HasSuffix(title, site) {
+			rest = strings.TrimSpace(strings.TrimSuffix(title, site))
+		} else {
+			continue
+		}
+		runes := []rune(rest)
+		if len(runes) == 0 {
+			return title
+		}
+		separator := runes[0]
+		if !prefix {
+			separator = runes[len(runes)-1]
+		}
+		if isTitleSeparator(separator) {
+			if prefix {
+				return normalizedLabel(string(runes[1:]))
+			}
+			return normalizedLabel(string(runes[:len(runes)-1]))
+		}
+	}
+	return title
+}
+
+func titleWithDateDecoration(base, decorated string) bool {
+	if !strings.HasPrefix(decorated, base) {
+		return false
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(decorated, base))
+	if strings.HasPrefix(rest, "in ") {
+		rest = strings.TrimSpace(strings.TrimPrefix(rest, "in "))
+	} else {
+		rest = strings.TrimSpace(strings.Trim(rest, "()[]"))
+		runes := []rune(rest)
+		if len(runes) > 0 && isTitleSeparator(runes[0]) {
+			rest = strings.TrimSpace(string(runes[1:]))
+		}
+	}
+	return isTitleDate(rest)
+}
+
+func isTitleDate(s string) bool {
+	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '-' || r == '/' || r == '.' })
+	if len(parts) < 1 || len(parts) > 3 || len(parts[0]) != 4 || !allASCIIDigits(parts[0]) {
+		return false
+	}
+	year := parts[0]
+	if year < "1900" || year > "2199" {
+		return false
+	}
+	for _, part := range parts[1:] {
+		if len(part) < 1 || len(part) > 2 || !allASCIIDigits(part) {
+			return false
+		}
+	}
+	return true
+}
+
 func isTitleSeparator(r rune) bool {
-	return strings.ContainsRune("|:-–—·•", r)
+	return strings.ContainsRune("|:~-–—·•", r)
 }
 
 func (a *analysis) selectedNodes(pageType PageType) (nodes []*html.Node, excluded map[*html.Node]bool, dropped int) {
