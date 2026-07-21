@@ -35,6 +35,22 @@ func TestRunFetchesAndWritesMarkdown(t *testing.T) {
 	}
 }
 
+func TestRunDoesNotDecodeUTF8ResponseTwice(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<main><h1>The Psychology of Software Teams</h1><p>You’ll read “the team’s guide” ↩</p></main>`))
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "# The Psychology of Software Teams\n\nYou’ll read “the team’s guide” ↩\n"; got != want {
+		t.Fatalf("output:\n%q\nwant:\n%q", got, want)
+	}
+}
+
 func TestRunDecodesResponseToUTF8(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=iso-8859-1")
