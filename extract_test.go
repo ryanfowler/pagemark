@@ -549,6 +549,50 @@ func TestTokenLabeledAuxiliaryRegionIsRemoved(t *testing.T) {
 	}
 }
 
+func TestCodeHeavyPublishedPostIsInferredAsArticle(t *testing.T) {
+	html := `<html><head><title>Building a small compiler</title><meta property="article:published_time" content="2025-01-10"><link rel="canonical" href="https://example.com/blog/small-compiler"></head><body><article><h1>Building a small compiler</h1><p>We started by defining the language and explaining the constraints that shaped its implementation.</p><pre>type Token struct { Kind int }</pre><p>The lexer keeps source locations so later stages can produce useful diagnostics for readers.</p><pre>func lex(source string) []Token</pre><p>Parsing then turns the token stream into a compact syntax tree while preserving error context.</p><pre>func parse(tokens []Token) Node</pre><p>The evaluator walks that tree and records values in a deliberately small lexical environment.</p><pre>func eval(node Node) Value</pre><p>Several implementation details changed after testing the compiler against larger real programs.</p><pre>go test ./...</pre><p>The final design remains understandable, and these tradeoffs are useful beyond this particular project.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/read?id=42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("page type = %q, want article", doc.PageType)
+	}
+}
+
+func TestAnnotatedPublishedPostIsNotInferredAsDiscussion(t *testing.T) {
+	html := `<html><head><title>Incident review and lessons learned</title><meta name="datePublished" content="2025-02-12"><link rel="canonical" href="https://example.com/articles/incident-review"></head><body><article><h1>Incident review and lessons learned</h1><p>The team reconstructed the incident from logs and interviews, then compared that timeline with the expected behavior.</p><div class="comment"><p>The founder noted that this decision was reasonable given the information available at the time.</p></div><p>The first failure increased load gradually, which kept the underlying problem hidden during the initial response.</p><div class="comment"><p>An engineer added context about the alert threshold and why it had originally been selected.</p></div><p>Once the impact was understood, responders reduced traffic and restored the affected data from a verified copy.</p><div class="comment"><p>The founder clarified that recovery speed mattered less than preserving a complete and auditable record.</p></div><p>The follow-up work now focuses on simpler operating procedures and earlier warnings for the same failure mode.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/archive/42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("page type = %q, want article", doc.PageType)
+	}
+}
+
+func TestTimestampedCommentsAreInferredAsDiscussion(t *testing.T) {
+	html := `<main><h1>Configuration question</h1><div class="comment"><h2>Ada</h2><time datetime="2025-03-01T10:00:00Z">March 1</time><p>I tried the default configuration, but the worker still stops before processing the queued item.</p></div><div class="comment"><h2>Ben</h2><time datetime="2025-03-01T10:05:00Z">March 1</time><p>Set the worker limit before starting the process, then retry the same queued item.</p></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/conversation/42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeDiscussion {
+		t.Fatalf("page type = %q, want discussion", doc.PageType)
+	}
+}
+
+func TestProseHeavyDocumentationContainerIsInferredAsDocumentation(t *testing.T) {
+	html := `<html><head><title>Working with environments</title><link rel="canonical" href="https://example.com/guide/environments"></head><body><main class="documentation"><h1>Working with environments</h1><p>An environment groups the settings and resources used when an application runs. Keeping these values together makes deployments repeatable and gives operators one place to inspect changes before applying them.</p><p>Create an environment before adding a deployment target. Choose a stable name that describes its purpose, because the same identifier appears in command output, audit records, and configuration files shared by the team.</p><p>Variables can be defined for the whole environment or overridden for one target. General values provide useful defaults, while narrow overrides let a deployment connect to resources that exist only in its region.</p><p>Review pending changes before activation. The preview includes additions, removals, and replacements, allowing an operator to catch an incorrect value without modifying a running application or interrupting current work.</p><p>After activation, verify the reported revision and run a health check from each target. If verification fails, restore the previous revision and inspect the event record before attempting another update.</p><p>Access should be granted through team roles rather than shared credentials. This keeps the audit history useful and allows permissions to be removed promptly when responsibilities change.</p></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/guide/environments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeDocumentation {
+		t.Fatalf("page type = %q, want documentation", doc.PageType)
+	}
+}
+
 func TestDiscussionKeepsComments(t *testing.T) {
 	html := `<main><h1>How?</h1><article class="post"><p>The question has useful detail.</p></article><article class="comment"><h2>Ada</h2><p>Use the documented method.</p><button>Reply</button></article><article class="comment"><h2>Bob</h2><p>This answer adds an example.</p></article></main>`
 	d, e := ExtractBytes([]byte(html), "https://example.com/forum/1", WithPageType(PageTypeDiscussion))
