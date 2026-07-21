@@ -199,6 +199,49 @@ func TestWhitespaceOnlyAnchorKeepsWordBoundary(t *testing.T) {
 	}
 }
 
+func TestAdjacentLayoutItemsKeepSemanticBoundaries(t *testing.T) {
+	r := convertHTML(t, `<div role="row"><span role="columnheader">MODEL</span><span role="columnheader">CREATOR</span><span role="columnheader">CONTEXT SIZE</span><span role="columnheader">TYPE</span></div>`)
+	want := "MODEL CREATOR CONTEXT SIZE TYPE"
+	if r.Markdown != want || r.Text != want {
+		t.Fatalf("markdown=%q text=%q", r.Markdown, r.Text)
+	}
+}
+
+func TestAdjacentStyledElementsDoNotInventWhitespace(t *testing.T) {
+	r := convertHTML(t, `<p><strong>Page</strong><span>mark</span> is well<span>-</span>formed<span>.</span></p>`)
+	if r.Markdown != "**Page**mark is well-formed." || r.Text != "Pagemark is well-formed." {
+		t.Fatalf("markdown=%q text=%q", r.Markdown, r.Text)
+	}
+}
+
+func TestSuperscriptHasReadableRepresentation(t *testing.T) {
+	r := convertHTML(t, `<table><tr><th><span>3</span><sup>trits</sup></th><th>2<sup>bits</sup></th></tr><tr><td>a</td><td>b</td></tr></table>`)
+	want := "| 3^trits | 2^bits |\n| --- | --- |\n| a | b |"
+	if r.Markdown != want {
+		t.Fatalf("want:\n%s\ngot:\n%s", want, r.Markdown)
+	}
+	if !strings.Contains(r.Text, "3^trits") || !strings.Contains(r.Text, "2^bits") {
+		t.Fatalf("plain text lost superscript semantics: %q", r.Text)
+	}
+}
+
+func TestSuperscriptWhitespaceAndAdjacentText(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		want   string
+	}{
+		{`<p>word <sup>note</sup></p>`, `word ^note`},
+		{`<p>2<sup>nd</sup>place</p>`, `2^(nd)place`},
+		{`<p>2<sup>nd</sup><em></em>place</p>`, `2^(nd)place`},
+		{`<p>2<sup>nd</sup> place</p>`, `2^nd place`},
+	} {
+		r := convertHTML(t, tc.source)
+		if r.Markdown != tc.want || r.Text != tc.want {
+			t.Errorf("source %q: want %q, markdown=%q text=%q", tc.source, tc.want, r.Markdown, r.Text)
+		}
+	}
+}
+
 func TestCodeFenceInfoAndInlineCodePadding(t *testing.T) {
 	r := convertHTML(t, `<pre><code class="language-go">fmt.Println("ok")
 </code></pre><p><code> value </code></p>`)
