@@ -479,6 +479,62 @@ func TestArticleKeepsAdjacentH1BelowScoreThreshold(t *testing.T) {
 	}
 }
 
+func TestSemanticArticleHeadingOverridesConflictingMetadata(t *testing.T) {
+	html := `<html><head><title>–end-of-options | Example Site</title><meta property="og:title" content="–end-of-options"></head><body><article><h1 itemprop="name headline">--end-of-options</h1><p>This article explains how command line parsers recognize an explicit end marker and why the exact pair of ASCII hyphens matters.</p><p>The remaining discussion describes practical examples and compatibility considerations for programs that pass options through to another command.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# \\--end-of-options\n") {
+		t.Fatalf("semantic source heading did not override conflicting metadata:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Markdown, "# –end-of-options") {
+		t.Fatalf("conflicting metadata title was synthesized:\n%s", doc.Markdown)
+	}
+	if strings.Count(doc.Text, "--end-of-options") != 1 {
+		t.Fatalf("source heading was duplicated: %q", doc.Text)
+	}
+}
+
+func TestAbsoluteSchemaHeadlineOverridesConflictingMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		attribute string
+	}{
+		{"absolute itemprop", `itemprop="https://schema.org/headline"`},
+		{"absolute property", `property="http://schema.org/headline"`},
+		{"fragment property", `property="https://schema.org/CreativeWork#headline"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			html := `<html><head><title>Incorrect metadata title | Example Site</title><meta property="og:title" content="Incorrect metadata title"></head><body><article><h1 ` + tc.attribute + `>Correct source title</h1><p>This substantive article paragraph establishes that the absolute Schema.org headline labels the selected primary prose.</p><p>Additional explanatory prose ensures that metadata remains only a fallback rather than replacing the visible source heading.</p></article></body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(doc.Markdown, "# Correct source title\n") {
+				t.Fatalf("absolute Schema.org headline did not override metadata:\n%s", doc.Markdown)
+			}
+			if strings.Contains(doc.Text, "Incorrect metadata title") || strings.Count(doc.Text, "Correct source title") != 1 {
+				t.Fatalf("metadata was synthesized or source heading was duplicated: %q", doc.Text)
+			}
+		})
+	}
+}
+
+func TestSemanticMastheadOutsideArticleDoesNotOverrideMetadata(t *testing.T) {
+	html := `<html><head><title>Actual Story | Example Site</title><meta property="og:title" content="Actual Story"></head><body><header><h1 itemprop="headline">Publisher Home</h1></header><article><p>The actual story body contains substantial reporting about the event, the evidence gathered by investigators, and the conclusions they reached.</p><p>A second paragraph provides enough selected prose to establish the article region without relying on the unrelated site masthead.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Actual Story | Example Site\n") {
+		t.Fatalf("metadata fallback was not used:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Text, "Publisher Home") {
+		t.Fatalf("site masthead was selected in addition to metadata: %q", doc.Text)
+	}
+}
+
 func TestArticleDoesNotRestoreAdjacentSiteMasthead(t *testing.T) {
 	html := `<html><head><title>Actual Story</title></head><body><header><h1>Example News</h1></header><article><p>The actual story body contains useful reporting and explanatory prose.</p></article></body></html>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
