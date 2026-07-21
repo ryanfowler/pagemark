@@ -498,7 +498,7 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 	// being mistaken for the article title, while allowing a byline or
 	// breadcrumb between the heading and body.
 	bestIndex, bestDistance := -1, 3
-	bestEquivalent := false
+	bestEquivalent, bestCredible := false, false
 	for i := range a.blocks {
 		b := &a.blocks[i]
 		if b.kind != "h1" || hardHidden(b.node) || a.hasIrrelevantAncestor(b.node) {
@@ -511,16 +511,28 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 			continue
 		}
 		equivalent := titleEquivalent(b.text, a.meta.title)
-		// With authoritative metadata, a different adjacent h1 is usually the
-		// site's masthead rather than the article title.
-		if a.meta.title != "" && !equivalent {
+		credible := a.isCredibleArticleHeading(i, nodes)
+		// Metadata is only a fallback. A conflicting h1 is still authoritative
+		// when it is explicitly marked as a headline, belongs to the selected
+		// article region, and is next to selected prose. The stronger checks are
+		// required only for a mismatch so an adjacent site masthead cannot replace
+		// the metadata fallback.
+		if a.meta.title != "" && !equivalent && !credible {
 			continue
 		}
-		if bestIndex < 0 || (equivalent && !bestEquivalent) || (equivalent == bestEquivalent && distance < bestDistance) {
-			bestIndex, bestDistance, bestEquivalent = i, distance, equivalent
+		// Structural article evidence is stronger than text agreement with
+		// metadata: the latter may merely identify a nearby site masthead.
+		if bestIndex < 0 || (credible && !bestCredible) || (credible == bestCredible && equivalent && !bestEquivalent) || (credible == bestCredible && equivalent == bestEquivalent && distance < bestDistance) {
+			bestIndex, bestDistance, bestEquivalent, bestCredible = i, distance, equivalent, credible
 		}
 	}
 	if bestIndex >= 0 {
+		// A heading inside an article is normally selected on its own. Do not add
+		// the same source node a second time merely because its text conflicts
+		// with metadata.
+		if representedBySelection(a.blocks[bestIndex].node, nodes) {
+			return nodes
+		}
 		withTitle := append([]*html.Node{a.blocks[bestIndex].node}, nodes...)
 		if titleLeavesOutputForContent(withTitle, cfg) {
 			return withTitle
@@ -568,6 +580,99 @@ func (a *analysis) hasTitleEquivalentHeading(nodes []*html.Node) bool {
 		if found {
 			return true
 		}
+	}
+	return false
+}
+
+// isCredibleArticleHeading identifies a metadata-conflicting source heading.
+// Unlike title equivalence, this deliberately requires independent structural
+// evidence that the heading labels the selected prose.
+func (a *analysis) isCredibleArticleHeading(headingIndex int, selected []*html.Node) bool {
+	heading := a.blocks[headingIndex].node
+	if !hasHeadlineAttribute(heading) {
+		return false
+	}
+
+	region := primaryHeadingRegion(heading)
+	if region == nil {
+		return false
+	}
+	// A page header inside <main> is still commonly a site masthead. An article
+	// header is valid because its enclosing article is chosen as the region.
+	for p := heading.Parent; p != nil && p != region; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		if strings.EqualFold(p.Data, "nav") || (strings.EqualFold(p.Data, "header") && !strings.EqualFold(region.Data, "article")) {
+			return false
+		}
+	}
+
+	for distance := 1; distance <= 2; distance++ {
+		for _, i := range []int{headingIndex - distance, headingIndex + distance} {
+			if i < 0 || i >= len(a.blocks) {
+				continue
+			}
+			b := &a.blocks[i]
+			if !isSubstantiveProseBlock(b) || !nodeWithin(b.node, region) || !representedBySelection(b.node, selected) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func hasHeadlineAttribute(n *html.Node) bool {
+	for _, key := range []string{"itemprop", "property"} {
+		for _, value := range strings.Fields(attrValue(n, key)) {
+			if isHeadlineProperty(value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isHeadlineProperty(value string) bool {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "headline") || strings.EqualFold(value, "schema:headline") {
+		return true
+	}
+
+	u, err := url.Parse(value)
+	if err != nil || !u.IsAbs() {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "schema.org" && host != "www.schema.org" {
+		return false
+	}
+	path := strings.TrimRight(strings.ToLower(u.Path), "/")
+	fragment := strings.TrimRight(strings.ToLower(u.Fragment), "/")
+	return path == "/headline" || strings.HasSuffix(path, "/headline") || fragment == "headline" || strings.HasSuffix(fragment, "/headline")
+}
+
+func primaryHeadingRegion(n *html.Node) *html.Node {
+	var primary *html.Node
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		if strings.EqualFold(p.Data, "article") {
+			return p
+		}
+		if primary == nil && (strings.EqualFold(p.Data, "main") || strings.EqualFold(attrValue(p, "role"), "main")) {
+			primary = p
+		}
+	}
+	return primary
+}
+
+func isSubstantiveProseBlock(b *block) bool {
+	switch b.kind {
+	case "p", "blockquote", "generic":
+		return utf8.RuneCountInString(normalizeText(b.text)) >= 40
 	}
 	return false
 }
