@@ -71,6 +71,27 @@ func TestHardBreakInHeadingRendersAsSpace(t *testing.T) {
 	}
 }
 
+func TestHeadingPermalinks(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{"hash permalink", `<h2 id="conclusion">Conclusion <a href="#conclusion">#</a></h2>`, `## Conclusion`},
+		{"pilcrow permalink", `<h2 id="conclusion"><a href="#conclusion">¶</a> Conclusion</h2>`, `## Conclusion`},
+		{"icon-only fragment link", `<h2 id="conclusion">Conclusion <a href="#conclusion"><svg aria-hidden="true"><path></path></svg><span class="sr-only">Permalink</span></a></h2>`, `## Conclusion`},
+		{"absolute same-page fragment link", `<h2 id="conclusion">Conclusion <a href="https://example.com/base/#conclusion">§</a></h2>`, `## Conclusion`},
+		{"meaningful heading link", `<h2><a href="/guide">Installation guide</a></h2>`, `## [Installation guide](https://example.com/guide)`},
+		{"external heading link", `<h2>Read <a href="https://other.example/docs">the documentation</a></h2>`, `## Read [the documentation](https://other.example/docs)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := convertHTML(t, tc.source).Markdown; got != tc.want {
+				t.Fatalf("want %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
 func TestUnsafeLinkIsRejectedAfterOutputLimit(t *testing.T) {
 	base, _ := url.Parse("https://example.com/")
 	r := convertHTMLConfig(t, `<p><a href="/safe">safe</a> <a href="javascript:alert(1)">unsafe</a></p>`, Config{

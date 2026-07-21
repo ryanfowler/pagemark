@@ -87,6 +87,7 @@ type converter struct {
 	linkCount, imageCount int
 	rejected              []string
 	cells                 int
+	heading               *html.Node
 }
 
 func Convert(nodes []*html.Node, cfg Config) Result {
@@ -128,7 +129,11 @@ func (c *converter) block(n *html.Node) *Node {
 	tag := strings.ToLower(n.Data)
 	switch tag {
 	case "h1", "h2", "h3", "h4", "h5", "h6":
-		return &Node{Kind: Heading, Level: int(tag[1] - '0'), Children: c.inlines(n)}
+		previousHeading := c.heading
+		c.heading = n
+		children := c.inlines(n)
+		c.heading = previousHeading
+		return &Node{Kind: Heading, Level: int(tag[1] - '0'), Children: children}
 	case "p", "figcaption", "caption", "dt", "dd":
 		return &Node{Kind: Paragraph, Children: c.inlines(n)}
 	case "img", "svg":
@@ -262,6 +267,9 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 		case "form", "button", "input", "select", "textarea":
 			return
 		case "a":
+			if c.decorativeHeadingPermalink(x) {
+				return
+			}
 			children := c.inlines(x)
 			href := attr(x, "href")
 			if c.cfg.Links && href != "" {
@@ -688,6 +696,93 @@ func hierarchyLevel(n *html.Node) (int, bool) {
 	return 0, false
 }
 
+// decorativeHeadingPermalink recognizes heading self-links without relying on
+// their converted children. In particular, this prevents accessible SVG labels
+// and visually hidden screen-reader text from becoming link labels.
+func (c *converter) decorativeHeadingPermalink(link *html.Node) bool {
+	if c.heading == nil || !headingFragmentMatches(c.heading, attr(link, "href")) ||
+		!c.samePageFragment(attr(link, "href")) {
+		return false
+	}
+
+	var text []string
+	iconOnly := false
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			if dom.Hidden(n) {
+				iconOnly = true
+				return
+			}
+			if strings.EqualFold(n.Data, "svg") || screenReaderOnly(n) {
+				iconOnly = true
+				return
+			}
+		}
+		if n.Type == html.TextNode {
+			text = append(text, n.Data)
+			return
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	for child := link.FirstChild; child != nil; child = child.NextSibling {
+		walk(child)
+	}
+	label := clean(strings.Join(text, " "))
+	return label == "#" || label == "¶" || label == "§" || (label == "" && iconOnly)
+}
+
+func screenReaderOnly(n *html.Node) bool {
+	for _, class := range strings.Fields(strings.ToLower(attr(n, "class"))) {
+		switch strings.Trim(class, "-_") {
+		case "sr-only", "sr_only", "screen-reader-text", "screen_reader_text", "visually-hidden", "visually_hidden", "visuallyhidden":
+			return true
+		}
+	}
+	return false
+}
+
+func headingFragmentMatches(heading *html.Node, rawHref string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawHref))
+	if err != nil || u.Fragment == "" {
+		return false
+	}
+	fragment := u.Fragment
+	var matches func(*html.Node) bool
+	matches = func(n *html.Node) bool {
+		if n.Type == html.ElementNode && (attr(n, "id") == fragment ||
+			(strings.EqualFold(n.Data, "a") && attr(n, "name") == fragment)) {
+			return true
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			if matches(child) {
+				return true
+			}
+		}
+		return false
+	}
+	return matches(heading)
+}
+
+func (c *converter) samePageFragment(rawHref string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawHref))
+	if err != nil || u.Fragment == "" {
+		return false
+	}
+	if c.cfg.Base == nil {
+		return u.Scheme == "" && u.Host == "" && u.Path == "" && u.RawQuery == ""
+	}
+	base := *c.cfg.Base
+	base.Fragment, base.RawFragment = "", ""
+	resolved := base.ResolveReference(u)
+	resolved.Fragment, resolved.RawFragment = "", ""
+	return strings.EqualFold(resolved.Scheme, base.Scheme) &&
+		strings.EqualFold(resolved.Host, base.Host) && resolved.Path == base.Path &&
+		resolved.RawQuery == base.RawQuery
+}
+
 func (c *converter) safeURL(raw string) (string, bool) {
 	if strings.IndexFunc(raw, unicode.IsControl) >= 0 {
 		return "", false
@@ -1007,7 +1102,7 @@ func renderBlock(n *Node, depth int) string {
 		if l > 6 {
 			l = 6
 		}
-		return strings.Repeat("#", l) + " " + renderInlineWithHardBreak(n.Children, " ")
+		return strings.Repeat("#", l) + " " + strings.TrimSpace(renderInlineWithHardBreak(n.Children, " "))
 	case Paragraph:
 		return renderInline(n.Children)
 	case CodeBlock:
