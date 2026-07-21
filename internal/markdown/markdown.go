@@ -3,8 +3,10 @@ package markdown
 
 import (
 	"fmt"
+	"math/big"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -34,13 +36,19 @@ const (
 	Link
 	Image
 	ThematicBreak
+	HardBreak
 )
 
 type Node struct {
 	Kind     Kind
 	Level    int
+	Start    int
+	Reversed bool
+	HasValue bool
 	Value    string
 	URL      string
+	Info     string
+	Align    string
 	Children []*Node
 }
 
@@ -113,13 +121,22 @@ func (c *converter) block(n *html.Node) *Node {
 	case "p", "figcaption", "caption", "dt", "dd":
 		return &Node{Kind: Paragraph, Children: c.inlines(n)}
 	case "pre":
-		return &Node{Kind: CodeBlock, Value: textRaw(n)}
+		return &Node{Kind: CodeBlock, Value: c.textRaw(n), Info: codeInfo(n)}
 	case "blockquote":
 		return &Node{Kind: Blockquote, Children: c.blocks(n)}
 	case "ul":
 		return &Node{Kind: UnorderedList, Children: c.listItems(n)}
 	case "ol":
-		return &Node{Kind: OrderedList, Children: c.listItems(n)}
+		items := c.listItems(n)
+		start, hasStart := parseIntegerAttr(n, "start")
+		if !hasStart {
+			start = 1
+		}
+		reversed := hasAttr(n, "reversed")
+		if reversed && !hasStart {
+			start = len(items)
+		}
+		return &Node{Kind: OrderedList, Start: start, Reversed: reversed, Children: items}
 	case "dl":
 		return &Node{Kind: UnorderedList, Children: c.definitionItems(n)}
 	case "table":
@@ -129,12 +146,13 @@ func (c *converter) block(n *html.Node) *Node {
 		return c.table(n)
 	case "hr":
 		return &Node{Kind: ThematicBreak}
-	case "figure", "article", "section", "main", "div":
+	case "html", "body", "figure", "article", "section", "main", "div", "aside", "header", "footer", "nav", "address", "details":
 		return &Node{Kind: Document, Children: c.blocks(n)}
+	case "summary":
+		return &Node{Kind: Paragraph, Children: c.inlines(n)}
 	default:
-		children := c.blocks(n)
-		if len(children) > 0 {
-			return &Node{Kind: Document, Children: children}
+		if c.hasBlockDescendant(n) {
+			return &Node{Kind: Document, Children: c.blocks(n)}
 		}
 		in := c.inlines(n)
 		if len(in) > 0 {
@@ -146,16 +164,22 @@ func (c *converter) block(n *html.Node) *Node {
 
 func (c *converter) blocks(n *html.Node) []*Node {
 	var out []*Node
+	var pending []*html.Node
+	flush := func() {
+		if in := c.inlineNodes(pending); len(in) > 0 && clean(plain(&Node{Kind: Document, Children: in})) != "" {
+			out = append(out, &Node{Kind: Paragraph, Children: in})
+		}
+		pending = nil
+	}
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
 		if c.skip(ch) {
 			continue
 		}
-		if ch.Type == html.TextNode {
-			if v := clean(ch.Data); v != "" {
-				out = append(out, &Node{Kind: Paragraph, Children: []*Node{{Kind: Text, Value: v}}})
-			}
+		if ch.Type != html.ElementNode || (!isBlockElement(strings.ToLower(ch.Data)) && !c.hasBlockDescendant(ch)) {
+			pending = append(pending, ch)
 			continue
 		}
+		flush()
 		if x := c.block(ch); x != nil {
 			if x.Kind == Document {
 				out = append(out, x.Children...)
@@ -164,7 +188,28 @@ func (c *converter) blocks(n *html.Node) []*Node {
 			}
 		}
 	}
+	flush()
 	return out
+}
+
+func isBlockElement(tag string) bool {
+	switch tag {
+	case "html", "body", "address", "article", "aside", "blockquote", "details", "dialog", "div", "dl", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "main", "nav", "ol", "p", "pre", "section", "summary", "table", "ul":
+		return true
+	}
+	return false
+}
+
+func (c *converter) hasBlockDescendant(n *html.Node) bool {
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if c.skip(child) || child.Type != html.ElementNode {
+			continue
+		}
+		if isBlockElement(strings.ToLower(child.Data)) || c.hasBlockDescendant(child) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *converter) inlines(n *html.Node) []*Node {
@@ -196,23 +241,29 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 		tag := strings.ToLower(x.Data)
 		switch tag {
 		case "br":
-			out = append(out, &Node{Kind: Text, Value: "\n"})
+			out = append(out, &Node{Kind: HardBreak})
 			return
 		case "form", "button", "input", "select", "textarea":
 			return
 		case "a":
-			label := clean(c.nodeText(x))
+			children := c.inlines(x)
 			href := attr(x, "href")
-			if c.cfg.Links && label != "" && c.linkCount < c.cfg.MaxLinks {
-				if safe, ok := c.safeURL(href); ok {
-					out = append(out, &Node{Kind: Link, URL: safe, Children: []*Node{{Kind: Text, Value: label}}})
+			if c.cfg.Links && href != "" {
+				safe, ok := c.safeURL(href)
+				if !ok {
+					c.rejected = append(c.rejected, href)
+				} else if len(children) > 0 && c.linkCount < c.cfg.MaxLinks {
+					out = append(out, &Node{Kind: Link, URL: safe, Children: children})
 					c.linkCount++
 					return
 				}
 			}
-			if href != "" {
-				c.rejected = append(c.rejected, href)
+			if len(children) == 0 && len(out) > 0 && c.hasWhitespace(x) {
+				out = append(out, &Node{Kind: Text, Value: " "})
+			} else {
+				out = append(out, children...)
 			}
+			return
 		case "img":
 			alt, src := clean(attr(x, "alt")), attr(x, "src")
 			if c.cfg.Images && alt != "" && c.imageCount < c.cfg.MaxImages {
@@ -229,7 +280,7 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 			out = append(out, &Node{Kind: Strong, Children: c.inlines(x)})
 			return
 		case "code":
-			out = append(out, &Node{Kind: InlineCode, Value: textRaw(x)})
+			out = append(out, &Node{Kind: InlineCode, Value: c.textRaw(x)})
 			return
 		}
 		for ch := x.FirstChild; ch != nil; ch = ch.NextSibling {
@@ -239,7 +290,15 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 	for _, n := range nodes {
 		walk(n)
 	}
-	return out
+	var merged []*Node
+	for _, n := range out {
+		if n.Kind == Text && len(merged) > 0 && merged[len(merged)-1].Kind == Text {
+			merged[len(merged)-1].Value = inlineText(merged[len(merged)-1].Value + n.Value)
+			continue
+		}
+		merged = append(merged, n)
+	}
+	return merged
 }
 
 func (c *converter) listItems(n *html.Node) []*Node {
@@ -249,7 +308,8 @@ func (c *converter) listItems(n *html.Node) []*Node {
 			continue
 		}
 		if ch.Type == html.ElementNode && strings.EqualFold(ch.Data, "li") {
-			out = append(out, &Node{Kind: ListItem, Children: c.mixedItem(ch)})
+			value, hasValue := parseIntegerAttr(ch, "value")
+			out = append(out, &Node{Kind: ListItem, Level: value, HasValue: hasValue, Children: c.mixedItem(ch)})
 		}
 	}
 	return out
@@ -267,7 +327,7 @@ func (c *converter) mixedItem(n *html.Node) []*Node {
 		if c.skip(ch) {
 			continue
 		}
-		if ch.Type == html.ElementNode && isListItemBlock(strings.ToLower(ch.Data)) {
+		if ch.Type == html.ElementNode && (isBlockElement(strings.ToLower(ch.Data)) || c.hasBlockDescendant(ch)) {
 			flush()
 			if x := c.block(ch); x != nil {
 				if x.Kind == Document {
@@ -284,29 +344,36 @@ func (c *converter) mixedItem(n *html.Node) []*Node {
 	return out
 }
 
-func isListItemBlock(tag string) bool {
-	switch tag {
-	case "p", "div", "pre", "blockquote", "ul", "ol", "dl", "table", "figure":
-		return true
-	}
-	return false
-}
 func (c *converter) definitionItems(n *html.Node) []*Node {
 	var out []*Node
-	var term string
+	var terms [][]*Node
+	hadDefinition := false
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
 		if c.skip(ch) || ch.Type != html.ElementNode {
 			continue
 		}
 		if strings.EqualFold(ch.Data, "dt") {
-			term = clean(c.nodeText(ch))
+			if hadDefinition {
+				terms = nil
+				hadDefinition = false
+			}
+			terms = append(terms, c.inlines(ch))
+			continue
 		}
 		if strings.EqualFold(ch.Data, "dd") {
-			v := clean(c.nodeText(ch))
-			if term != "" {
-				v = term + ": " + v
+			hadDefinition = true
+			var in []*Node
+			for i, term := range terms {
+				if i > 0 {
+					in = append(in, &Node{Kind: Text, Value: ", "})
+				}
+				in = append(in, &Node{Kind: Strong, Children: term})
 			}
-			out = append(out, &Node{Kind: ListItem, Children: []*Node{{Kind: Paragraph, Children: []*Node{{Kind: Text, Value: v}}}}})
+			if len(terms) > 0 {
+				in = append(in, &Node{Kind: Text, Value: ": "})
+			}
+			in = append(in, c.inlines(ch)...)
+			out = append(out, &Node{Kind: ListItem, Children: []*Node{{Kind: Paragraph, Children: in}}})
 		}
 	}
 	return out
@@ -314,9 +381,16 @@ func (c *converter) definitionItems(n *html.Node) []*Node {
 
 func (c *converter) table(n *html.Node) *Node {
 	var rows [][]*html.Node
+	var caption []*Node
 	var walk func(*html.Node)
 	walk = func(x *html.Node) {
 		if c.skip(x) {
+			return
+		}
+		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "caption") {
+			if caption == nil {
+				caption = c.inlines(x)
+			}
 			return
 		}
 		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "tr") {
@@ -336,28 +410,74 @@ func (c *converter) table(n *html.Node) *Node {
 		}
 	}
 	walk(n)
+	fallback := func() *Node { return tableWithCaption(c.fallbackTable(n), caption) }
 	if len(rows) == 0 {
-		return nil
+		return tableWithCaption(nil, caption)
 	}
 	width := len(rows[0])
-	if width == 0 || c.cells+width*len(rows) > c.cfg.MaxTableCells {
-		return c.fallbackTable(n)
-	}
+	total := 0
 	for _, r := range rows {
 		if len(r) != width {
-			return c.fallbackTable(n)
+			return fallback()
 		}
+		total += len(r)
+		for _, cell := range r {
+			if integerAttr(cell, "colspan", 1) != 1 || integerAttr(cell, "rowspan", 1) != 1 {
+				return fallback()
+			}
+		}
+	}
+	if width == 0 || c.cfg.MaxTableCells <= 0 || c.cells+total > c.cfg.MaxTableCells {
+		return fallback()
+	}
+	header := true
+	for _, cell := range rows[0] {
+		header = header && strings.EqualFold(cell.Data, "th")
+	}
+	// GFM requires a column-header row. A mixed th/td row generally uses th
+	// as a row header, so promoting its td cells would change the semantics.
+	if !header {
+		return fallback()
 	}
 	t := &Node{Kind: Table}
 	for _, r := range rows {
 		rr := &Node{Kind: TableRow}
 		for _, cell := range r {
-			rr.Children = append(rr.Children, &Node{Kind: TableCell, Children: c.inlines(cell)})
+			rr.Children = append(rr.Children, &Node{Kind: TableCell, Align: cellAlignment(cell), Children: c.inlines(cell)})
 			c.cells++
 		}
 		t.Children = append(t.Children, rr)
 	}
-	return t
+	return tableWithCaption(t, caption)
+}
+
+func tableWithCaption(table *Node, caption []*Node) *Node {
+	if len(caption) == 0 {
+		return table
+	}
+	children := []*Node{{Kind: Paragraph, Children: caption}}
+	if table != nil {
+		children = append(children, table)
+	}
+	return &Node{Kind: Document, Children: children}
+}
+
+func cellAlignment(n *html.Node) string {
+	v := strings.ToLower(strings.TrimSpace(attr(n, "align")))
+	if v == "left" || v == "center" || v == "right" {
+		return v
+	}
+	style := strings.ToLower(attr(n, "style"))
+	for _, declaration := range strings.Split(style, ";") {
+		parts := strings.SplitN(declaration, ":", 2)
+		if len(parts) == 2 && strings.TrimSpace(parts[0]) == "text-align" {
+			v = strings.TrimSpace(parts[1])
+			if v == "left" || v == "center" || v == "right" {
+				return v
+			}
+		}
+	}
+	return ""
 }
 func (c *converter) fallbackTable(n *html.Node) *Node {
 	var items []*Node
@@ -448,6 +568,25 @@ func inlineText(s string) string {
 	}
 	return v
 }
+func (c *converter) hasWhitespace(n *html.Node) bool {
+	found := false
+	var walk func(*html.Node)
+	walk = func(x *html.Node) {
+		if found || c.skip(x) {
+			return
+		}
+		if x.Type == html.TextNode && strings.IndexFunc(x.Data, unicode.IsSpace) >= 0 {
+			found = true
+			return
+		}
+		for child := x.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(n)
+	return found
+}
+
 func (c *converter) nodeText(n *html.Node) string {
 	var values []string
 	var walk func(*html.Node)
@@ -468,11 +607,11 @@ func (c *converter) nodeText(n *html.Node) string {
 	walk(n)
 	return strings.Join(values, " ")
 }
-func textRaw(n *html.Node) string {
+func (c *converter) textRaw(n *html.Node) string {
 	var b strings.Builder
 	var walk func(*html.Node)
 	walk = func(x *html.Node) {
-		if dom.Hidden(x) {
+		if c.skip(x) {
 			return
 		}
 		if x.Type == html.TextNode {
@@ -489,6 +628,30 @@ func textRaw(n *html.Node) string {
 	walk(n)
 	return b.String()
 }
+
+func codeInfo(n *html.Node) string {
+	code := n.FirstChild
+	for code != nil && code.Type != html.ElementNode {
+		code = code.NextSibling
+	}
+	if code == nil || !strings.EqualFold(code.Data, "code") {
+		return ""
+	}
+	for _, class := range strings.Fields(attr(code, "class")) {
+		info := ""
+		if strings.HasPrefix(strings.ToLower(class), "language-") {
+			info = class[len("language-"):]
+		} else if strings.HasPrefix(strings.ToLower(class), "lang-") {
+			info = class[len("lang-"):]
+		}
+		if info != "" && strings.IndexFunc(info, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("_+-#.", r)
+		}) < 0 {
+			return info
+		}
+	}
+	return ""
+}
 func attr(n *html.Node, key string) string {
 	for _, a := range n.Attr {
 		if strings.EqualFold(a.Key, key) {
@@ -498,11 +661,50 @@ func attr(n *html.Node, key string) string {
 	return ""
 }
 
+func hasAttr(n *html.Node, key string) bool {
+	for _, a := range n.Attr {
+		if strings.EqualFold(a.Key, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func integerAttr(n *html.Node, key string, fallback int) int {
+	v, ok := parseIntegerAttr(n, key)
+	if !ok {
+		return fallback
+	}
+	return v
+}
+
+func parseIntegerAttr(n *html.Node, key string) (int, bool) {
+	if !hasAttr(n, key) {
+		return 0, false
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(attr(n, key)))
+	return v, err == nil
+}
+
 func render(doc *Node, max int) Result {
 	var markdownBlocks, keptText []string
 	var keptNodes []*Node
+	var blocks []*Node
+	var flatten func(*Node)
+	flatten = func(n *Node) {
+		if n != nil && n.Kind == Document {
+			for _, child := range n.Children {
+				flatten(child)
+			}
+			return
+		}
+		if n != nil {
+			blocks = append(blocks, n)
+		}
+	}
+	flatten(doc)
 	used, truncated := 0, false
-	for _, n := range doc.Children {
+	for _, n := range blocks {
 		s := strings.TrimSpace(renderBlock(n, 0))
 		if s == "" {
 			continue
@@ -619,25 +821,52 @@ func renderBlock(n *Node, depth int) string {
 		for strings.Contains(n.Value, f) {
 			f += "`"
 		}
-		return f + "\n" + strings.TrimRight(strings.ReplaceAll(n.Value, "\r\n", "\n"), "\n") + "\n" + f
+		value := strings.ReplaceAll(strings.ReplaceAll(n.Value, "\r\n", "\n"), "\r", "\n")
+		return f + n.Info + "\n" + strings.TrimRight(value, "\n") + "\n" + f
 	case Blockquote:
 		s := renderBlock(&Node{Kind: Document, Children: n.Children}, depth)
 		return "> " + strings.ReplaceAll(s, "\n", "\n> ")
 	case UnorderedList, OrderedList:
 		var a []string
-		for i, x := range n.Children {
-			body := renderBlock(x, depth+1)
+		number := n.Start
+		literalOrdinals := n.Kind == OrderedList && needsLiteralOrdinals(n)
+		ordinal := big.NewInt(int64(n.Start))
+		step := big.NewInt(1)
+		if n.Reversed {
+			step.Neg(step)
+		}
+		for _, x := range n.Children {
 			mark := "- "
 			if n.Kind == OrderedList {
-				mark = fmt.Sprintf("%d. ", i+1)
+				if x.HasValue {
+					number = x.Level
+					ordinal.SetInt64(int64(x.Level))
+				}
+				if !literalOrdinals {
+					mark = fmt.Sprintf("%d. ", number)
+				}
 			}
-			a = append(a, mark+strings.ReplaceAll(body, "\n", "\n  "))
+			body := renderBlock(x, depth+1)
+			if literalOrdinals {
+				body = ordinal.String() + "\\. " + body
+			}
+			indent := strings.Repeat(" ", len(mark))
+			a = append(a, mark+strings.ReplaceAll(body, "\n", "\n"+indent))
+			if n.Kind == OrderedList {
+				if literalOrdinals {
+					ordinal.Add(ordinal, step)
+				} else {
+					number++
+				}
+			}
 		}
 		return strings.Join(a, "\n")
 	case ListItem:
 		var a []string
 		for _, x := range n.Children {
-			a = append(a, renderBlock(x, depth))
+			if value := renderBlock(x, depth); value != "" {
+				a = append(a, value)
+			}
 		}
 		return strings.Join(a, "\n")
 	case Table:
@@ -647,6 +876,25 @@ func renderBlock(n *Node, depth int) string {
 	}
 	return renderInline([]*Node{n})
 }
+func needsLiteralOrdinals(n *Node) bool {
+	if n.Reversed {
+		return true
+	}
+	number := n.Start
+	for _, item := range n.Children {
+		if item.HasValue {
+			return true
+		}
+		// CommonMark ordered-list markers contain at most nine digits and
+		// cannot represent negative ordinals.
+		if number < 0 || number > 999999999 {
+			return true
+		}
+		number++
+	}
+	return false
+}
+
 func renderInline(ns []*Node) string {
 	var b strings.Builder
 	for _, n := range ns {
@@ -654,13 +902,9 @@ func renderInline(ns []*Node) string {
 		case Text:
 			b.WriteString(escape(n.Value))
 		case Emphasis:
-			b.WriteString("*")
-			b.WriteString(renderInline(n.Children))
-			b.WriteString("*")
+			b.WriteString(renderDelimited(renderInline(n.Children), "*"))
 		case Strong:
-			b.WriteString("**")
-			b.WriteString(renderInline(n.Children))
-			b.WriteString("**")
+			b.WriteString(renderDelimited(renderInline(n.Children), "**"))
 		case InlineCode:
 			v := n.Value
 			tick := "`"
@@ -668,31 +912,47 @@ func renderInline(ns []*Node) string {
 				tick += "`"
 			}
 			b.WriteString(tick)
-			if strings.HasPrefix(v, "`") || strings.HasSuffix(v, "`") {
+			needsPadding := strings.HasPrefix(v, "`") || strings.HasSuffix(v, "`") ||
+				((strings.HasPrefix(v, " ") || strings.HasSuffix(v, " ")) && strings.Trim(v, " ") != "")
+			if needsPadding {
 				b.WriteByte(' ')
-				b.WriteString(v)
+			}
+			b.WriteString(v)
+			if needsPadding {
 				b.WriteByte(' ')
-			} else {
-				b.WriteString(v)
 			}
 			b.WriteString(tick)
 		case Link:
 			b.WriteString("[")
 			b.WriteString(renderInline(n.Children))
 			b.WriteString("](")
-			b.WriteString(strings.NewReplacer("(", "%28", ")", "%29").Replace(n.URL))
+			b.WriteString(markdownDestination(n.URL))
 			b.WriteString(")")
 		case Image:
-			b.WriteString("Image: ")
+			b.WriteString("![")
 			b.WriteString(escape(n.Value))
-			if n.URL != "" {
-				b.WriteString(" (")
-				b.WriteString(strings.NewReplacer("(", "%28", ")", "%29").Replace(n.URL))
-				b.WriteString(")")
-			}
+			b.WriteString("](")
+			b.WriteString(markdownDestination(n.URL))
+			b.WriteString(")")
+		case HardBreak:
+			b.WriteString("\\\n")
 		}
 	}
 	return b.String()
+}
+
+func renderDelimited(value, delimiter string) string {
+	if strings.TrimSpace(value) == "" {
+		return value
+	}
+	left := value[:len(value)-len(strings.TrimLeftFunc(value, unicode.IsSpace))]
+	right := value[len(strings.TrimRightFunc(value, unicode.IsSpace)):]
+	core := strings.TrimSpace(value)
+	return left + delimiter + core + delimiter + right
+}
+
+func markdownDestination(value string) string {
+	return strings.NewReplacer("\\", "%5C", "(", "%28", ")", "%29", "<", "%3C", ">", "%3E").Replace(value)
 }
 func renderTable(n *Node) string {
 	if len(n.Children) == 0 {
@@ -702,27 +962,71 @@ func renderTable(n *Node) string {
 	for _, r := range n.Children {
 		var cells []string
 		for _, c := range r.Children {
-			cells = append(cells, strings.ReplaceAll(renderInline(c.Children), "|", "\\|"))
+			value := renderInline(c.Children)
+			value = strings.ReplaceAll(value, "\\\n", " ")
+			value = strings.ReplaceAll(value, "\n", " ")
+			cells = append(cells, strings.ReplaceAll(value, "|", "\\|"))
 		}
 		lines = append(lines, "| "+strings.Join(cells, " | ")+" |")
 	}
 	cols := len(n.Children[0].Children)
 	sep := make([]string, cols)
 	for i := range sep {
-		sep[i] = "---"
+		switch n.Children[0].Children[i].Align {
+		case "left":
+			sep[i] = ":---"
+		case "center":
+			sep[i] = ":---:"
+		case "right":
+			sep[i] = "---:"
+		default:
+			sep[i] = "---"
+		}
 	}
 	lines = append(lines[:1], append([]string{"| " + strings.Join(sep, " | ") + " |"}, lines[1:]...)...)
 	return strings.Join(lines, "\n")
 }
 func escape(s string) string {
 	var b strings.Builder
-	for i, r := range s {
-		if strings.ContainsRune("\\\\*[]<>_#`", r) || (i == 0 && (r == '-' || r == '+' || r == '>')) {
+	lineStart := true
+	markerAt := orderedListMarker(s)
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == '\n' {
+			b.WriteRune(r)
+			lineStart = true
+			i += size
+			marker := orderedListMarker(s[i:])
+			if marker >= 0 {
+				markerAt = i + marker
+			} else {
+				markerAt = -1
+			}
+			continue
+		}
+		escapeRune := strings.ContainsRune("\\*[]<>_`&", r) || i == markerAt
+		if lineStart {
+			escapeRune = escapeRune || r == '#' || r == '>' || r == '-' || r == '+'
+		}
+		if escapeRune {
 			b.WriteByte('\\')
 		}
 		b.WriteRune(r)
+		lineStart = false
+		i += size
 	}
 	return b.String()
+}
+
+func orderedListMarker(s string) int {
+	i := 0
+	for i < len(s) && i < 9 && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i > 0 && i < len(s) && (s[i] == '.' || s[i] == ')') && i+1 < len(s) && (s[i+1] == ' ' || s[i+1] == '\t') {
+		return i
+	}
+	return -1
 }
 func plain(n *Node) string {
 	if n == nil {
