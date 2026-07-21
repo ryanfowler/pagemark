@@ -330,6 +330,85 @@ func TestURLControlCharactersAreRejected(t *testing.T) {
 	}
 }
 
+func TestMaxRepeatedDoesNotTruncateProseSiblings(t *testing.T) {
+	var paragraphs strings.Builder
+	for i := 0; i < 8; i++ {
+		paragraphs.WriteString(`<p>Prose paragraph with enough useful content number `)
+		paragraphs.WriteByte(byte('0' + i))
+		paragraphs.WriteString(`.</p>`)
+	}
+	html := `<main><h1>Long article</h1>` + paragraphs.String() + `<h2>What comes next?</h2></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithMaxRepeatedItems(3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "number 7") || !strings.Contains(doc.Text, "What comes next?") {
+		t.Fatalf("prose was truncated: %s", doc.Text)
+	}
+	for _, warning := range doc.Warnings {
+		if warning.Code == "repeated-items-truncated" {
+			t.Fatalf("unexpected repetition warning: %#v", warning)
+		}
+	}
+	if doc.Stats.SelectedBlocks != 10 {
+		t.Fatalf("selected blocks = %d, want 10", doc.Stats.SelectedBlocks)
+	}
+}
+
+func TestMaxRepeatedLimitsListingRecordsAndWarns(t *testing.T) {
+	html := `<main><h1>Results</h1><div class="item"><p>First listed record.</p></div><div class="item"><p>Second listed record.</p></div><div class="item"><p>Third listed record.</p></div><div class="item"><p>Fourth listed record.</p></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/results", WithPageType(PageTypeListing), WithMaxRepeatedItems(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "First listed") || !strings.Contains(doc.Text, "Second listed") || strings.Contains(doc.Text, "Third listed") {
+		t.Fatalf("unexpected listing output: %s", doc.Text)
+	}
+	if doc.Stats.SelectedBlocks != 3 { // heading and two emitted records
+		t.Fatalf("selected blocks = %d, want 3", doc.Stats.SelectedBlocks)
+	}
+	if len(doc.Warnings) != 1 || doc.Warnings[0].Code != "repeated-items-truncated" {
+		t.Fatalf("missing repetition warning: %#v", doc.Warnings)
+	}
+}
+
+func TestMaxRepeatedLimitsRecordsInsideListsAndTables(t *testing.T) {
+	tests := []struct {
+		name, body, kept, dropped string
+	}{
+		{
+			name:    "list items",
+			body:    `<ul><li class="item">First list record</li><li class="item">Second list record</li><li class="item">Third list record</li></ul>`,
+			kept:    "Second list record",
+			dropped: "Third list record",
+		},
+		{
+			name:    "table rows",
+			body:    `<table><tr><th>Name</th><th>Value</th></tr><tr class="result"><td>First row</td><td>One</td></tr><tr class="result"><td>Second row</td><td>Two</td></tr><tr class="result"><td>Third row</td><td>Three</td></tr></table>`,
+			kept:    "Second row",
+			dropped: "Third row",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			html := `<main><h1>Results</h1>` + test.body + `</main>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/results", WithPageType(PageTypeListing), WithMaxRepeatedItems(2))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(doc.Text, test.kept) || strings.Contains(doc.Text, test.dropped) {
+				t.Fatalf("unexpected output: %s", doc.Text)
+			}
+			if len(doc.Warnings) != 1 || doc.Warnings[0].Code != "repeated-items-truncated" {
+				t.Fatalf("missing repetition warning: %#v", doc.Warnings)
+			}
+			if doc.Stats.SelectedBlocks != 2 { // heading and list/table block
+				t.Fatalf("selected blocks = %d, want 2", doc.Stats.SelectedBlocks)
+			}
+		})
+	}
+}
+
 func TestTruncationKeepsViewsConsistent(t *testing.T) {
 	html := `<main><h1>Title</h1><p><a href="/kept">Kept link</a> <img src="/kept.png" alt="Kept image"> short text.</p><p><a href="/omitted">Omitted link</a> <img src="/omitted.png" alt="Omitted image"> ` + strings.Repeat("long ", 30) + `</p></main>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com", WithPageType(PageTypeDocumentation), WithIncludeImages(true), WithMaxOutputBytes(180))

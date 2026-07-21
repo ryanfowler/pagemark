@@ -73,6 +73,7 @@ type Result struct {
 	Images         []ImageValue
 	Sections       []SectionValue
 	Rejected       []string
+	EmittedBlocks  int
 	Truncated      bool
 }
 type LinkValue struct{ Text, URL string }
@@ -732,7 +733,8 @@ func render(doc *Node, max int) Result {
 	links, images := retainedMedia(keptNodes)
 	return Result{
 		Markdown: md, Text: clean(strings.Join(keptText, "\n")),
-		Links: links, Images: images, Sections: retainedSections(keptNodes), Truncated: truncated,
+		Links: links, Images: images, Sections: retainedSections(keptNodes),
+		EmittedBlocks: len(keptNodes), Truncated: truncated,
 	}
 }
 

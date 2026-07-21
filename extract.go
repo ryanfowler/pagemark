@@ -134,34 +134,43 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		a.diag.PageCandidates = candidates
 	}
 	a.score(pageType)
-	selected := a.selectedNodes()
+	selected, repeatedExcluded, repeatedDropped := a.selectedNodes(pageType)
 	fallback := "primary"
 	if len(selected) == 0 {
 		selected = a.semanticFallback()
+		repeatedExcluded = nil
+		repeatedDropped = 0
 		fallback = "semantic-main"
 	}
 	quality := a.quality(selected)
 	if (pageType == PageTypeArticle || pageType == PageTypeGeneric) && quality < .42 {
 		if article, err := readability.ParseNode(root, rawURL, nil); err == nil && article.Node != nil && len(article.TextContent) > 100 {
 			selected = []*html.Node{article.Node}
+			repeatedExcluded = nil
+			repeatedDropped = 0
 			fallback = "readability"
 			quality = math.Max(quality, .58)
 		}
 	}
 	if len(selected) == 0 {
 		selected = a.highRecall()
+		repeatedExcluded = nil
+		repeatedDropped = 0
 		fallback = "high-recall"
 		quality = .2
 	}
 	if len(selected) == 0 && a.meta.description != "" {
 		selected = metadataNodes(a.meta)
+		repeatedExcluded = nil
+		repeatedDropped = 0
 		fallback = "metadata"
 		quality = .15
 	}
 	if len(selected) == 0 {
 		return nil, ErrNoContent
 	}
-	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: append([]string(nil), o.urlPolicy.Schemes...), AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: a.isIrrelevantNode}
+	exclude := func(n *html.Node) bool { return a.isIrrelevantNode(n) || repeatedExcluded[n] }
+	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: append([]string(nil), o.urlPolicy.Schemes...), AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude}
 	mr := markdown.Convert(selected, cfg)
 	if strings.TrimSpace(mr.Text) == "" {
 		return nil, ErrNoContent
@@ -173,10 +182,9 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	for _, im := range mr.Images {
 		doc.Images = append(doc.Images, Image{Alt: im.Alt, URL: im.URL})
 	}
-	for _, b := range a.blocks {
-		if b.selected {
-			doc.Stats.SelectedBlocks++
-		}
+	doc.Stats.SelectedBlocks = mr.EmittedBlocks
+	if repeatedDropped > 0 {
+		doc.Warnings = append(doc.Warnings, Warning{"repeated-items-truncated", fmt.Sprintf("The repeated-item limit dropped %d selected content items.", repeatedDropped)})
 	}
 	if mr.Truncated {
 		doc.Warnings = append(doc.Warnings, Warning{"output-truncated", "The output reached the configured byte limit."})
@@ -394,33 +402,103 @@ func (a *analysis) score(pt PageType) {
 	}
 }
 
-func (a *analysis) selectedNodes() []*html.Node {
-	var out []*html.Node
-	countByParent := map[*html.Node]int{}
-	for i := range a.blocks {
-		if a.blocks[i].selected {
-			countByParent[a.blocks[i].node.Parent]++
+func (a *analysis) selectedNodes(pageType PageType) (nodes []*html.Node, excluded map[*html.Node]bool, dropped int) {
+	// A large number of sibling blocks is normal in prose. Repetition limits
+	// are only meaningful for records on pages identified as listings or
+	// collections.
+	limitRecords := a.o.maxRepeated > 0 && (pageType == PageTypeListing || pageType == PageTypeCollection)
+	if !limitRecords {
+		for i := range a.blocks {
+			if a.blocks[i].selected {
+				nodes = append(nodes, a.blocks[i].node)
+			}
 		}
+		return nodes, nil, 0
 	}
+
+	excluded = make(map[*html.Node]bool)
+	accepted := make(map[*html.Node]bool)
+	rejected := make(map[*html.Node]bool)
+	recordCounts := make(map[*html.Node]int)
+	acceptRecord := func(record *html.Node) bool {
+		if record == nil || record.Parent == nil {
+			return true
+		}
+		if accepted[record] {
+			return true
+		}
+		if rejected[record] {
+			return false
+		}
+		if recordCounts[record.Parent] >= a.o.maxRepeated {
+			rejected[record] = true
+			dropped++
+			return false
+		}
+		accepted[record] = true
+		recordCounts[record.Parent]++
+		return true
+	}
+
 	for i := range a.blocks {
 		b := &a.blocks[i]
 		if !b.selected {
 			continue
 		}
-		if a.o.maxRepeated > 0 && countByParent[b.node.Parent] > a.o.maxRepeated {
-			siblings := 0
-			for _, x := range out {
-				if x.Parent == b.node.Parent {
-					siblings++
-				}
-			}
-			if siblings >= a.o.maxRepeated {
-				continue
+		if !acceptRecord(listingRecord(b.node)) {
+			continue
+		}
+		// Lists and tables are segmented as single blocks. Limit their marked
+		// li/tr records in place through the converter's exclusion hook.
+		for _, record := range a.descendantListingRecords(b.node) {
+			if !acceptRecord(record) {
+				excluded[record] = true
 			}
 		}
-		out = append(out, b.node)
+		nodes = append(nodes, b.node)
 	}
-	return out
+	return nodes, excluded, dropped
+}
+
+// listingRecord finds an explicitly marked record container. Restricting this
+// to container elements avoids treating prose headings such as class=item-title
+// as independent records.
+func listingRecord(n *html.Node) *html.Node {
+	for p := n; p != nil; p = p.Parent {
+		if isListingRecordElement(p) {
+			return p
+		}
+	}
+	return nil
+}
+
+func isListingRecordElement(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || !containsAny(elementTokens(n), "card", "result", "item", "product", "record") {
+		return false
+	}
+	switch strings.ToLower(n.Data) {
+	case "div", "article", "section", "li", "tr", "a", "figure":
+		return true
+	}
+	return false
+}
+
+func (a *analysis) descendantListingRecords(n *html.Node) (records []*html.Node) {
+	var visit func(*html.Node)
+	visit = func(parent *html.Node) {
+		for ch := parent.FirstChild; ch != nil; ch = ch.NextSibling {
+			if hardHidden(ch) || a.isIrrelevantNode(ch) {
+				continue
+			}
+			if isListingRecordElement(ch) {
+				records = append(records, ch)
+				continue
+			}
+			visit(ch)
+		}
+	}
+	visit(n)
+	return records
 }
 func (a *analysis) semanticFallback() []*html.Node {
 	var main *html.Node
