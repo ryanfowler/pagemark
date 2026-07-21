@@ -24,6 +24,7 @@ const (
 	Text
 	Emphasis
 	Strong
+	Superscript
 	InlineCode
 	CodeBlock
 	Blockquote
@@ -225,6 +226,7 @@ func (c *converter) inlines(n *html.Node) []*Node {
 func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 	var out []*Node
 	var walk func(*html.Node)
+	var walkSiblings func([]*html.Node)
 	walk = func(x *html.Node) {
 		if c.skip(x) {
 			return
@@ -281,17 +283,32 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 		case "strong", "b":
 			out = append(out, &Node{Kind: Strong, Children: c.inlines(x)})
 			return
+		case "sup":
+			if children := c.inlines(x); len(children) > 0 {
+				out = append(out, &Node{Kind: Superscript, Children: children})
+			}
+			return
 		case "code":
 			out = append(out, &Node{Kind: InlineCode, Value: c.textRaw(x)})
 			return
 		}
+		var children []*html.Node
 		for ch := x.FirstChild; ch != nil; ch = ch.NextSibling {
-			walk(ch)
+			children = append(children, ch)
+		}
+		walkSiblings(children)
+	}
+	walkSiblings = func(nodes []*html.Node) {
+		var previous *html.Node
+		for _, n := range nodes {
+			if previous != nil && c.inlineBoundary(previous, n) {
+				out = append(out, &Node{Kind: Text, Value: " "})
+			}
+			walk(n)
+			previous = n
 		}
 	}
-	for _, n := range nodes {
-		walk(n)
-	}
+	walkSiblings(nodes)
 	var merged []*Node
 	for _, n := range out {
 		if n.Kind == Text && len(merged) > 0 && merged[len(merged)-1].Kind == Text {
@@ -301,6 +318,29 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 		merged = append(merged, n)
 	}
 	return merged
+}
+
+// inlineBoundary preserves boundaries for elements whose HTML or ARIA
+// semantics establish separate layout items. Ordinary inline elements are not
+// boundaries: authors commonly split a single word across them for styling.
+func (c *converter) inlineBoundary(left, right *html.Node) bool {
+	if left.Type != html.ElementNode || right.Type != html.ElementNode ||
+		c.skip(left) || c.skip(right) || strings.EqualFold(right.Data, "sup") ||
+		!layoutItem(left) || !layoutItem(right) {
+		return false
+	}
+	return clean(c.nodeText(left)) != "" && clean(c.nodeText(right)) != ""
+}
+
+func layoutItem(n *html.Node) bool {
+	if isBlockElement(strings.ToLower(n.Data)) {
+		return true
+	}
+	switch strings.ToLower(attr(n, "role")) {
+	case "cell", "columnheader", "gridcell", "listitem", "row", "rowheader":
+		return true
+	}
+	return false
 }
 
 func (c *converter) listItems(n *html.Node) []*Node {
@@ -912,7 +952,7 @@ func renderInline(ns []*Node) string {
 // breaks, such as ATX headings, render an HTML break as horizontal whitespace.
 func renderInlineWithHardBreak(ns []*Node, hardBreak string) string {
 	var b strings.Builder
-	for _, n := range ns {
+	for i, n := range ns {
 		var value string
 		switch n.Kind {
 		case Text:
@@ -921,6 +961,13 @@ func renderInlineWithHardBreak(ns []*Node, hardBreak string) string {
 			value = renderDelimited(renderInlineWithHardBreak(n.Children, hardBreak), "*")
 		case Strong:
 			value = renderDelimited(renderInlineWithHardBreak(n.Children, hardBreak), "**")
+		case Superscript:
+			value = renderInlineWithHardBreak(n.Children, hardBreak)
+			if superscriptNeedsBounds(ns, i) {
+				value = "^(" + value + ")"
+			} else {
+				value = "^" + value
+			}
 		case InlineCode:
 			v := n.Value
 			tick := "`"
@@ -1065,14 +1112,73 @@ func plain(n *Node) string {
 	if n == nil {
 		return ""
 	}
+	switch n.Kind {
+	case Superscript:
+		return clean("^" + plainInlineNode(n))
+	case Heading, Paragraph, Text, Emphasis, Strong, InlineCode, Link, Image, HardBreak, TableCell:
+		return clean(plainInlineNode(n))
+	}
 	if n.Value != "" {
 		return clean(n.Value)
 	}
-	var a []string
+	var values []string
 	for _, x := range n.Children {
 		if v := plain(x); v != "" {
-			a = append(a, v)
+			values = append(values, v)
 		}
 	}
-	return strings.Join(a, " ")
+	return strings.Join(values, " ")
+}
+
+func plainInlineNodes(ns []*Node) string {
+	var b strings.Builder
+	for i, n := range ns {
+		value := plainInlineNode(n)
+		if n.Kind == Superscript {
+			if superscriptNeedsBounds(ns, i) {
+				value = "^(" + value + ")"
+			} else {
+				value = "^" + value
+			}
+		}
+		writeInline(&b, value)
+	}
+	return b.String()
+}
+
+func plainInlineNode(n *Node) string {
+	if n == nil {
+		return ""
+	}
+	switch n.Kind {
+	case Text, InlineCode:
+		return n.Value
+	case Image:
+		return n.Value
+	case HardBreak:
+		return " "
+	case Superscript, Heading, Paragraph, Emphasis, Strong, Link, TableCell:
+		return plainInlineNodes(n.Children)
+	}
+	return plain(n)
+}
+
+func superscriptNeedsBounds(ns []*Node, i int) bool {
+	value := plainInlineNode(ns[i])
+	if value == "" {
+		return false
+	}
+	last, _ := utf8.DecodeLastRuneInString(value)
+	if !unicode.IsLetter(last) && !unicode.IsDigit(last) {
+		return false
+	}
+	for j := i + 1; j < len(ns); j++ {
+		next := plainInlineNode(ns[j])
+		if next == "" {
+			continue
+		}
+		first, _ := utf8.DecodeRuneInString(next)
+		return unicode.IsLetter(first) || unicode.IsDigit(first)
+	}
+	return false
 }
