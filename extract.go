@@ -47,6 +47,8 @@ type analysis struct {
 	discussionBodyDescendants                       map[*html.Node]uint8
 	articleCommentRegions, commentRecordCounts      map[*html.Node]uint8
 	semanticArticleDescendants                      map[*html.Node]uint8
+	semanticArticleBefore                           map[*html.Node]bool
+	selfReferences                                  map[*html.Node]uint8
 	microdataArticleRecords                         map[*html.Node]bool
 	dominantMicrodataArticle                        *html.Node
 }
@@ -531,7 +533,7 @@ func (a *analysis) score(pt PageType) {
 			if tag == "aside" {
 				score -= 1.5
 			}
-			if containsToken(tokens, badTokens) {
+			if hasBoilerplateToken(p) {
 				score -= 3
 				b.reasons = append(b.reasons, "boilerplate label")
 			}
@@ -1073,7 +1075,7 @@ func (a *analysis) highRecall() []*html.Node {
 		for p := b.node; p != nil; p = p.Parent {
 			if p.Type == html.ElementNode {
 				t := strings.ToLower(p.Data)
-				if t == "header" || t == "footer" || t == "nav" || containsToken(elementTokens(p), badTokens) {
+				if t == "header" || t == "footer" || t == "nav" || hasBoilerplateToken(p) {
 					bad = true
 					break
 				}
@@ -1720,7 +1722,33 @@ func metadataNodes(m metadata) []*html.Node {
 	return append(nodes, n)
 }
 
-var badTokens = []string{"cookie", "cookies", "consent", "banner", "share", "social", "newsletter", "signup", "sign-up", "promo", "copyright", "toc"}
+var badTokens = []string{"cookie", "cookies", "consent", "banner", "share", "newsletter", "signup", "sign-up", "promo", "copyright", "toc"}
+
+// hasBoilerplateToken retains the cross-page social-furniture signal without
+// treating every compound use of “social” as page chrome. In particular,
+// subject classes such as social-impact and social-science remain content,
+// while exact and conventional widget classes keep the historical penalty.
+func hasBoilerplateToken(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	if containsToken(elementTokens(n), badTokens) {
+		return true
+	}
+	for _, attr := range []string{"id", "class", "role"} {
+		for _, token := range strings.Fields(strings.ToLower(attrValue(n, attr))) {
+			if token == "social" {
+				return true
+			}
+			if containsAny(token, "social") && containsAny(token,
+				"follow", "link", "links", "media", "widget", "icon", "icons",
+				"share", "sharing", "profile", "network", "networks", "nav") {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // These labels introduce navigational or promotional regions regardless of
 // page type. Matching is deliberately exact so subject sections that happen to
@@ -1832,7 +1860,7 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 	}
 	irrelevant := irrelevantNode(n)
 	if !irrelevant && a.pageType == PageTypeArticle {
-		irrelevant = a.articleAuxiliaryNode(n) || a.microdataArticleRecords[n]
+		irrelevant = a.articleAuxiliaryNode(n) || a.isTrailingSocialCardRegion(n) || a.microdataArticleRecords[n]
 	}
 	if !irrelevant && isTrailingArticleCardRegion(n) {
 		// A final article classification makes trailing cards auxiliary. When
@@ -1861,6 +1889,9 @@ func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 			(!isRelatedCardRegion(p) || hasSemanticArticleBeforeOrAround(p)) {
 			return true
 		}
+		if a.isTrailingSocialCardRegion(p) {
+			return true
+		}
 		if isPromotionalCardRegion(p) && isTrailingArticleCardRegion(p) {
 			return true
 		}
@@ -1876,6 +1907,134 @@ func (a *analysis) primaryArticleAncestor(n *html.Node) *html.Node {
 		}
 	}
 	return nil
+}
+
+// isTrailingSocialCardRegion identifies social/profile furniture and preview
+// cards placed after the primary article. Social vocabulary alone is not
+// enough: posts embedded within the semantic article can be authored content.
+func (a *analysis) isTrailingSocialCardRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	// Reject ordinary containers before doing ancestry, document-order, or
+	// subtree work. Pages can have thousands of neutral siblings after an
+	// article, and scanning all preceding siblings for each one is quadratic.
+	tag := strings.ToLower(n.Data)
+	switch tag {
+	case "aside", "section", "div", "article", "figure":
+	default:
+		return false
+	}
+	tokens := elementTokens(n)
+	cardShape := tag == "aside" || containsAny(tokens, "card", "embed", "post")
+	platformMarker := containsAny(tokens,
+		"bsky", "bluesky", "mastodon", "twitter", "tweet", "instagram",
+		"facebook", "linkedin", "fediverse")
+	// “Social” and “threads” can describe substantive article subjects. They
+	// only become auxiliary evidence when paired with recognizable card shape.
+	genericSocialMarker := containsAny(tokens, "social", "threads") && cardShape
+	profileMarker := containsAny(tokens, "share", "profile", "subscribe") && cardShape
+	selfPreviewCandidate := cardShape && (tag == "aside" || containsAny(tokens, "card", "preview"))
+	if !platformMarker && !genericSocialMarker && !profileMarker && !selfPreviewCandidate {
+		return false
+	}
+	if hasNonCardArticleAncestor(n) || !a.hasSemanticArticleBefore(n) {
+		return false
+	}
+	if platformMarker || genericSocialMarker || profileMarker {
+		return true
+	}
+	// Only structured preview candidates pay for the cached subtree query.
+	return a.hasSelfReference(n)
+}
+
+// hasSemanticArticleBefore answers a document-order query from a lazily built
+// index. Building the index once avoids repeatedly scanning preceding sibling
+// subtrees for every trailing candidate.
+func (a *analysis) hasSemanticArticleBefore(n *html.Node) bool {
+	if a.semanticArticleBefore == nil {
+		a.semanticArticleBefore = make(map[*html.Node]bool)
+		seen := false
+		walk(a.root, func(x *html.Node) bool {
+			if hardHidden(x) {
+				return false
+			}
+			a.semanticArticleBefore[x] = seen
+			if x.Type == html.ElementNode && strings.EqualFold(x.Data, "article") &&
+				!containsAny(elementTokens(x), "card") {
+				seen = true
+			}
+			return true
+		})
+	}
+	return a.semanticArticleBefore[n]
+}
+
+func (a *analysis) hasSelfReference(root *html.Node) (result bool) {
+	if root == nil || hardHidden(root) {
+		return false
+	}
+	if state := a.selfReferences[root]; state != 0 {
+		return state == 2
+	}
+	if a.selfReferences == nil {
+		a.selfReferences = make(map[*html.Node]uint8)
+	}
+	defer func() {
+		if result {
+			a.selfReferences[root] = 2
+		} else {
+			a.selfReferences[root] = 1
+		}
+	}()
+
+	target := a.meta.canonical
+	if target == "" && a.pageURL != nil {
+		target = a.pageURL.String()
+	}
+	target = comparablePageURL(target, nil)
+	if target == "" {
+		return false
+	}
+	if root.Type == html.ElementNode && strings.EqualFold(root.Data, "a") &&
+		comparablePageURL(attrValue(root, "href"), a.base) == target {
+		return true
+	}
+	for ch := root.FirstChild; ch != nil; ch = ch.NextSibling {
+		if a.hasSelfReference(ch) {
+			return true
+		}
+	}
+	return false
+}
+
+func comparablePageURL(raw string, base *url.URL) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	if base != nil {
+		u = base.ResolveReference(u)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	u.Fragment = ""
+	q := u.Query()
+	for key := range q {
+		lower := strings.ToLower(key)
+		if strings.HasPrefix(lower, "utm_") || lower == "fbclid" || lower == "gclid" {
+			q.Del(key)
+		}
+	}
+	u.RawQuery = q.Encode()
+	u.Path = strings.TrimSuffix(u.Path, "/")
+	if u.Path == "" {
+		u.Path = "/"
+	}
+	return u.String()
 }
 
 func isRelatedCardRegion(n *html.Node) bool {

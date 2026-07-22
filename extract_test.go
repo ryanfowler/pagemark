@@ -241,6 +241,86 @@ func TestTrailingArticleCardGridIsHardExcluded(t *testing.T) {
 	}
 }
 
+func TestTrailingSocialCardAndSelfPreviewAreExcluded(t *testing.T) {
+	html := `<html><head><title>Safer account recovery</title><meta property="og:type" content="article"><meta name="description" content="A practical account recovery design that avoids locking legitimate users out."><link rel="canonical" href="https://example.com/articles/account-recovery"></head><body><main><article><h1>Safer account recovery</h1><p>The recovery flow starts with a short-lived challenge and records each attempt for later review.</p><blockquote class="bsky-post"><p>A security engineer wrote: recovery mechanisms deserve the same careful threat modeling as sign-in.</p><a href="https://bsky.app/profile/example/post/quoted">View quoted post</a></blockquote><p>This quotation is part of the analysis, and the article then explains how independent verification limits abuse.</p></article><aside class="disclosure"><p>Disclosure: the author advised a team that uses a similar recovery design.</p></aside><aside class="social-profile"><nav><a href="/feed.xml">Feed</a><a href="https://bsky.app/profile/example">Bluesky profile</a></nav><div class="bsky-card"><p>This copied post says the new account recovery article is now available.</p><a class="preview-card" href="https://example.com/articles/account-recovery/"><strong>Safer account recovery</strong><span>A practical account recovery design that avoids locking legitimate users out.</span></a></div></aside></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/read?source=feed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"short-lived challenge", "security engineer wrote", "careful threat modeling", "independent verification", "Disclosure: the author advised"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing article content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Feed", "Bluesky profile", "copied post", "new account recovery article", "locking legitimate users out"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included trailing social content %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestSubstantiveTrailingSocialSectionSurvives(t *testing.T) {
+	html := `<html><head><title>Designing public spaces</title><meta property="og:type" content="article"></head><body><main><article><h1>Designing public spaces</h1><p>The design process began with observations of how residents use the square throughout the day.</p><p>Those observations informed the proposed seating, lighting, and pedestrian routes.</p></article><section class="social-impact"><h2>Social impact</h2><p>The finished square gave neighborhood groups a dependable meeting place and made community events easier to organize.</p><p>Local accessibility advocates also documented how the unobstructed routes improved independent travel.</p></section></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/articles/public-spaces")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Social impact", "dependable meeting place", "improved independent travel"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing substantive trailing section %q: %s", want, doc.Text)
+		}
+	}
+}
+
+func TestDocumentationSocialFollowWidgetIsExcluded(t *testing.T) {
+	html := `<html><head><title>Deployment reference</title></head><body><main class="documentation"><h1>Deployment reference</h1><p>Create a deployment by selecting an environment and providing an immutable revision identifier.</p><p>Verify the resulting status before directing production traffic to the new revision.</p><div class="social"><p>Follow us on social media for product announcements and company updates.</p></div></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/docs/deployments", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Deployment reference", "immutable revision identifier", "Verify the resulting status"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing documentation content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Follow us", "social media", "company updates"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included social-follow widget %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestSelfPreviewPreservesIdentityQueryParameters(t *testing.T) {
+	html := `<html><head><title>First query article</title><meta property="og:type" content="article"><link rel="canonical" href="https://example.com/post?id=1"></head><body><main><article><h1>First query article</h1><p>The primary article contains enough detail to establish its semantic content region.</p><p>Its second paragraph explains why query parameters identify distinct posts on this site.</p></article><aside class="preview-card"><a href="/post?id=2"><strong>Second query article</strong></a><p>This preview belongs to a different article and must not be mistaken for a self-preview.</p></aside><aside class="preview-card"><a href="/post?id=1&amp;utm_source=social"><strong>First query article</strong></a><p>This duplicate self-preview should be removed even when its link includes tracking.</p></aside></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/post?id=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"belongs to a different article"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing distinct query-linked preview %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"duplicate self-preview", "link includes tracking"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included canonical self-preview %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func BenchmarkTrailingNeutralContainers(b *testing.B) {
+	html := `<html><head><meta property="og:type" content="article"></head><body><main><article><h1>Large article</h1><p>The primary article provides enough prose for extraction before a large number of neutral layout containers.</p></article>` +
+		strings.Repeat(`<div><p>Neutral trailing layout content remains inexpensive to classify.</p></div>`, 8000) + `</main></body></html>`
+	input := []byte(html)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := ExtractBytes(input, "https://example.com/articles/large"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestStrongArticleSignalsOutweighRelatedContentCards(t *testing.T) {
 	html := `<html><head><title>GitHub suddenly rejected my SSH key</title><meta property="og:type" content="article"><link rel="canonical" href="https://example.com/blog/github-rejected-ssh-key"></head><body><main><aside class="author-profile"><h2>Ada Example</h2><p>A software engineer writing about developer tools.</p></aside><article itemscope itemtype="https://schema.org/CreativeWork"><h1 itemprop="headline">GitHub suddenly rejected my SSH key</h1><p>Yesterday a working SSH key began failing without warning, even though the local configuration and repository permissions had not changed.</p><p>I compared the key fingerprint with the account settings, inspected the verbose client output, and found that the server was rejecting an outdated registration.</p><p>Removing that registration and uploading the current public key restored access. The diagnostic steps made the cause clear and avoided replacing unrelated credentials.</p></article><section class="related-content"><h2>You May Also Enjoy</h2><div class="story-card"><h3>Rotating deployment credentials</h3><p>This separate tutorial explains how another credential can be replaced safely.</p></div><div class="story-card"><h3>Debugging network access</h3><p>This unrelated excerpt discusses network diagnostics for remote services.</p></div><div class="story-card"><h3>Managing repository settings</h3><p>This recommendation describes settings on a different page.</p></div><div class="story-card"><h3>Understanding key formats</h3><p>This final related excerpt belongs to a fourth separate article.</p></div></section></main></body></html>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/read?id=42")
