@@ -313,6 +313,114 @@ func TestTrailingNewsletterWrapperIsExcluded(t *testing.T) {
 	}
 }
 
+func TestStructuralArticleTailsAreExcluded(t *testing.T) {
+	html := `<html><head><meta property="og:type" content="article"></head><body><main>
+<div class="topic-tags"><a href="/topics/ai">Artificial Intelligence</a><a href="/topics/software">Software Engineering</a><a href="/topics/ml">Machine Learning</a><a href="/topics/programming">Programming</a></div>
+<article><h1>Measured result</h1><p>The investigation explains the measured result, the evidence supporting it, and the limitations that affect its interpretation.</p><p>The conclusion records what changed and why the evidence supports that conclusion.</p><section class="footnotes"><h2>Notes</h2><ol><li id="note-1">The archived measurement includes the original calibration details.</li></ol></section></article>
+<section class="newsletter-panel"><h2>Be the first to see the latest research</h2><p>News and updates in your inbox.</p><form action="/newsletter/signup"><label>Instagram <input name="website"></label><span>This field is for validation purposes and should be left unchanged.</span><label>Email <input type="email"></label><button>Subscribe</button></form><p>By submitting your email you agree to our Terms of Use and Privacy Policy.</p></section>
+<section><h2>Get a home loan that helps you win</h2><a href="/loans">Get started</a></section>
+<section class="next-step"><h2>Ready for the next step?</h2><a href="/account/start">Get started</a></section>
+<section class="briefing-club"><h2>Research Briefing Club</h2><form action="/join"><label>Email <input type="email"></label><label>Organization <input type="text"></label><button>Join</button></form><p>By joining, you agree to our Privacy Policy.</p></section>
+<section class="research-alerts"><h2>Research Alerts Club</h2><form action="/join"><label>Email <input type="email"></label><label>Website <input type="text"></label><span>This field is for validation purposes and should be left unchanged.</span><button>Join</button></form></section>
+<section><h2>Recommended for you</h2><div><h3><a href="/one">Life with hazard ratios</a></h3><time>May 2</time></div><div><h3><a href="/two">The trouble with vitamin studies</a></h3><time>May 3</time></div><div><h3><a href="/three">Choosing the right painkiller</a></h3><time>May 4</time></div></section>
+<div class="site-links"><a href="/help">Help</a><a href="/about">About</a><a href="/careers">Careers</a><a href="/privacy">Privacy</a><a href="/rules">Rules</a><a href="/terms">Terms</a></div>
+</main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/research/result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Measured result", "evidence supporting it", "The archived measurement"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing article content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Artificial Intelligence", "Be the first", "validation purposes", "Privacy Policy", "Get a home loan", "Ready for the next step", "Research Briefing Club", "Research Alerts Club", "Life with hazard ratios", "Choosing the right painkiller", "Careers", "Rules"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included peripheral content %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestSubstantiveRecommendationsFormsAndSourcesSurvive(t *testing.T) {
+	tests := []struct {
+		name, tail string
+		want       []string
+		inside     bool
+	}{
+		{
+			name:   "linked recommendations in article",
+			tail:   `<section><h2>Recommendations</h2><div><h3><a href="/monitoring">Monitor monthly</a></h3><p>Clinicians should review adverse effects at every visit and record how the patient responds over time.</p></div><div><h3><a href="/dosing">Adjust the dose</a></h3><p>The dose should change when monthly measurements show that the current treatment is no longer appropriate.</p></div></section>`,
+			want:   []string{"Recommendations", "Monitor monthly", "review adverse effects", "Adjust the dose"},
+			inside: true,
+		},
+		{
+			name:   "linked related work in article",
+			tail:   `<section><h2>Related work</h2><div><h3><a href="/papers/a">Earlier method</a></h3><p>The earlier method established the baseline algorithm and documented where its accuracy declined.</p></div><div><h3><a href="/papers/b">Recent extension</a></h3><p>The recent extension improves that algorithm while retaining its original convergence guarantees.</p></div></section>`,
+			want:   []string{"Related work", "Earlier method", "baseline algorithm", "Recent extension"},
+			inside: true,
+		},
+		{
+			name:   "contact form example in article",
+			tail:   `<section class="contact-form-example"><h2>Contact form implementation</h2><p>This example validates an email address, records the message, and explains how an application can present errors without losing user input.</p><form action="/examples/contact"><label>Email <input type="email"></label><label>Message <textarea></textarea></label><label>Website <input type="text"></label><span>This field is for validation purposes and should be left unchanged.</span><button type="submit">Send message</button></form><p>The example links to the Privacy Policy because production contact forms must explain how submitted messages are processed.</p></section>`,
+			want:   []string{"Contact form implementation", "records the message", "production contact forms"},
+			inside: true,
+		},
+		{
+			name: "post-article calculator",
+			tail: `<section class="risk-calculator"><h2>Risk calculator</h2><p>This worksheet demonstrates how the variables in the analysis combine to produce the reported estimate for an individual case.</p><form><label>Baseline value <input type="number"></label><label>Adjustment <input type="number"></label><button type="button">Calculate result</button></form></section>`,
+			want: []string{"Risk calculator", "worksheet demonstrates", "reported estimate"},
+		},
+		{
+			name: "mortgage calculator",
+			tail: `<section class="mortgage-calculator"><h2>Mortgage repayment calculator</h2><p>This calculator applies the repayment formula described in the article and shows how principal, term, and interest affect the monthly amount.</p><form><label>Principal <input type="number"></label><label>Interest rate <input type="number"></label><button type="button">Calculate repayment</button></form></section>`,
+			want: []string{"Mortgage repayment calculator", "repayment formula", "monthly amount"},
+		},
+		{
+			name: "linked sources",
+			tail: `<section class="sources"><h2>Sources and evidence</h2><div><h3><a href="/study/one">Longitudinal cohort study</a></h3><p>The first study supplies the baseline measurements used in the analysis.</p></div><div><h3><a href="/study/two">Controlled comparison</a></h3><p>The second study tests the result against a matched comparison group.</p></div><div><h3><a href="/study/three">Independent replication</a></h3><p>The third study reports an independent replication using newer observations.</p></div></section>`,
+			want: []string{"Sources and evidence", "Longitudinal cohort study", "Independent replication"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			html := `<html><head><meta property="og:type" content="article"><title>Clinical evidence review</title></head><body><main><article><h1>Clinical evidence review</h1><p>The review evaluates the available measurements, explains the analytical method, and reports the practical implications of the observed result.</p><p>A second paragraph documents important limitations and establishes the context needed to interpret the material that follows.</p>`
+			if tt.inside {
+				html += tt.tail + `</article>`
+			} else {
+				html += `</article>` + tt.tail
+			}
+			html += `</main></body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/reviews/evidence")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(doc.Text, want) {
+					t.Errorf("missing substantive content %q: %s", want, doc.Text)
+				}
+			}
+		})
+	}
+}
+
+func TestNoteToEditorsPrecedesExcludedRegistrationPanel(t *testing.T) {
+	html := `<html><head><meta property="og:type" content="article"></head><body><main><article><h1>New flight programme</h1><p>The programme will evaluate a new wing configuration during a series of instrumented flights.</p><section><h2>Note to editors</h2><p>The test aircraft will remain based at the company flight facility throughout the programme.</p></section></article><section class="registration"><h2>Stay up to date with our latest news</h2><p>Create an account for company announcements.</p><form action="/register"><label>Email <input type="email"></label><button>Register</button></form></section></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/news/flight-programme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Note to editors", "test aircraft"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing editorial note %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Stay up to date", "Create an account", "Register"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included registration panel %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
 func TestArticleAuxiliaryLabelsAreHardExcluded(t *testing.T) {
 	html := `<main><article><h1>Primary analysis</h1><p>The analysis explains the important result with enough detail for readers.</p><p>Readers can read more about the underlying method in this sentence.</p></article><section><h2>Related posts</h2><article><h3>Other result</h3><p>A substantial summary of a different post that must not overcome boilerplate penalties.</p></article></section><section><h2>Read more</h2><p>A long promotional description for an unrelated report.</p></section><aside aria-label="Share"><p>Share this story on several social networks.</p></aside><section><h2>More by Ada Writer</h2><p>Updates, podcasts, and interviews from the same author.</p></section></main>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/analysis", WithPageType(PageTypeArticle))
