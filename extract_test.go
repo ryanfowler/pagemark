@@ -658,6 +658,37 @@ func TestNonArticleShareAndReadMoreSectionsAreRetained(t *testing.T) {
 	}
 }
 
+func TestNumberedSectionHeadingFormats(t *testing.T) {
+	tests := []struct {
+		text string
+		want bool
+	}{
+		{"1. Cut is undoable", true},
+		{"1) Cut is undoable", true},
+		{"1: Cut is undoable", true},
+		{"1 - Cut is undoable", true},
+		{"1 – Cut is undoable", true},
+		{"1 Heading without punctuation", false},
+		{"7 Ways to Improve Reliability", false},
+		{"5 Things to Know", false},
+		{"12. A later section", true},
+		{"100: Appendix section", true},
+		{"2024: A year in review", false},
+		{"2024 Predictions", false},
+		{"10 Things I Learned", false},
+		{"1Password for teams", false},
+		{"1-800 numbers explained", false},
+		{"Chapter 1", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.text, func(t *testing.T) {
+			if got := isNumberedSectionHeading(tc.text); got != tc.want {
+				t.Fatalf("isNumberedSectionHeading(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTitleEquivalentDecorations(t *testing.T) {
 	tests := []struct {
 		name, heading, title, site string
@@ -676,6 +707,119 @@ func TestTitleEquivalentDecorations(t *testing.T) {
 				t.Fatalf("titleEquivalent(%q, %q, %q) = %v, want %v", tc.heading, tc.title, tc.site, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestArticleMetadataTitleWinsOverInternalH1(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="Intel Starts Shipping High-NA EUV Silicon"><meta property="og:type" content="article"></head><body><article><p>The opening explains why this manufacturing milestone matters and provides enough selected prose to establish the article body.</p><h1>What the machine actually is</h1><p>This section explains the machine architecture and the practical implications of the new process in substantial detail.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Intel Starts Shipping High-NA EUV Silicon\n") {
+		t.Fatalf("metadata title did not precede the internal heading:\n%s", doc.Markdown)
+	}
+	if strings.Count(doc.Text, "Intel Starts Shipping High-NA EUV Silicon") != 1 || !strings.Contains(doc.Markdown, "## What the machine actually is") {
+		t.Fatalf("title was duplicated or internal h1 was not demoted:\n%s", doc.Markdown)
+	}
+}
+
+func TestArticleMetadataTitleWinsOverNumberedInternalH1(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="Introducing Ghost Cut - or why Cut &amp; Paste is broken everywhere"></head><body><article><h1>1. Cut is undoable</h1><p>This first section contains substantial explanatory prose about editor behavior and why the operation cannot be modeled correctly.</p><p>The article continues with implementation details and examples that establish a complete primary prose region.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/blog/ghost-cut", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Introducing Ghost Cut - or why Cut \\& Paste is broken everywhere\n") || !strings.Contains(doc.Markdown, "## 1\\. Cut is undoable") {
+		t.Fatalf("numbered section replaced the metadata title:\n%s", doc.Markdown)
+	}
+}
+
+func TestSingleDigitListStyleArticleTitleOverridesStaleMetadata(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="Stale Metadata"></head><body><article><h1>7 Ways to Improve Reliability</h1><p>This article provides substantial explanatory prose about practical reliability improvements and their operational impact.</p><p>A second substantive paragraph confirms that the leading list-style heading labels the selected article body.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# 7 Ways to Improve Reliability\n") || strings.Contains(doc.Text, "Stale Metadata") {
+		t.Fatalf("single-digit list-style title was treated as a section:\n%s", doc.Markdown)
+	}
+}
+
+func TestHiddenPublicationMetadataDoesNotInvalidateHeadline(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="Stale Metadata Title"></head><body><article><time hidden datetime="2020-01-01">January 1, 2020</time><h1>Current Visible Headline</h1><p>This article contains substantial explanatory prose that clearly belongs to the current visible source headline.</p><p>A second substantive paragraph confirms the selected article structure and its legitimate leading heading.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Current Visible Headline\n") || strings.Contains(doc.Text, "Stale Metadata Title") {
+		t.Fatalf("hidden publication metadata invalidated visible headline:\n%s", doc.Markdown)
+	}
+}
+
+func TestArticleMetadataTitleWinsWhenDatePrecedesInternalH1(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="Perlin's Noise Algorithm"></head><body><article><time datetime="2024-02-01">February 1, 2024</time><h1>What is Noise?</h1><p>This section introduces noise functions with substantial explanatory prose and examples for the tutorial reader.</p><p>The tutorial continues with gradients and interpolation details that establish a complete article body.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/tutorial/perlin", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Perlin's Noise Algorithm\n") || !strings.Contains(doc.Markdown, "## What is Noise?") {
+		t.Fatalf("post-date section heading replaced metadata title:\n%s", doc.Markdown)
+	}
+}
+
+func TestArticleMetadataEquivalentH2IsPromoted(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="Perlin's Noise Algorithm"></head><body><article><h2>Perlin's Noise Algorithm</h2><p>This tutorial introduces coherent noise with enough explanatory prose to establish the selected article body.</p><p>Further details describe interpolation, gradients, and implementation choices for the complete algorithm.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/tutorial/perlin", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Perlin's Noise Algorithm\n") || strings.Count(doc.Text, "Perlin's Noise Algorithm") != 1 {
+		t.Fatalf("matching h2 was not promoted exactly once:\n%s", doc.Markdown)
+	}
+}
+
+func TestMarkedSourceHeadlineOverridesConflictingBrowserTitle(t *testing.T) {
+	html := `<html><head><title>Incorrect Browser Title</title></head><body><article><h1 itemprop="headline">Correct Body Headline</h1><p>This report contains substantial primary prose that clearly belongs to the explicitly marked source headline.</p><p>Additional reporting confirms the article structure and keeps the selected body substantial.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/reports/correct", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Correct Body Headline\n") || strings.Contains(doc.Text, "Incorrect Browser Title") {
+		t.Fatalf("marked source headline did not override browser metadata:\n%s", doc.Markdown)
+	}
+}
+
+func TestGenericMediumBrowserTitleUsesBodyHeadline(t *testing.T) {
+	html := `<html><head><title>Medium</title></head><body><article><h1>The Correct Body Headline</h1><p>This article contains enough useful explanatory prose to establish that its visible heading is the actual title.</p><p>A second substantial paragraph confirms the selected article region without relying on generic browser chrome.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://medium.com/example/correct", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# The Correct Body Headline\n") || strings.Contains(doc.Markdown, "# Medium") {
+		t.Fatalf("generic browser title replaced body headline:\n%s", doc.Markdown)
+	}
+}
+
+func TestArticleSiteSuffixRestoresNormalizedTitle(t *testing.T) {
+	html := `<html><head><title>Article title - Site Name</title><meta property="og:site_name" content="Site Name"></head><body><article><p>This article has substantial opening prose but deliberately omits a visible source headline from the selected body.</p><p>A second paragraph ensures there is enough article content for normalized metadata title restoration.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Article title\n") || strings.Contains(doc.Markdown, "Site Name") || strings.Count(doc.Text, "Article title") != 1 {
+		t.Fatalf("site suffix was not stripped from restored title:\n%s", doc.Markdown)
+	}
+}
+
+func TestAlreadySelectedArticleTitleRemainsOnce(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="Already Selected Title"></head><body><article><h1>Already Selected Title</h1><p>This article contains enough explanatory prose to retain its already selected source title in the output.</p><p>More substantive prose ensures title recovery does not need to synthesize another heading.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Already Selected Title\n") || strings.Count(doc.Text, "Already Selected Title") != 1 {
+		t.Fatalf("already selected title was duplicated:\n%s", doc.Markdown)
 	}
 }
 

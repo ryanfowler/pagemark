@@ -950,7 +950,11 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 		if (restorationTitle != "" && !equivalent && !credible) || (b.kind == "h2" && !equivalent && !credible) {
 			continue
 		}
-		if bestIndex < 0 || (credible && !bestCredible) || (credible == bestCredible && equivalent && !bestEquivalent) || (credible == bestCredible && equivalent == bestEquivalent && distance < bestDistance) {
+		// A source heading that agrees with the normalized metadata is the least
+		// ambiguous choice. Only compare structural credibility after equivalence;
+		// otherwise an internal marked heading can beat the real title merely
+		// because both happen to be near selected prose.
+		if bestIndex < 0 || (equivalent && !bestEquivalent) || (equivalent == bestEquivalent && credible && !bestCredible) || (equivalent == bestEquivalent && credible == bestCredible && distance < bestDistance) {
 			bestIndex, bestDistance, bestEquivalent, bestCredible = i, distance, equivalent, credible
 		}
 	}
@@ -1003,6 +1007,10 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 		}
 	}
 
+	// Once a synthetic document title is added, unsupported source h1 elements
+	// are sections, not alternative document titles. Preserve them, but render
+	// selected block roots one level lower.
+	content = a.demoteConflictingSelectedH1s(content, restorationTitle)
 	title := articleTitleNode(restorationTitle)
 	// Synthetic nodes are not part of the indexed DOM. Explicitly mark this one
 	// as relevant so article auxiliary heuristics cannot classify it by itself.
@@ -1025,6 +1033,26 @@ func removeSelectedNode(nodes []*html.Node, remove *html.Node) []*html.Node {
 	for _, n := range nodes {
 		if n != remove {
 			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func (a *analysis) demoteConflictingSelectedH1s(nodes []*html.Node, title string) []*html.Node {
+	out := append([]*html.Node(nil), nodes...)
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		if b.kind != "h1" || titleEquivalent(b.text, title, a.meta.site) || a.isCredibleArticleHeading(i, nodes) {
+			continue
+		}
+		for selectedIndex, selected := range out {
+			if selected != b.node {
+				continue
+			}
+			section := cloneHTMLNode(b.node)
+			section.Data = "h2"
+			out[selectedIndex] = section
+			break
 		}
 	}
 	return out
@@ -1075,6 +1103,12 @@ func (a *analysis) restorationTitle() string {
 	if normalized == "" || utf8.RuneCountInString(title) > 180 || genericDocumentTitle(normalized) {
 		return ""
 	}
+	// A few publishing platforms use only their brand as the browser title.
+	// Treat that as chrome, but do not discard the same text when it came from
+	// document-specific social metadata.
+	if a.meta.socialTitle == "" && title == a.meta.browserTitle && genericBrowserChromeTitle(normalized) {
+		return ""
+	}
 	// A browser-only title at the origin root is usually the publication or
 	// product name. Stronger social metadata remains eligible there.
 	if a.meta.socialTitle == "" && a.pageURL != nil && (a.pageURL.Path == "" || a.pageURL.Path == "/") && title == a.meta.browserTitle {
@@ -1108,6 +1142,14 @@ func genericDocumentTitle(title string) bool {
 	}
 	words := strings.Fields(title)
 	return len(words) <= 3 && len(words) > 0 && (words[len(words)-1] == "site" || words[len(words)-1] == "website" || words[len(words)-1] == "homepage")
+}
+
+func genericBrowserChromeTitle(title string) bool {
+	switch title {
+	case "medium":
+		return true
+	}
+	return false
 }
 
 // hasLeadingOutputHeading prevents a discussion topic (or another surviving
@@ -1202,12 +1244,15 @@ func (a *analysis) isCredibleArticleHeading(headingIndex int, selected []*html.N
 	if region == nil {
 		return false
 	}
-	// A heading inside the selected article is structural headline evidence even
-	// when the publisher did not add schema attributes. Outside an article,
-	// require an explicit schema or conventional article-headline marker so a
-	// page masthead in <main> cannot override metadata.
-	if !strings.EqualFold(region.Data, "article") && !hasArticleHeadlineMarker(heading) {
-		return false
+	marked := hasArticleHeadlineMarker(heading)
+	// Merely being inside <article> is not headline evidence: several publishers
+	// use h1 for every section. An unmarked heading must instead occupy the
+	// leading headline position, before publication furniture and selected prose.
+	// Outside an article, continue to require an explicit headline marker.
+	if !marked {
+		if !strings.EqualFold(region.Data, "article") || isNumberedSectionHeading(a.blocks[headingIndex].text) || !a.isLeadingArticleHeading(headingIndex, selected, region) {
+			return false
+		}
 	}
 	// A page header inside <main> is still commonly a site masthead. An article
 	// header is valid because its enclosing article is chosen as the region.
@@ -1235,6 +1280,110 @@ func (a *analysis) isCredibleArticleHeading(headingIndex int, selected []*html.N
 			return true
 		}
 	}
+	return false
+}
+
+func (a *analysis) isLeadingArticleHeading(headingIndex int, selected []*html.Node, region *html.Node) bool {
+	heading := a.blocks[headingIndex].node
+	for i := 0; i < headingIndex; i++ {
+		b := &a.blocks[i]
+		if nodeWithin(b.node, region) && representedBySelection(b.node, selected) && isSubstantiveProseBlock(b) {
+			return false
+		}
+	}
+	return !hasPublicationMetadataBefore(region, heading)
+}
+
+func hasPublicationMetadataBefore(region, heading *html.Node) bool {
+	var visit func(*html.Node) (reachedHeading, found bool)
+	visit = func(n *html.Node) (bool, bool) {
+		if n == heading {
+			return true, false
+		}
+		// Hidden machine-readable dates and bylines do not establish the visible
+		// order of an article. Prune the whole subtree so hidden descendants cannot
+		// disqualify a legitimate source headline either.
+		if hardHidden(n) {
+			return false, false
+		}
+		// Ancestors of the heading are layout, not preceding metadata.
+		if n != region && n.Type == html.ElementNode && !nodeWithin(heading, n) && isPublicationMetadataElement(n) {
+			return false, true
+		}
+		for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+			reached, found := visit(ch)
+			if found || reached {
+				return reached, found
+			}
+		}
+		return false, false
+	}
+	_, found := visit(region)
+	return found
+}
+
+func isPublicationMetadataElement(n *html.Node) bool {
+	if strings.EqualFold(n.Data, "time") {
+		return true
+	}
+	for _, value := range strings.Fields(attrValue(n, "itemprop")) {
+		value = strings.ToLower(value)
+		if strings.Contains(value, "datepublished") || strings.Contains(value, "author") {
+			return true
+		}
+	}
+	tokens := elementTokens(n)
+	if containsAny(tokens, "byline", "dateline", "published") {
+		return true
+	}
+	for _, token := range strings.Fields(tokens) {
+		token = strings.ReplaceAll(token, "_", "-")
+		switch token {
+		case "post-date", "entry-date", "article-date", "publication-date", "post-meta", "entry-meta", "article-meta":
+			return true
+		}
+	}
+	return false
+}
+
+func isNumberedSectionHeading(text string) bool {
+	runes := []rune(strings.TrimSpace(text))
+	i := 0
+	for i < len(runes) && runes[i] >= '0' && runes[i] <= '9' {
+		i++
+	}
+	// Section ordinals are ordinarily short. This bound excludes year-leading
+	// titles without trying to infer their subject from the remaining words.
+	if i == 0 || i > 3 || i >= len(runes) {
+		return false
+	}
+	switch runes[i] {
+	case '.', ')', ':':
+		i++
+		return i < len(runes) && unicode.IsSpace(runes[i])
+	}
+	if !unicode.IsSpace(runes[i]) {
+		return false
+	}
+	for i < len(runes) && unicode.IsSpace(runes[i]) {
+		i++
+	}
+	if i >= len(runes) {
+		return false
+	}
+	if runes[i] == '-' || runes[i] == '–' || runes[i] == '—' {
+		i++
+		if i >= len(runes) || !unicode.IsSpace(runes[i]) {
+			return false
+		}
+		for i < len(runes) && unicode.IsSpace(runes[i]) {
+			i++
+		}
+		return i < len(runes)
+	}
+	// Separator-free number prefixes are ambiguous with list-style article
+	// titles such as "7 Ways to Improve Reliability". Do not reject those based
+	// on text alone.
 	return false
 }
 
