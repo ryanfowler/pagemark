@@ -397,6 +397,20 @@ func TestAccessibleSVGTextFallback(t *testing.T) {
 	})
 }
 
+func TestNumberedLayoutRowPreservesFieldBoundaries(t *testing.T) {
+	source := `<div class="question"><span class="ordinal">1</span><b>what is this</b><span>the name, painter, and year.</span></div>`
+	if got := convertHTML(t, source).Markdown; got != "1 **what is this** the name, painter, and year." {
+		t.Fatalf("numbered layout fields ran together: %q", got)
+	}
+	// Styling spans can deliberately split a word and do not establish columns.
+	if got := convertHTML(t, `<div><span>hel</span><span>lo</span><span>!</span></div>`).Markdown; got != "hello!" {
+		t.Fatalf("ordinary styling spans gained layout spaces: %q", got)
+	}
+	if got := convertHTML(t, `<div><span>1</span><b>st</b><span> place</span></div>`).Markdown; got != "1**st** place" {
+		t.Fatalf("ordinal suffix gained layout spaces: %q", got)
+	}
+}
+
 func TestLinkWhitespaceIsOutsideLabel(t *testing.T) {
 	r := convertHTML(t, `<p>See <a href="/docs">the guide </a>and <a href="/more"> <strong>more</strong> </a> now.</p>`)
 	want := `See [the guide](https://example.com/docs) and [**more**](https://example.com/more) now.`

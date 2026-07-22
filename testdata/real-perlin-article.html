@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta property="og:type" content="article"><meta property="og:title" content="Perlin's Noise Algorithm"></head><body><main><article>
+<time datetime="2023-03-05">05 March 2023</time><hr>
+<h1>What is Noise?</h1>
+<p>Noise is a function that takes parameters and returns values according to the rules of an algorithm. Two-dimensional noise is particularly convenient because it can be visualized as a texture.</p>
+<p>The first random output has no recognizable structure.</p>
+<figure><img src="https://images.example/perlin-noise-random.webp" width="900" height="600" alt="Random noise output"><figcaption>Random values rendered as a texture</figcaption></figure>
+<h1>Perlin’s Noise Algorithm</h1>
+<p>Perlin noise is a coherent-noise algorithm. Every point lies inside a square whose corners have integer coordinates.</p>
+<p>We have our point as <span class="katex"><span class="katex-mathml"><math><semantics><mrow><mi>P</mi><mo>=</mo><mo>(</mo><mi>x</mi><mo>,</mo><mi>y</mi><mo>)</mo></mrow><annotation encoding="application/x-tex">P = (x, y)</annotation></semantics></math></span><span class="katex-html" aria-hidden="true">P=(x,y)</span></span>.</p>
+<figure><img src="https://images.example/perlin-noise-grid.webp" width="900" height="600" alt="Perlin noise coordinate grid"><figcaption>The four corners around the sample point</figcaption></figure>
+<p>The implementation computes gradient dot products and interpolates between them. A smoothing curve produces the final coherent result.</p>
+</article></main></body></html>

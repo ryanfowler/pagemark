@@ -74,6 +74,133 @@ func TestLargeArticlePreCodeRemainsFenced(t *testing.T) {
 	}
 }
 
+func TestRealRedfinArticleFixturePreservesBodyTableAndExcludesTail(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-redfin-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://www.redfin.com/news/ai-data-centers-opposition-education-benefit/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("page type = %q, want article", doc.PageType)
+	}
+	for _, want := range []string{
+		"# Most Americans Say “Not in My Backyard” to AI Data Centers",
+		"More than half of U.S. residents",
+		"## AI Data Centers Are Helping Fund Virginia Schools",
+		"## Methodology",
+		"| **Number of data centers** | 176 (most in the U.S.) | 77 | 45 | 1 |",
+		"| **Increase in personal property tax revenue, 2010-2025** | 639% | 349% | 91% |  |",
+	} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("missing real Redfin-derived content %q:\n%s", want, doc.Markdown)
+		}
+	}
+	for _, unwanted := range []string{"<img", "Dana writes about", "Be the first to see", "validation purposes", "Privacy Policy"} {
+		if strings.Contains(doc.Markdown, unwanted) {
+			t.Errorf("included real Redfin-derived auxiliary content %q:\n%s", unwanted, doc.Markdown)
+		}
+	}
+}
+
+func TestRealYankoFixtureSuppressesSerializedImagesWithoutLosingArticle(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-yanko-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://www.yankodesign.com/2026/05/31/a-zipper-patent-sat-in-a-garage-for-40-years-now-its-real/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Back in 1985", "joins three independent flexible strips", "Potential applications", "Credit belongs"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("serialized fallback hid article prose %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"<img", "wp-image-627599", "data-post-title", "y-zipper-03.jpg"} {
+		if strings.Contains(doc.Markdown, unwanted) {
+			t.Errorf("serialized image fallback leaked %q:\n%s", unwanted, doc.Markdown)
+		}
+	}
+}
+
+func TestRealHashcloakFramerFixturePreservesHeadingsCodeAndOneBreadcrumb(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-hashcloak-framer-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://hashcloak.com/blog/tutorial-introduction-to-formal-verification-with-lean-(part-1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## The Lean programming language \\& proof assistant",
+		"## Tutorial",
+		"### Hello world in Lean",
+		"## Tutorial Part 1: Define a BitString and XOR",
+		"## Epilogue: About Formal Verification in blockchain",
+		"#eval \"Hello World!\"\n#eval String.append \"Hello \" \"World!\"",
+		"import Mathlib.Data.ZMod.Basic\n\ndef BitString",
+	} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("missing real Framer-derived structure %q:\n%s", want, doc.Markdown)
+		}
+	}
+	if strings.Count(doc.Text, "Back to insights") != 1 {
+		t.Fatalf("responsive breadcrumb count = %d, want 1:\n%s", strings.Count(doc.Text, "Back to insights"), doc.Markdown)
+	}
+}
+
+func TestRealPerlinFixtureUsesLeadingTitleSingleMathAndFigures(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-perlin-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://blog.jaysmito.dev/blog/02-perlins-noise-algorithm/", WithIncludeImages(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Perlin's Noise Algorithm\n") {
+		t.Fatalf("metadata title was not the leading heading:\n%s", doc.Markdown)
+	}
+	if strings.Count(doc.Text, "P = (x, y)") != 1 || strings.Contains(doc.Text, "P=(x,y)P") {
+		t.Fatalf("math accessibility and visual layers were duplicated: %q", doc.Text)
+	}
+	for _, want := range []string{
+		"## What is Noise?",
+		"## Perlin’s Noise Algorithm",
+		"![Random noise output](https://images.example/perlin-noise-random.webp)",
+		"![Perlin noise coordinate grid](https://images.example/perlin-noise-grid.webp)",
+	} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("missing real Perlin-derived content %q:\n%s", want, doc.Markdown)
+		}
+	}
+}
+
+func TestRealSheetsFixtureKeepsLayoutItemBoundaries(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-sheets-layout.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://sheets.works/data-viz/how-to-read-a-painting/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"1 **what is this** the name, the painter, the year.",
+		"2 **first look** list what is there",
+		"3 **who is here** count everyone",
+		"4 **what is happening** give one sentence",
+	} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("layout fields ran together; missing %q:\n%s", want, doc.Markdown)
+		}
+	}
+}
+
 func TestListingLineEvidenceRequiresActualDates(t *testing.T) {
 	text := "release-2025-alpha\nCVE-2025-1001\nsource-2024-main\n2025-04-03 record\n3 Apr 2025 record\nApril 2025 archive"
 	nonempty, dated := listingLineEvidence(text)

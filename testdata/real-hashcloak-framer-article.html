@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta property="og:type" content="article"><meta property="og:title" content="Tutorial: Introduction to Formal Verification with Lean (Part 1)"></head><body>
+<main data-framer-page-optimized-at="2026-07-15">
+<div class="framer-responsive-desktop"><a href="/blog"><p>Back to insights</p></a></div>
+<div class="framer-responsive-mobile"><a href="/blog"><p>Back to insights</p></a></div>
+<section class="framer-995cnp" data-framer-name="about"><div class="framer-lhdo8c" data-framer-name="content"><div class="framer-1mc5103">
+<h1 class="framer-text">Tutorial: Introduction to Formal Verification with Lean (Part 1)</h1>
+<p>Formal verification is a tool for checking mathematical statements in code. This tutorial introduces Lean to cryptographic engineers and develops a complete example.</p>
+<h2 class="framer-text">The Lean programming language &amp; proof assistant</h2>
+<p>Lean is a functional programming language and theorem prover. It can express axioms, lemmas, theorems, and machine-checked proofs.</p>
+<h2 class="framer-text">Tutorial</h2>
+<p>The tutorial has four parts after a small hello-world example. Every example is intended to be entered and checked by the reader.</p>
+<h3 class="framer-text">Hello world in Lean</h3>
+<p>Write the following expressions and verify their outcomes in the information view.</p>
+<pre><code><div class="code-line">#eval "Hello World!"</div><div class="code-line">#eval String.append "Hello " "World!"</div><div class="code-line">#eval String.append "Hello " (if 1 &gt; 2 then "Lean!" else "World!")</div></code></pre>
+<h2 class="framer-text">Tutorial Part 1: Define a BitString and XOR</h2>
+<p>The one-time pad is defined over keys, messages, and ciphertexts that are bit strings of the same length.</p>
+<pre><code><div>import Mathlib.Data.ZMod.Basic</div><div></div><div>def BitString (L: ℕ): Type := Vector (ZMod 2) L</div></code></pre>
+<h2 class="framer-text">Epilogue: About Formal Verification in blockchain</h2>
+<p>Formal verification can increase confidence in software, although the relationship between a model and compiled implementation must still be considered carefully.</p>
+</div></div></section></main></body></html>
