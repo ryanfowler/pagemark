@@ -1217,6 +1217,199 @@ func TestAnnotatedPublishedPostIsNotInferredAsDiscussion(t *testing.T) {
 	}
 }
 
+func TestEmptyCommentsControlsDoNotMakeArticleDiscussion(t *testing.T) {
+	html := `<main><article><h1>Resurrecting a small tablet</h1><p>The first substantial paragraph explains the history of the device and why restoring it was worth the effort.</p><p>The second substantial paragraph describes the software changes, testing process, and results observed after installation.</p><p>The final substantial paragraph records the remaining limitations while preserving the central conclusion of the article.</p></article><div class="comments"><div class="comments-headline"><span class="dossier-label">thread</span><div class="comments-headline-main"><span class="comments-title">discussion</span><button class="comments-toggle">open thread</button></div></div><div class="comments-panel" hidden></div></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/posts/resurrecting-tablet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("page type = %q, want article", doc.PageType)
+	}
+	if !strings.Contains(doc.Text, "software changes") {
+		t.Fatalf("article body missing: %s", doc.Text)
+	}
+	for _, unwanted := range []string{"thread", "discussion", "open thread"} {
+		if strings.Contains(strings.ToLower(doc.Text), unwanted) {
+			t.Errorf("comments control %q was retained: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestRepeatedSubstantiveMessagesAreInferredAsDiscussion(t *testing.T) {
+	html := `<main class="discussion thread"><article class="post message"><p>The initial question explains the failing behavior and includes enough detail to reproduce it reliably.</p></article><article class="reply message"><p>The first answer recommends changing the worker setting before trying the operation again.</p></article><article class="reply message"><p>The second answer adds a concrete verification step and explains the expected result.</p></article></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/conversation/42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeDiscussion {
+		t.Fatalf("page type = %q, want discussion", doc.PageType)
+	}
+	for _, want := range []string{"initial question", "first answer", "second answer"} {
+		if !strings.Contains(strings.ToLower(doc.Text), want) {
+			t.Errorf("message %q missing: %s", want, doc.Text)
+		}
+	}
+}
+
+func TestNeutralSemanticRecordsInThreadAreInferredAsDiscussion(t *testing.T) {
+	html := `<main class="discussion thread"><article><p>The question describes the unexpected behavior and gives enough detail for another reader to reproduce it.</p></article><article><p>The first answer identifies the relevant setting and explains when the new value takes effect.</p></article><article><p>The second answer provides a verification command and describes the successful output.</p></article></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/conversation/neutral")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeDiscussion {
+		t.Fatalf("page type = %q, want discussion", doc.PageType)
+	}
+	for _, want := range []string{"question describes", "first answer", "second answer"} {
+		if !strings.Contains(strings.ToLower(doc.Text), want) {
+			t.Errorf("message %q missing: %s", want, doc.Text)
+		}
+	}
+}
+
+func TestDirectCommentsProseIsKeptInExplicitDiscussion(t *testing.T) {
+	html := `<section class="comments"><p>This is a real reader response with substantive advice about resolving the reported problem.</p></section>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/conversation/direct", WithPageType(PageTypeDiscussion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "real reader response") {
+		t.Fatalf("direct comment prose missing: %s", doc.Text)
+	}
+}
+
+func TestEmptyCommentParagraphPromptsAreFiltered(t *testing.T) {
+	for _, prompt := range []string{"No comments yet.", "Sign in to join the discussion."} {
+		t.Run(prompt, func(t *testing.T) {
+			html := `<main><p>The primary page content remains useful without any reader responses.</p><section class="comments"><p>` + prompt + `</p><button>Open discussion</button></section></main>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/page")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(doc.Text, "primary page content") {
+				t.Fatalf("primary content missing: %s", doc.Text)
+			}
+			if strings.Contains(doc.Text, prompt) {
+				t.Errorf("comment prompt was retained: %s", doc.Text)
+			}
+		})
+	}
+}
+
+func TestOnlyEmptyCommentPromptProducesNoContent(t *testing.T) {
+	html := `<section class="comments"><p>No comments yet.</p><button>Open discussion</button></section>`
+	_, err := ExtractBytes([]byte(html), "https://example.com/page")
+	if !errors.Is(err, ErrNoContent) {
+		t.Fatalf("got %v, want ErrNoContent", err)
+	}
+}
+
+func TestCommentCallToActionWidgetIsFiltered(t *testing.T) {
+	html := `<main><p>The primary page content remains useful without any reader responses.</p><section class="comments"><h2>Join the conversation</h2><p>Share your thoughts with other readers.</p><button>Sign in</button></section></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/page")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "primary page content") {
+		t.Fatalf("primary content missing: %s", doc.Text)
+	}
+	for _, unwanted := range []string{"Join the conversation", "Share your thoughts", "Sign in"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("comment call to action %q was retained: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestDirectBreakSeparatedCommentsProseIsKept(t *testing.T) {
+	html := `<section class="comments">A substantive reader response explains the solution.<br>A second line provides the verification steps.</section>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/conversation/direct", WithPageType(PageTypeDiscussion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"substantive reader response", "second line"} {
+		if !strings.Contains(strings.ToLower(doc.Text), want) {
+			t.Errorf("direct comment text %q missing: %s", want, doc.Text)
+		}
+	}
+}
+
+func TestLongPromptLikeCommentIsKept(t *testing.T) {
+	html := `<section class="comments"><article class="comment"><p>Share your feedback with the maintainers before deploying this change, because the current configuration can lose queued work.</p></article></section>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/conversation/direct", WithPageType(PageTypeDiscussion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "current configuration can lose queued work") {
+		t.Fatalf("long comment was discarded: %s", doc.Text)
+	}
+}
+
+func TestShortPromptLikeMarkedCommentIsKept(t *testing.T) {
+	for _, tag := range []string{"article", "li", "div", "section"} {
+		t.Run(tag, func(t *testing.T) {
+			record := `<` + tag + ` class="comment"><p>Share your feedback publicly; private reports are being ignored.</p></` + tag + `>`
+			if tag == "li" {
+				record = `<ul>` + record + `</ul>`
+			}
+			html := `<section class="comments">` + record + `</section>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/conversation/direct", WithPageType(PageTypeDiscussion))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(doc.Text, "private reports are being ignored") {
+				t.Fatalf("short marked %s comment was discarded: %s", tag, doc.Text)
+			}
+		})
+	}
+}
+
+func TestLongDirectStatusLikeCommentIsKept(t *testing.T) {
+	html := `<section class="comments"><p>Comments are disabled after upgrading to version two; how can I enable them again for all users?</p></section>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/conversation/direct", WithPageType(PageTypeDiscussion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "how can I enable them again") {
+		t.Fatalf("long status-like comment was discarded: %s", doc.Text)
+	}
+}
+
+func TestPromptLikeMarkedCommentWithReplyButtonIsKept(t *testing.T) {
+	html := `<section class="comments"><article class="comment"><p>Share your feedback publicly; private reports are being ignored.</p><button class="reply">Reply</button></article></section>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/conversation/direct", WithPageType(PageTypeDiscussion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "private reports are being ignored") {
+		t.Fatalf("marked comment with reply button was discarded: %s", doc.Text)
+	}
+	if strings.Contains(doc.Text, "Reply") {
+		t.Fatalf("reply control was retained: %s", doc.Text)
+	}
+}
+
+func TestEmptyCommentsDoNotDisableReadabilityFallback(t *testing.T) {
+	prose := strings.Repeat("A", 101)
+	extract := func(extra string) *Document {
+		t.Helper()
+		html := `<html><body><article><p>` + prose + `</p></article>` + extra + `</body></html>`
+		doc, err := ExtractBytes([]byte(html), "https://example.com/articles/short")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return doc
+	}
+	withoutWidget := extract("")
+	withWidget := extract(`<section class="comments"><p>No comments yet.</p><button>Open discussion</button></section>`)
+	if withoutWidget.Quality < .58 || withWidget.Quality != withoutWidget.Quality {
+		t.Fatalf("quality without widget = %v, with widget = %v", withoutWidget.Quality, withWidget.Quality)
+	}
+	if strings.Contains(withWidget.Text, "No comments yet") {
+		t.Fatalf("readability restored empty comments: %s", withWidget.Text)
+	}
+}
+
 func TestTimestampedCommentsAreInferredAsDiscussion(t *testing.T) {
 	html := `<main><h1>Configuration question</h1><div class="comment"><h2>Ada</h2><time datetime="2025-03-01T10:00:00Z">March 1</time><p>I tried the default configuration, but the worker still stops before processing the queued item.</p></div><div class="comment"><h2>Ben</h2><time datetime="2025-03-01T10:05:00Z">March 1</time><p>Set the worker limit before starting the process, then retry the same queued item.</p></div></main>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/conversation/42")
