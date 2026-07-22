@@ -474,10 +474,21 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 			}
 			return
 		case "em", "i":
-			out = append(out, &Node{Kind: Emphasis, Children: c.inlines(x)})
+			if children := c.inlines(x); len(children) > 0 {
+				out = append(out, &Node{Kind: Emphasis, Children: children})
+			} else if c.hasWhitespace(x) {
+				// Editors sometimes wrap only the separating space in formatting
+				// markup. The empty emphasis disappears when rendered, but the space
+				// still separates the surrounding words.
+				out = append(out, &Node{Kind: Text, Value: " "})
+			}
 			return
 		case "strong", "b":
-			out = append(out, &Node{Kind: Strong, Children: c.inlines(x)})
+			if children := c.inlines(x); len(children) > 0 {
+				out = append(out, &Node{Kind: Strong, Children: children})
+			} else if c.hasWhitespace(x) {
+				out = append(out, &Node{Kind: Text, Value: " "})
+			}
 			return
 		case "sup":
 			if children := c.inlines(x); len(children) > 0 {
@@ -1544,15 +1555,70 @@ type serializedMedia struct {
 // fragment may be a literal example and is retained.
 func suppressSerializedMediaText(n *html.Node) bool {
 	media, ok := parseSerializedMedia(n.Data)
-	if !ok {
-		return false
+	if ok {
+		for ancestor := n.Parent; ancestor != nil; ancestor = ancestor.Parent {
+			if ancestor.Type == html.ElementNode && strings.EqualFold(ancestor.Data, "noscript") {
+				return true
+			}
+		}
+		return matchingNearbyMedia(n, media)
 	}
+	// In a parsed document, body-level noscript fallback markup is represented
+	// as one text node. Emitting that node exposes escaped tags (and usually a
+	// duplicate of the rendered component) as prose. Suppress only a complete,
+	// balanced HTML fragment; plain noscript text and examples outside noscript
+	// retain their existing behavior.
 	for ancestor := n.Parent; ancestor != nil; ancestor = ancestor.Parent {
 		if ancestor.Type == html.ElementNode && strings.EqualFold(ancestor.Data, "noscript") {
-			return true
+			return serializedHTMLFragment(n.Data)
 		}
 	}
-	return matchingNearbyMedia(n, media)
+	return false
+}
+
+func serializedHTMLFragment(value string) bool {
+	value = strings.TrimSpace(value)
+	for i := 0; i < 3; i++ {
+		decoded := html.UnescapeString(value)
+		if decoded == value {
+			break
+		}
+		value = strings.TrimSpace(decoded)
+	}
+	if !strings.HasPrefix(value, "<") || !strings.HasSuffix(value, ">") {
+		return false
+	}
+	z := html.NewTokenizer(strings.NewReader(value))
+	var stack []string
+	elements := 0
+	for {
+		switch z.Next() {
+		case html.ErrorToken:
+			return z.Err() == io.EOF && len(stack) == 0 && elements > 0
+		case html.StartTagToken:
+			tag := strings.ToLower(z.Token().Data)
+			elements++
+			if !isVoidHTMLElement(tag) {
+				stack = append(stack, tag)
+			}
+		case html.SelfClosingTagToken:
+			elements++
+		case html.EndTagToken:
+			tag := strings.ToLower(z.Token().Data)
+			if len(stack) == 0 || stack[len(stack)-1] != tag {
+				return false
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+}
+
+func isVoidHTMLElement(tag string) bool {
+	switch tag {
+	case "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr":
+		return true
+	}
+	return false
 }
 
 // matchingNearbyMedia deliberately uses only adjacent siblings and a small

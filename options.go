@@ -30,7 +30,7 @@ func defaultOptions() options {
 	return options{maxInput: 10 << 20, maxElements: 200000, maxDepth: 256,
 		maxAttributes: 1000000, maxAttributeBytes: 8 << 20, maxText: 20 << 20,
 		maxOutput: 2 << 20, maxLinks: 1000, maxImages: 100, maxTableCells: 10000,
-		maxRepeated: 200, includeLinks: true, includeTables: true, includeMetadata: true,
+		maxRepeated: 200, includeLinks: true, includeImages: true, includeTables: true, includeMetadata: true,
 		urlPolicy: URLPolicy{Schemes: []string{"http", "https"}, MaxLength: 4096}}
 }
 
@@ -47,6 +47,9 @@ func WithMaxImages(v int) Option        { return func(o *options) { o.maxImages 
 func WithMaxTableCells(v int) Option    { return func(o *options) { o.maxTableCells = v } }
 func WithMaxRepeatedItems(v int) Option { return func(o *options) { o.maxRepeated = v } }
 func WithIncludeLinks(v bool) Option    { return func(o *options) { o.includeLinks = v } }
+
+// WithIncludeImages controls useful images in Markdown and Document.Images.
+// Images are included by default; pass false for text-only output.
 func WithIncludeImages(v bool) Option   { return func(o *options) { o.includeImages = v } }
 func WithIncludeTables(v bool) Option   { return func(o *options) { o.includeTables = v } }
 func WithIncludeMetadata(v bool) Option { return func(o *options) { o.includeMetadata = v } }

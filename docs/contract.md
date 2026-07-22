@@ -20,7 +20,9 @@ Pagemark can preserve these structures:
 - code blocks and inline code;
 - data tables;
 - safe links;
-- useful image text.
+- useful images and image text.
+
+Useful images are enabled by default. They appear as Markdown image syntax and in `Document.Images`; extraction records their safe source URLs but does not fetch those resources. Callers that require text-only output can pass `WithIncludeImages(false)`.
 
 The Markdown uses a restricted CommonMark and GFM dialect. It has no raw HTML. The default URL policy permits HTTP and HTTPS. It rejects credentials and unsafe schemes.
 
