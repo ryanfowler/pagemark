@@ -157,6 +157,12 @@ func (c *converter) block(n *html.Node) (result *Node) {
 		return nil
 	}
 	tag := strings.ToLower(n.Data)
+	// A selected math wrapper may itself be block-like (or even be the selected
+	// root). Route the wrapper through the opaque inline math handling rather
+	// than traversing its equivalent branches as separate blocks.
+	if _, ok := c.mathRepresentation(n); ok {
+		return &Node{Kind: Paragraph, Children: c.inlineNodes([]*html.Node{n})}
+	}
 	// ARIA tables and grids are frequently built entirely from divs. Handle the
 	// explicit table root before generic container traversal so row/cell
 	// relationships are not flattened into prose.
@@ -344,6 +350,12 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 			return
 		}
 		tag := strings.ToLower(x.Data)
+		if value, ok := c.mathRepresentation(x); ok {
+			if value != "" {
+				out = append(out, &Node{Kind: Text, Value: value})
+			}
+			return
+		}
 		switch tag {
 		case "br":
 			out = append(out, &Node{Kind: HardBreak})
@@ -438,6 +450,260 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 		merged = append(merged, n)
 	}
 	return merged
+}
+
+// mathRepresentation treats a rendered equation as one opaque inline value.
+// Math renderers commonly put an accessible tree, a TeX source annotation, and
+// a visual glyph tree next to one another. Walking such a wrapper normally
+// concatenates two or three equivalent formulas.
+func (c *converter) mathRepresentation(n *html.Node) (string, bool) {
+	if n == nil || n.Type != html.ElementNode {
+		return "", false
+	}
+	tag := strings.ToLower(n.Data)
+	isMath := tag == "math" || tag == "mjx-container" ||
+		strings.EqualFold(strings.TrimSpace(attr(n, "role")), "math") ||
+		hasClassToken(n, "katex") || hasClassToken(n, "mathjax")
+	if !isMath {
+		return "", false
+	}
+
+	// An explicit accessible name is already a concise textual rendering.
+	if label := clean(attr(n, "aria-label")); label != "" {
+		return label, true
+	}
+	if tag == "math" {
+		return c.mathElementText(n), true
+	}
+
+	// Prefer an explicitly assistive branch. This also covers KaTeX and MathJax
+	// trees whose visual sibling is aria-hidden.
+	if branch := c.firstMathDescendant(n, func(x *html.Node) bool {
+		return x.Type == html.ElementNode && (screenReaderOnly(x) ||
+			hasClassToken(x, "katex-mathml") || hasClassToken(x, "mjx-assistive-mml"))
+	}); branch != nil {
+		if math := c.firstMathDescendantOrSelf(branch, func(x *html.Node) bool {
+			return x.Type == html.ElementNode && strings.EqualFold(x.Data, "math")
+		}); math != nil {
+			if value := c.mathElementText(math); value != "" {
+				return value, true
+			}
+		}
+		if value := clean(c.visibleMathText(branch, false)); value != "" {
+			return value, true
+		}
+	}
+
+	if math := c.firstMathDescendant(n, func(x *html.Node) bool {
+		return x.Type == html.ElementNode && strings.EqualFold(x.Data, "math")
+	}); math != nil {
+		if value := c.mathElementText(math); value != "" {
+			return value, true
+		}
+	}
+
+	// Last resort for renderer versions with only a visual tree. Only
+	// aria-hidden is relaxed here. Non-content elements, other hidden states,
+	// and extraction-specific exclusions remain pruned.
+	return clean(c.visibleMathText(n, true)), true
+}
+
+func (c *converter) mathElementText(math *html.Node) string {
+	if label := clean(attr(math, "aria-label")); label != "" {
+		return label
+	}
+	if annotation := c.firstMathDescendant(math, func(n *html.Node) bool {
+		if n.Type != html.ElementNode || !strings.EqualFold(n.Data, "annotation") {
+			return false
+		}
+		encoding := strings.ToLower(strings.TrimSpace(attr(n, "encoding")))
+		return encoding == "application/x-tex" || encoding == "application/tex" ||
+			encoding == "text/tex" || strings.Contains(encoding, "latex")
+	}); annotation != nil {
+		if value := cleanTeXAnnotation(c.rawMathText(annotation)); value != "" {
+			return value
+		}
+	}
+	return clean(c.mathMLText(math))
+}
+
+func cleanTeXAnnotation(value string) string {
+	// TeX spacing commands and escapes for ordinary punctuation are useful to
+	// the renderer but noisy after the formula becomes escaped Markdown text.
+	value = strings.NewReplacer(
+		`\ `, " ", `\,`, " ", `\;`, " ", `\:`, " ", `\!`, "",
+		`\\`, " ", `\%`, "%", `\&`, "&", `\#`, "#", `\$`, "$", `\_`, "_",
+	).Replace(value)
+	return clean(value)
+}
+
+func (c *converter) mathMLText(n *html.Node) string {
+	if c.pruneMathNode(n, false) {
+		return ""
+	}
+	if n.Type == html.TextNode {
+		return n.Data
+	}
+	if n.Type != html.ElementNode {
+		return ""
+	}
+	tag := strings.ToLower(n.Data)
+	if tag == "annotation" || tag == "annotation-xml" {
+		return ""
+	}
+	var parts []string
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		parts = append(parts, c.mathMLText(child))
+	}
+	joined := strings.Join(parts, "")
+	switch tag {
+	case "msup":
+		return c.mathScript(n, "^")
+	case "msub":
+		return c.mathScript(n, "_")
+	case "msubsup":
+		return c.mathScripts(n)
+	case "mfrac":
+		return c.mathFraction(n)
+	case "msqrt":
+		return "sqrt(" + joined + ")"
+	case "mroot":
+		children := c.mathElementChildren(n)
+		if len(children) >= 2 {
+			return "root(" + c.mathMLText(children[0]) + ", " + c.mathMLText(children[1]) + ")"
+		}
+	}
+	return joined
+}
+
+func (c *converter) mathScript(n *html.Node, operator string) string {
+	children := c.mathElementChildren(n)
+	if len(children) < 2 {
+		return strings.Join(c.childMathTexts(n), "")
+	}
+	return c.mathMLText(children[0]) + operator + braceMath(c.mathMLText(children[1]))
+}
+
+func (c *converter) mathScripts(n *html.Node) string {
+	children := c.mathElementChildren(n)
+	if len(children) < 3 {
+		return strings.Join(c.childMathTexts(n), "")
+	}
+	return c.mathMLText(children[0]) + "_" + braceMath(c.mathMLText(children[1])) +
+		"^" + braceMath(c.mathMLText(children[2]))
+}
+
+func (c *converter) mathFraction(n *html.Node) string {
+	children := c.mathElementChildren(n)
+	if len(children) < 2 {
+		return strings.Join(c.childMathTexts(n), "")
+	}
+	return "(" + c.mathMLText(children[0]) + ")/(" + c.mathMLText(children[1]) + ")"
+}
+
+func braceMath(s string) string {
+	s = clean(s)
+	if utf8.RuneCountInString(s) <= 1 {
+		return s
+	}
+	return "{" + s + "}"
+}
+
+func (c *converter) childMathTexts(n *html.Node) []string {
+	var out []string
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		out = append(out, c.mathMLText(child))
+	}
+	return out
+}
+
+func (c *converter) mathElementChildren(n *html.Node) []*html.Node {
+	var out []*html.Node
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == html.ElementNode && !c.pruneMathNode(child, false) {
+			out = append(out, child)
+		}
+	}
+	return out
+}
+
+func (c *converter) visibleMathText(n *html.Node, includeAriaHidden bool) string {
+	if c.pruneMathNode(n, includeAriaHidden) {
+		return ""
+	}
+	if n.Type == html.TextNode {
+		return n.Data
+	}
+	if n.Type != html.ElementNode || strings.EqualFold(n.Data, "annotation") ||
+		strings.EqualFold(n.Data, "annotation-xml") {
+		return ""
+	}
+	var out strings.Builder
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		out.WriteString(c.visibleMathText(child, includeAriaHidden))
+	}
+	return out.String()
+}
+
+func (c *converter) rawMathText(n *html.Node) string {
+	if c.pruneMathNode(n, false) {
+		return ""
+	}
+	if n.Type == html.TextNode {
+		return n.Data
+	}
+	var out strings.Builder
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		out.WriteString(c.rawMathText(child))
+	}
+	return out.String()
+}
+
+func (c *converter) pruneMathNode(n *html.Node, includeAriaHidden bool) bool {
+	if n == nil || (c.cfg.Exclude != nil && c.cfg.Exclude(n)) {
+		return true
+	}
+	if includeAriaHidden {
+		return dom.HiddenExceptARIA(n)
+	}
+	return dom.Hidden(n)
+}
+
+func (c *converter) firstMathDescendant(n *html.Node, match func(*html.Node) bool) *html.Node {
+	if n == nil {
+		return nil
+	}
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if c.pruneMathNode(child, false) {
+			continue
+		}
+		if match(child) {
+			return child
+		}
+		if found := c.firstMathDescendant(child, match); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func (c *converter) firstMathDescendantOrSelf(n *html.Node, match func(*html.Node) bool) *html.Node {
+	if c.pruneMathNode(n, false) {
+		return nil
+	}
+	if match(n) {
+		return n
+	}
+	return c.firstMathDescendant(n, match)
+}
+
+func hasClassToken(n *html.Node, want string) bool {
+	for _, class := range strings.Fields(attr(n, "class")) {
+		if strings.EqualFold(class, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // inlineBoundary preserves boundaries for elements whose HTML or ARIA

@@ -39,6 +39,73 @@ func convertHTMLConfig(t *testing.T, source string, cfg Config) Result {
 	return Convert([]*html.Node{body}, cfg)
 }
 
+func TestMathRepresentationsAreEmittedOnce(t *testing.T) {
+	tests := []struct {
+		name, source, want string
+	}{
+		{
+			"MathML prefers TeX annotation",
+			`<p><math><semantics><mrow><msub><mi>P</mi><mn>0</mn></msub><mo>=</mo><mo>(</mo><mi>x</mi><mo>,</mo><mi>y</mi><mo>)</mo></mrow><annotation encoding="application/x-tex">P_0 = (x, y)</annotation></semantics></math></p>`,
+			`P\_0 = (x, y)`,
+		},
+		{
+			"accessible text and hidden visual branch",
+			`<p><span role="math"><span class="sr-only">P = (x, y)</span><span aria-hidden="true">P=(x,y)</span></span></p>`,
+			`P = (x, y)`,
+		},
+		{
+			"TeX renderer spacing is normalized",
+			`<p><math><semantics><mrow><mi>x</mi><mo>%</mo><msup><mn>2</mn><mi>n</mi></msup></mrow><annotation encoding="application/x-tex">x \ \% \ 2^n = x \ \&amp; \ 2^{n-1}</annotation></semantics></math></p>`,
+			`x % 2^n = x \& 2^{n-1}`,
+		},
+		{
+			"KaTeX dual tree",
+			`<p><span class="katex"><span class="katex-mathml"><math><semantics><mrow><mi>y</mi><mo>=</mo><msup><mi>x</mi><mn>2</mn></msup></mrow><annotation encoding="application/x-tex">y = x^2</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span>y=x2</span></span></span></p>`,
+			`y = x^2`,
+		},
+		{
+			"MathJax assistive MathML",
+			`<p><mjx-container class="MathJax"><mjx-math aria-hidden="true">x2</mjx-math><mjx-assistive-mml><math><mrow><msup><mi>x</mi><mn>2</mn></msup><mo>+</mo><mn>1</mn></mrow></math></mjx-assistive-mml></mjx-container></p>`,
+			`x^2+1`,
+		},
+		{
+			"distinct adjacent equations",
+			`<p><math aria-label="x = 1"></math> and <math aria-label="y = 2"></math></p>`,
+			`x = 1 and y = 2`,
+		},
+		{
+			"ordinary repeated prose",
+			`<p><span>again</span> <span>again</span></p>`,
+			`again again`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := convertHTML(t, tc.source).Markdown; got != tc.want {
+				t.Fatalf("want %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestMathVisualFallbackOnlyRelaxesAriaHidden(t *testing.T) {
+	source := `<p><span role="math"><style>STYLE_SECRET</style><script>SCRIPT_SECRET</script><template>TEMPLATE_SECRET</template><span hidden>HIDDEN_SECRET</span><span style="display:none">CSS_SECRET</span><span class="excluded sr-only">EXCLUDED_SECRET</span><span aria-hidden="true">x + 1</span></span></p>`
+	r := convertHTMLConfig(t, source, Config{Exclude: func(n *html.Node) bool {
+		return n.Type == html.ElementNode && hasClassToken(n, "excluded")
+	}})
+	if r.Markdown != "x + 1" {
+		t.Fatalf("hidden or excluded math content leaked: %q", r.Markdown)
+	}
+}
+
+func TestMathInsideTablesAndLists(t *testing.T) {
+	r := convertHTML(t, `<table><tr><th>Point</th><th>Value</th></tr><tr><td><span class="katex"><span class="katex-mathml"><math><semantics><mi>P</mi><annotation encoding="application/x-tex">P_0</annotation></semantics></math></span><span aria-hidden="true">P0</span></span></td><td>corner</td></tr></table><ul><li>Curve: <math><msup><mi>x</mi><mn>2</mn></msup></math></li></ul>`)
+	want := "| Point | Value |\n| --- | --- |\n| P\\_0 | corner |\n\n- Curve: x^2"
+	if r.Markdown != want {
+		t.Fatalf("want %q, got %q", want, r.Markdown)
+	}
+}
+
 func TestMixedInlineContainerStaysInOneParagraph(t *testing.T) {
 	r := convertHTML(t, `<div>Hello <span>wide <strong>world</strong></span>; see <a href="guide"><em>the guide</em></a>.</div>`)
 	want := `Hello wide **world**; see [*the guide*](https://example.com/base/guide).`
