@@ -200,6 +200,31 @@ func TestAuxiliarySectionsAndCallsToActionAreRemoved(t *testing.T) {
 	}
 }
 
+func TestTrailingNewsletterWrapperIsExcluded(t *testing.T) {
+	source, err := os.ReadFile("testdata/article-with-newsletter.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://example.com/blog/newsletter-delivery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"A newsletter implementation should validate each email address",
+		"Newsletter form implementation",
+		"This example explains how to subscribe users safely",
+	} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("article discussion %q was removed: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Stay updated", "Subscribe to get updates", "low volume mailing list"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included subscription component %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
 func TestArticleAuxiliaryLabelsAreHardExcluded(t *testing.T) {
 	html := `<main><article><h1>Primary analysis</h1><p>The analysis explains the important result with enough detail for readers.</p><p>Readers can read more about the underlying method in this sentence.</p></article><section><h2>Related posts</h2><article><h3>Other result</h3><p>A substantial summary of a different post that must not overcome boilerplate penalties.</p></article></section><section><h2>Read more</h2><p>A long promotional description for an unrelated report.</p></section><aside aria-label="Share"><p>Share this story on several social networks.</p></aside><section><h2>More by Ada Writer</h2><p>Updates, podcasts, and interviews from the same author.</p></section></main>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/analysis", WithPageType(PageTypeArticle))
