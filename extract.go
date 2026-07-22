@@ -48,7 +48,8 @@ type analysis struct {
 	discussionBodyDescendants                       map[*html.Node]uint8
 	articleCommentRegions, commentRecordCounts      map[*html.Node]uint8
 	semanticArticleDescendants                      map[*html.Node]uint8
-	semanticArticleBefore                           map[*html.Node]bool
+	semanticArticleBefore, semanticArticleAfter     map[*html.Node]bool
+	articleProseBefore                              map[*html.Node]bool
 	selfReferences                                  map[*html.Node]uint8
 	microdataArticleRecords                         map[*html.Node]bool
 	dominantMicrodataArticle, textListingPre        *html.Node
@@ -2485,8 +2486,9 @@ func hasBoilerplateToken(n *html.Node) bool {
 var auxiliaryLabels = map[string]bool{
 	"on this page": true, "in this article": true, "table of contents": true,
 	"more news": true, "latest news": true, "related news": true,
-	"related articles": true, "related content": true, "recommended for you": true,
-	"you may also like": true, "you may also enjoy": true, "read next": true, "more stories": true,
+	"related articles": true, "related content": true, "related keywords": true,
+	"recommended for you": true,
+	"you may also like":   true, "you may also enjoy": true, "read next": true, "more stories": true,
 	"latest stories": true, "see also": true,
 }
 
@@ -2661,7 +2663,8 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 		irrelevant = true
 	}
 	if !irrelevant && a.pageType == PageTypeArticle {
-		irrelevant = a.articleAuxiliaryNode(n) || a.isTrailingSocialCardRegion(n) || a.microdataArticleRecords[n]
+		irrelevant = a.articleAuxiliaryNode(n) || a.isTrailingSocialCardRegion(n) ||
+			a.isPeripheralLinkRegion(n) || a.isTrailingMarketingRegion(n) || a.microdataArticleRecords[n]
 	}
 	if !irrelevant && isTrailingArticleCardRegion(n) {
 		// A final article classification makes trailing cards auxiliary. When
@@ -2701,7 +2704,7 @@ func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 			(!isRelatedCardRegion(p) || hasSemanticArticleBeforeOrAround(p)) {
 			return true
 		}
-		if a.isTrailingSocialCardRegion(p) {
+		if a.isTrailingSocialCardRegion(p) || a.isPeripheralLinkRegion(p) || a.isTrailingMarketingRegion(p) {
 			return true
 		}
 		if isPromotionalCardRegion(p) && isTrailingArticleCardRegion(p) {
@@ -2782,6 +2785,30 @@ func (a *analysis) hasSemanticArticleBefore(n *html.Node) bool {
 	return a.semanticArticleBefore[n]
 }
 
+func (a *analysis) hasSemanticArticleAfter(n *html.Node) bool {
+	if a.semanticArticleAfter == nil {
+		a.semanticArticleAfter = make(map[*html.Node]bool)
+		var nodes []*html.Node
+		walk(a.root, func(x *html.Node) bool {
+			if hardHidden(x) {
+				return false
+			}
+			nodes = append(nodes, x)
+			return true
+		})
+		seen := false
+		for i := len(nodes) - 1; i >= 0; i-- {
+			x := nodes[i]
+			a.semanticArticleAfter[x] = seen
+			if x.Type == html.ElementNode && strings.EqualFold(x.Data, "article") &&
+				!containsAny(elementTokens(x), "card") {
+				seen = true
+			}
+		}
+	}
+	return a.semanticArticleAfter[n]
+}
+
 func (a *analysis) hasSelfReference(root *html.Node) (result bool) {
 	if root == nil || hardHidden(root) {
 		return false
@@ -2856,6 +2883,84 @@ func isRelatedCardRegion(n *html.Node) bool {
 	return containsAny(elementTokens(n), "related", "recommended", "recommendations") && countMarkedCards(n, 2) >= 2
 }
 
+// hasAuxiliaryHeading is deliberately broader than the unconditional label
+// checks. It is only used together with repeated-record structure.
+func hasAuxiliaryHeading(n *html.Node) bool {
+	heading := firstRegionHeading(n)
+	if auxiliaryLabels[heading] || isArticleAuxiliaryLabel(heading) {
+		return true
+	}
+	return isAmbiguousRecommendationsHeading(heading) ||
+		strings.HasPrefix(heading, "related ") || strings.HasPrefix(heading, "recommended ") ||
+		strings.HasPrefix(heading, "more stories ") || strings.HasPrefix(heading, "you may also ")
+}
+
+func isAmbiguousRecommendationsHeading(heading string) bool {
+	return heading == "recommended" || heading == "recommendations"
+}
+
+// isBroadEditorialAuxiliaryHeading identifies labels whose prefix is often
+// used for publication furniture but is also conventional editorial language.
+// Exact labels already known to be boilerplate remain unambiguous.
+func isBroadEditorialAuxiliaryHeading(heading string) bool {
+	if auxiliaryLabels[heading] || isArticleAuxiliaryLabel(heading) {
+		return false
+	}
+	return isAmbiguousRecommendationsHeading(heading) ||
+		strings.HasPrefix(heading, "related ") || strings.HasPrefix(heading, "recommended ")
+}
+
+// countLinkedRecords recognizes recommendation collections even when the site
+// does not use card classes. A record needs its own container, a link, and a
+// title-like heading or date; nested wrappers are counted only once.
+func countLinkedRecords(root *html.Node, limit int) int {
+	count := 0
+	var visit func(*html.Node) bool
+	visit = func(n *html.Node) bool {
+		if hardHidden(n) || n.Type != html.ElementNode || count >= limit {
+			return false
+		}
+		// Prefer the deepest matching containers. Otherwise a neutral grid
+		// wrapper around several cards would be mistaken for one large record.
+		hasChildRecord := false
+		for ch := n.FirstChild; ch != nil && count < limit; ch = ch.NextSibling {
+			if visit(ch) {
+				hasChildRecord = true
+			}
+		}
+		if hasChildRecord || n == root || count >= limit {
+			return hasChildRecord
+		}
+		tag := strings.ToLower(n.Data)
+		if tag != "article" && tag != "li" && tag != "div" {
+			return false
+		}
+		links, titleOrDate := 0, false
+		walk(n, func(x *html.Node) bool {
+			if hardHidden(x) {
+				return false
+			}
+			if x != n && x.Type == html.ElementNode {
+				t := strings.ToLower(x.Data)
+				if t == "a" {
+					links++
+				}
+				if isHeadingTag(t) || t == "time" {
+					titleOrDate = true
+				}
+			}
+			return links <= 3
+		})
+		if links > 0 && links <= 3 && titleOrDate {
+			count++
+			return true
+		}
+		return false
+	}
+	visit(root)
+	return count
+}
+
 func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
@@ -2897,6 +3002,14 @@ func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 		}
 		if isRelatedCardRegion(n) {
 			return true
+		}
+		if hasAuxiliaryHeading(n) && countLinkedRecords(n, 2) >= 2 {
+			// Broad “Recommended …” and “Related …” labels are common
+			// editorial headings. Linked records alone do not make such a
+			// section promotional when it belongs to the primary article.
+			if !isBroadEditorialAuxiliaryHeading(firstRegionHeading(n)) || !hasNonCardArticleAncestor(n) {
+				return true
+			}
 		}
 		if a.isTrailingOrganizationProfileRegion(n) {
 			return true
@@ -3040,6 +3153,15 @@ func containsWordSequence(text, phrase string) bool {
 	return false
 }
 
+func containsAnyWordSequence(text string, phrases ...string) bool {
+	for _, phrase := range phrases {
+		if containsWordSequence(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 func hasMeaningfulIdentity(identity string) bool {
 	for _, word := range strings.FieldsFunc(identity, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
@@ -3145,10 +3267,176 @@ func subtreeHasArticleText(n *html.Node) (found bool) {
 	return found
 }
 
+// isPeripheralLinkRegion removes article-adjacent taxonomy, footer navigation,
+// and unlabelled recommendation/contact collections. Link density is only used
+// outside the article body and must agree with article-relative position.
+func (a *analysis) isPeripheralLinkRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || hasNonCardArticleAncestor(n) || a.hasArticleBodyDescendant(n) {
+		return false
+	}
+	switch strings.ToLower(n.Data) {
+	case "div", "section", "aside", "ul", "header":
+	default:
+		return false
+	}
+	before, after := a.hasSemanticArticleBefore(n), a.hasSemanticArticleAfter(n)
+	if !before && !after {
+		return false
+	}
+	heading := firstRegionHeading(n)
+	// Citations and editorial reading lists are part of the article even when
+	// publishers place them beside, rather than inside, the semantic article.
+	if isEditorialReferenceHeading(heading) {
+		return false
+	}
+	if before && countLinkedRecords(n, 3) >= 3 &&
+		(hasAuxiliaryHeading(n) || containsAny(elementTokens(n),
+			"related", "recommended", "recommendations", "promo", "contact-cards")) {
+		return true
+	}
+
+	links, internal, longest := 0, 0, 0
+	walk(n, func(x *html.Node) bool {
+		if hardHidden(x) {
+			return false
+		}
+		if x.Type != html.ElementNode {
+			return true
+		}
+		tag := strings.ToLower(x.Data)
+		if tag == "a" {
+			links++
+			href := strings.TrimSpace(attrValue(x, "href"))
+			if strings.HasPrefix(href, "/") || strings.HasPrefix(href, "#") ||
+				(!strings.Contains(href, "://") && !strings.HasPrefix(href, "mailto:")) {
+				internal++
+			}
+			return false
+		}
+		if tag == "p" {
+			if l := utf8.RuneCountInString(normalizeText(nodeText(x))); l > longest {
+				longest = l
+			}
+		}
+		return true
+	})
+	textLen := utf8.RuneCountInString(normalizeText(nodeText(n)))
+	if links == 0 || textLen == 0 || longest > 140 {
+		return false
+	}
+	ratio := float64(linkTextLength(n)) / float64(textLen)
+	if before {
+		return links >= 5 && internal*2 >= links && ratio >= .55
+	}
+	// Pre-title topic taxonomies use fewer links but normally identify
+	// themselves in class/id attributes.
+	return links >= 3 && internal*2 >= links && ratio >= .65 &&
+		containsAny(elementTokens(n), "tag", "tags", "topic", "topics", "taxonomy", "category", "categories")
+}
+
+func isEditorialReferenceHeading(heading string) bool {
+	switch heading {
+	case "sources", "references", "evidence", "further reading", "sources and evidence",
+		"notes and references", "references and notes", "bibliography", "works cited":
+		return true
+	}
+	return strings.HasPrefix(heading, "sources and ") || strings.HasPrefix(heading, "references and ")
+}
+
+// isTrailingMarketingRegion catches a distinct call-to-action panel whose
+// heading is followed by controls rather than article prose. It intentionally
+// requires both structural interaction and earlier article content.
+func (a *analysis) isTrailingMarketingRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || hasNonCardArticleAncestor(n) || a.hasArticleBodyDescendant(n) {
+		return false
+	}
+	switch strings.ToLower(n.Data) {
+	case "div", "section", "aside", "fieldset":
+	default:
+		return false
+	}
+	if !a.hasSemanticArticleBefore(n) && !a.hasLongArticleProseBefore(n) {
+		return false
+	}
+	heading := firstRegionHeading(n)
+	interactions, links := marketingInteractions(n)
+	if heading == "" || interactions == 0 || regionHasLongProse(n, 180) {
+		return false
+	}
+	text := normalizedLabel(nodeText(n))
+	marked := containsAny(elementTokens(n), "promo", "marketing", "register", "signup", "sign-up", "subscribe")
+	action := containsAnyWordSequence(text, "sign up", "register", "subscribe", "apply now", "get started", "get updates", "join now")
+	socialFollow := strings.HasPrefix(heading, "follow ") && links >= 2
+	headingCTA := strings.HasPrefix(heading, "get ") || strings.HasPrefix(heading, "apply ") ||
+		strings.HasPrefix(heading, "register ") || strings.HasPrefix(heading, "sign up ")
+	return marked || action || socialFollow || headingCTA
+}
+
+func marketingInteractions(n *html.Node) (interactions, links int) {
+	walk(n, func(x *html.Node) bool {
+		if hardHidden(x) {
+			return false
+		}
+		if x.Type != html.ElementNode {
+			return true
+		}
+		switch strings.ToLower(x.Data) {
+		case "button", "input", "select", "textarea":
+			interactions++
+		case "a":
+			links++
+			label := normalizedLabel(nodeText(x))
+			if strings.HasPrefix(label, "get ") || strings.HasPrefix(label, "start ") ||
+				strings.HasPrefix(label, "apply") || strings.HasPrefix(label, "register") ||
+				strings.HasPrefix(label, "sign up") || label == "learn more" || label == "contact us" {
+				interactions++
+			}
+			return false
+		}
+		return true
+	})
+	return interactions, links
+}
+
+func (a *analysis) hasLongArticleProseBefore(n *html.Node) bool {
+	if a.articleProseBefore == nil {
+		a.articleProseBefore = make(map[*html.Node]bool)
+		seen := false
+		walk(a.root, func(x *html.Node) bool {
+			if hardHidden(x) {
+				return false
+			}
+			a.articleProseBefore[x] = seen
+			if x.Type == html.ElementNode && strings.EqualFold(x.Data, "p") &&
+				utf8.RuneCountInString(normalizeText(nodeText(x))) >= 100 {
+				seen = true
+			}
+			return true
+		})
+	}
+	return a.articleProseBefore[n]
+}
+
+func regionHasLongProse(n *html.Node, limit int) bool {
+	found := false
+	walk(n, func(x *html.Node) bool {
+		if found || hardHidden(x) {
+			return false
+		}
+		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "p") &&
+			utf8.RuneCountInString(normalizeText(nodeText(x))) >= limit {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 // isSubscriptionRegion identifies the wrapper around a newsletter form, not
-// merely the controls that Markdown conversion already omits. A promotional
-// heading is required in addition to form and CTA evidence: class names such as
-// newsletter-example are common on substantive tutorials with embedded forms.
+// merely the controls that Markdown conversion already omits. It requires a
+// promotional heading, or form controls corroborated by consent/honeypot copy:
+// class names such as newsletter-example occur in substantive tutorials.
 func isSubscriptionRegion(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
@@ -3159,15 +3447,12 @@ func isSubscriptionRegion(n *html.Node) bool {
 		return false
 	}
 
-	if !isSubscriptionPromptHeading(firstRegionHeading(n)) {
-		return false
-	}
-
+	heading := firstRegionHeading(n)
 	text := strings.ToLower(normalizeText(nodeText(n)))
 	cta := strings.Contains(text, "subscribe") || strings.Contains(text, "sign up") ||
 		strings.Contains(text, "mailing list") || strings.Contains(text, "get updates")
 
-	hasForm, hasEmail, subscriptionForm := false, false, false
+	hasForm, hasEmail, subscriptionForm, joinCTA := false, false, false, false
 	walk(n, func(x *html.Node) bool {
 		if hardHidden(x) {
 			return false
@@ -3177,8 +3462,16 @@ func isSubscriptionRegion(n *html.Node) bool {
 		}
 		switch strings.ToLower(x.Data) {
 		case "input":
-			if strings.EqualFold(strings.TrimSpace(attrValue(x, "type")), "email") {
+			inputType := strings.ToLower(strings.TrimSpace(attrValue(x, "type")))
+			if inputType == "email" {
 				hasEmail = true
+			}
+			if (inputType == "submit" || inputType == "button") && isJoinCTA(attrValue(x, "value")) {
+				joinCTA = true
+			}
+		case "button", "a":
+			if isJoinCTA(nodeText(x)) {
+				joinCTA = true
 			}
 		case "form":
 			hasForm = true
@@ -3190,13 +3483,31 @@ func isSubscriptionRegion(n *html.Node) bool {
 	})
 
 	formEvidence := hasEmail || subscriptionForm || (hasForm && cta)
-	return formEvidence && cta
+	if isSubscriptionPromptHeading(heading) {
+		return formEvidence && cta
+	}
+
+	// Consent and honeypot copy corroborate a structurally identified signup;
+	// they are not sufficient alone because contact and application forms use
+	// the same language. This still catches neutral or branded join prompts.
+	consent := containsAnyWordSequence(text, "privacy policy", "terms of use", "terms and conditions")
+	honeypot := containsAnyWordSequence(text, "field is for validation", "leave this field unchanged", "do not fill")
+	return hasForm && (hasEmail || controls(n) >= 2) && (consent || honeypot) &&
+		(cta || subscriptionForm || joinCTA)
+}
+
+func isJoinCTA(value string) bool {
+	label := normalizedLabel(value)
+	return label == "join" || strings.HasPrefix(label, "join now") ||
+		strings.HasPrefix(label, "join the ") || strings.HasPrefix(label, "join our ")
 }
 
 func isSubscriptionPromptHeading(heading string) bool {
 	if heading == "stay updated" || strings.HasPrefix(heading, "stay updated ") ||
+		strings.HasPrefix(heading, "stay up to date") || strings.HasPrefix(heading, "be the first to") ||
 		heading == "get updates" || strings.HasPrefix(heading, "get updates ") ||
-		heading == "subscribe" || strings.HasPrefix(heading, "subscribe to ") {
+		strings.HasPrefix(heading, "get the latest") || heading == "subscribe" ||
+		strings.HasPrefix(heading, "subscribe to ") {
 		return true
 	}
 	return heading == "join our newsletter" || heading == "join the newsletter" ||
