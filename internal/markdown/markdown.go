@@ -54,6 +54,7 @@ type Node struct {
 	Children      []*Node
 	section       bool
 	sourceSection *html.Node
+	controlURL    string
 }
 
 type URLPolicy struct {
@@ -141,6 +142,19 @@ func (c *converter) block(n *html.Node) (result *Node) {
 	defer func() {
 		if result != nil {
 			result.sourceSection = enclosingSection(n)
+			// Responsive components sometimes wrap a block paragraph in an anchor.
+			// Starting conversion at that paragraph loses the inline Link node, so
+			// retain only its destination for adjacent-control comparison.
+			if result.Kind == Paragraph {
+				for current := n; current != nil; current = current.Parent {
+					if current.Type == html.ElementNode && strings.EqualFold(current.Data, "a") {
+						if safe, ok := c.safeURL(attr(current, "href")); ok {
+							result.controlURL = safe
+						}
+						break
+					}
+				}
+			}
 		}
 	}()
 	if c.skip(n) {
@@ -1901,6 +1915,7 @@ func render(doc *Node, max int, pruneHeadings bool) Result {
 	if pruneHeadings {
 		blocks = pruneStandaloneHeadings(blocks)
 	}
+	blocks = collapseAdjacentControls(blocks)
 	used, truncated := 0, false
 	for _, n := range blocks {
 		s := strings.TrimSpace(renderBlock(n, 0))
@@ -1939,6 +1954,68 @@ func render(doc *Node, max int, pruneHeadings bool) Result {
 		Links: links, Images: images, Sections: retainedSections(keptNodes),
 		EmittedBlocks: len(keptNodes), EmittedContentBlocks: contentBlocks, Truncated: truncated,
 	}
+}
+
+// collapseAdjacentControls removes responsive copies of the same short block
+// anchor. Eligibility requires source provenance recorded when a block paragraph
+// is nested inside an anchor. Ordinary link-only paragraphs are intentionally not
+// candidates: adjacency and equal links alone do not establish duplication.
+// Repeated prose, code, quotations, tables, and image fallbacks also retain their
+// multiplicity. Comparing destinations preserves equally labelled controls that
+// perform different actions.
+func collapseAdjacentControls(blocks []*Node) []*Node {
+	kept := make([]*Node, 0, len(blocks))
+	previous := ""
+	for _, block := range blocks {
+		if strings.TrimSpace(renderBlock(block, 0)) == "" {
+			// Empty conversion artifacts do not separate visible blocks.
+			kept = append(kept, block)
+			continue
+		}
+		key, candidate := shortLinkedControlKey(block)
+		if candidate && key == previous {
+			continue
+		}
+		kept = append(kept, block)
+		if candidate {
+			previous = key
+		} else {
+			previous = ""
+		}
+	}
+	return kept
+}
+
+func shortLinkedControlKey(n *Node) (string, bool) {
+	if n == nil || n.Kind != Paragraph || n.controlURL == "" || !plainInlineParagraph(n) {
+		return "", false
+	}
+	text := clean(plain(n))
+	if text == "" || utf8.RuneCountInString(text) > 80 {
+		return "", false
+	}
+	return text + "\x00" + n.controlURL, true
+}
+
+func plainInlineParagraph(n *Node) bool {
+	valid := true
+	var inspect func(*Node)
+	inspect = func(current *Node) {
+		if current == nil || !valid {
+			return
+		}
+		switch current.Kind {
+		case Paragraph, Text, Emphasis, Strong, Superscript:
+		default:
+			valid = false
+			return
+		}
+		for _, child := range current.Children {
+			inspect(child)
+		}
+	}
+	inspect(n)
+	return valid
 }
 
 // pruneStandaloneHeadings keeps a heading when a substantive block follows it
