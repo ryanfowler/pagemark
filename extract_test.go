@@ -74,6 +74,110 @@ func TestLargeArticlePreCodeRemainsFenced(t *testing.T) {
 	}
 }
 
+func TestRealColeFixtureRestoresHeadlineBeforeBodySections(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-cole-reddit-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://www.cole-k.com/2026/07/21/reddit/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# So Reddit has decided that plain HTML is unsafe\n") {
+		t.Fatalf("article headline was lost behind body section headings:\n%s", doc.Markdown)
+	}
+	for _, want := range []string{"## Reddit-The-Company", "## Reddit-The-Search-Results", "genuinely human-generated data"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("missing real Cole-derived content %q:\n%s", want, doc.Markdown)
+		}
+	}
+	if strings.Contains(doc.Markdown, "# home") {
+		t.Fatalf("site masthead survived extraction:\n%s", doc.Markdown)
+	}
+}
+
+func TestRealEbellaniFixtureDoesNotRepeatNestedH2Headline(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-ebellani-programming-languages.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://ebellani.github.io/blog/2026/why-care-about-programming-languages/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Why care about programming languages\n") {
+		t.Fatalf("article headline was not promoted to the document title:\n%s", doc.Markdown)
+	}
+	if strings.Count(doc.Text, "Why care about programming languages") != 1 {
+		t.Fatalf("nested h2 headline was repeated after promotion:\n%s", doc.Markdown)
+	}
+	for _, want := range []string{"In the age of AI-assisted coding", "borrow checker", "These ideas transcend"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing real Bellani-derived content %q:\n%s", want, doc.Markdown)
+		}
+	}
+}
+
+func TestArticleHeadlineSmallSubtitleIsPreserved(t *testing.T) {
+	html := `<!doctype html><html><head>
+<meta property="og:title" content="A Main Title: A Practical Guide">
+<meta property="og:type" content="article">
+</head><body><main><h2 itemprop="headline">A Main Title<small>: A Practical Guide</small></h2>
+<p>This opening paragraph provides enough substantive article prose to keep the promoted headline attached to the document body.</p>
+<p>The second paragraph confirms that this is a prose article rather than a listing or an isolated heading.</p>
+</main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/practical-guide", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# A Main Title: A Practical Guide\n") {
+		t.Fatalf("small subtitle was discarded from promoted headline:\n%s", doc.Markdown)
+	}
+	if strings.Count(doc.Text, "A Main Title: A Practical Guide") != 1 {
+		t.Fatalf("headline was missing or duplicated:\n%s", doc.Markdown)
+	}
+}
+
+func TestArticleHeadlineUnmarkedTimeTextIsPreserved(t *testing.T) {
+	html := `<!doctype html><html><head>
+<meta property="og:title" content="The 2024 Report">
+<meta property="og:type" content="article">
+</head><body><main><h2 itemprop="headline">The <time datetime="2024">2024</time> Report</h2>
+<p>This opening paragraph provides enough substantive article prose to keep the promoted headline attached to the document body.</p>
+<p>The second paragraph confirms that the year belongs to the headline rather than serving as publication metadata.</p>
+</main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/2024-report", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# The 2024 Report\n") {
+		t.Fatalf("unmarked time text was discarded from promoted headline:\n%s", doc.Markdown)
+	}
+	if strings.Count(doc.Text, "The 2024 Report") != 1 {
+		t.Fatalf("headline was missing or duplicated:\n%s", doc.Markdown)
+	}
+}
+
+func TestArticleHeadlineSmallSubtitleWithUnmarkedTimeIsPreserved(t *testing.T) {
+	html := `<!doctype html><html><head>
+<meta property="og:title" content="The 2024 Report">
+<meta property="og:type" content="article">
+</head><body><main><h2 itemprop="headline">The <small><time datetime="2024">2024</time> Report</small></h2>
+<p>This opening paragraph provides enough substantive article prose to keep the promoted headline attached to the document body.</p>
+<p>The second paragraph confirms that the small element is a subtitle rather than a publication metadata wrapper.</p>
+</main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/2024-report", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# The 2024 Report\n") {
+		t.Fatalf("small subtitle containing unmarked time text was discarded:\n%s", doc.Markdown)
+	}
+	if strings.Count(doc.Text, "The 2024 Report") != 1 {
+		t.Fatalf("headline was missing or duplicated:\n%s", doc.Markdown)
+	}
+}
+
 func TestRealRedfinArticleFixturePreservesBodyTableAndExcludesTail(t *testing.T) {
 	source, err := os.ReadFile("testdata/real-redfin-article.html")
 	if err != nil {
