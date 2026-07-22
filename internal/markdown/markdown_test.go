@@ -71,6 +71,60 @@ func TestHardBreakInHeadingRendersAsSpace(t *testing.T) {
 	}
 }
 
+func TestEmptyHeadingsArePrunedAfterConversion(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, want string
+	}{
+		{"empty section", `<section><h2>Web mentions</h2></section>`, ""},
+		{"empty dynamic container", `<section><h2>Web mentions</h2><div id="webmentions"></div></section>`, ""},
+		{"paragraph sibling", `<h2>Installation</h2><p>Run the installer.</p>`, "## Installation\n\nRun the installer."},
+		{"nested content", `<h2>Installation</h2><div><p>Run the installer.</p></div>`, "## Installation\n\nRun the installer."},
+		{"direct section text", `<section><h2>Introduction</h2>Useful introductory text.</section>`, "## Introduction\n\nUseful introductory text."},
+		{"nested semantic section", `<section><h2>Guide</h2><section><h3>Install</h3><p>Run the installer.</p></section></section>`, "## Guide\n\n### Install\n\nRun the installer."},
+		{"content after nested section", `<section><h2>Guide</h2><section><h3>Install</h3><p>Run the installer.</p></section><p>Troubleshoot failed installations.</p></section>`, "## Guide\n\n### Install\n\nRun the installer.\n\nTroubleshoot failed installations."},
+		{"empty nested section does not borrow parent content", `<section><h2>Guide</h2><section><h3>Empty</h3></section><p>Read the overview.</p></section>`, "## Guide\n\nRead the overview."},
+		{"consecutive headings", `<h2>Empty</h2><h2>Installation</h2><p>Run the installer.</p>`, "## Installation\n\nRun the installer."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, _ := url.Parse("https://example.com/")
+			r := convertHTMLConfig(t, tc.source, Config{Base: base, PruneEmptyHeadings: true})
+			if r.Markdown != tc.want {
+				t.Fatalf("want %q, got %q", tc.want, r.Markdown)
+			}
+			for _, section := range r.Sections {
+				if section.Heading == "Empty" || section.Heading == "Web mentions" {
+					t.Fatalf("pruned heading survived in sections: %#v", r.Sections)
+				}
+			}
+		})
+	}
+}
+
+func TestSeparatelySelectedSectionHeadingDoesNotBorrowLaterContent(t *testing.T) {
+	root, err := html.Parse(strings.NewReader(`<section><h2>Web mentions</h2><div id="webmentions"></div></section><p>Outside content.</p>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var heading, paragraph *html.Node
+	var find func(*html.Node)
+	find = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "h2" {
+			heading = n
+		}
+		if n.Type == html.ElementNode && n.Data == "p" {
+			paragraph = n
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			find(child)
+		}
+	}
+	find(root)
+	r := Convert([]*html.Node{heading, paragraph}, Config{PruneEmptyHeadings: true})
+	if r.Markdown != "Outside content." {
+		t.Fatalf("section heading borrowed outside content: %q", r.Markdown)
+	}
+}
+
 func TestHeadingPermalinks(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
