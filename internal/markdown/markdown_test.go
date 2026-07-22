@@ -171,6 +171,75 @@ func TestFormattedLinkAndLinkedImage(t *testing.T) {
 	}
 }
 
+func TestSerializedMediaTextIsNotEmittedAsProse(t *testing.T) {
+	tests := []struct {
+		name, source, want string
+	}{
+		{
+			"entity encoded image in noscript",
+			`<p>Before.</p><noscript>&lt;img src=&quot;/fallback.png&quot; alt=&quot;Fallback&quot; width=&quot;800&quot;&gt;</noscript><p>After.</p>`,
+			"Before.\n\nAfter.",
+		},
+		{
+			"double encoded image fallback",
+			`<noscript>&amp;lt;img src=&amp;quot;/fallback.png&amp;quot; alt=&amp;quot;Fallback&amp;quot; /&amp;gt;</noscript>`,
+			"",
+		},
+		{
+			"standalone image example is preserved",
+			`<p>&lt;img src="example.png"&gt;</p>`,
+			`\<img src="example.png"\>`,
+		},
+		{
+			"serialized iframe in noscript",
+			`<noscript>&lt;iframe width=&quot;560&quot; src=&quot;https://www.youtube.com/embed/video&quot; title=&quot;Video&quot; allowfullscreen&gt;&lt;/iframe&gt;</noscript>`,
+			"",
+		},
+		{
+			"standalone iframe example is preserved",
+			`<p>&lt;iframe src="https://video.example/embed/demo" title="Embed example"&gt;&lt;/iframe&gt;</p>`,
+			`\<iframe src="https://video.example/embed/demo" title="Embed example"\>\</iframe\>`,
+		},
+		{
+			"real iframe and matching serialized fallback",
+			`<div><iframe src="https://video.example/embed/demo"></iframe>&lt;iframe src="https://video.example/embed/demo"&gt;&lt;/iframe&gt;</div>`,
+			"",
+		},
+		{
+			"real image and matching serialized fallback",
+			`<figure><img src="/photo.png" alt="A useful photo">&lt;div class=&quot;fallback&quot;&gt;&lt;img src=&quot;/photo.png&quot; alt=&quot;A useful photo&quot;&gt;&lt;/div&gt;</figure>`,
+			`![A useful photo](https://example.com/photo.png)`,
+		},
+		{
+			"matching image elsewhere in article is not nearby",
+			`<article><img src="/example.png" alt="Actual image"><p>Discussion of the markup follows.</p>&lt;img src=&quot;/example.png&quot;&gt;</article>`,
+			"![Actual image](https://example.com/example.png)\n\nDiscussion of the markup follows.\n\n\\<img src=\"/example.png\"\\>",
+		},
+		{
+			"preformatted example",
+			`<pre>&lt;img src="example.png" alt="Example"&gt;</pre>`,
+			"```\n<img src=\"example.png\" alt=\"Example\">\n```",
+		},
+		{
+			"inline code example",
+			`<p><code>&lt;img src="example.png"&gt;</code></p>`,
+			"`<img src=\"example.png\">`",
+		},
+		{
+			"ordinary prose mentioning tag",
+			`<p>Use the &lt;img&gt; tag, with useful alternative text.</p>`,
+			`Use the \<img\> tag, with useful alternative text.`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := convertHTML(t, tc.source).Markdown; got != tc.want {
+				t.Fatalf("want %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
 func TestAccessibleSVGTextFallback(t *testing.T) {
 	t.Run("labeled and escaped", func(t *testing.T) {
 		r := convertHTML(t, `<svg role="img" aria-label="System *flow* [v2]"><path></path></svg>`)
