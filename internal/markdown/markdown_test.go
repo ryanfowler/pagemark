@@ -39,6 +39,57 @@ func convertHTMLConfig(t *testing.T, source string, cfg Config) Result {
 	return Convert([]*html.Node{body}, cfg)
 }
 
+func TestAdjacentResponsiveControlsAreDeduplicated(t *testing.T) {
+	// Framer-style responsive links wrap a block paragraph. Selection can begin
+	// at the paragraph, so conversion cannot render the ancestor anchor itself.
+	source := `<main>
+		<div class="desktop"><a href="/insights"><p><strong>Back to insights</strong></p></a></div>
+		<div class="mobile"><a href="/insights"><p> Back   to insights </p></a></div>
+		<h1>Article title</h1><p>Article body.</p>
+	</main>`
+	r := convertHTML(t, source)
+	if strings.Count(r.Text, "Back to insights") != 1 {
+		t.Fatalf("responsive control was not collapsed: %q", r.Markdown)
+	}
+}
+
+func TestAdjacentControlDeduplicationIsNarrow(t *testing.T) {
+	t.Run("ordinary adjacent identical links", func(t *testing.T) {
+		r := convertHTML(t, `<p><a href="/terms">Terms</a></p><p><a href="/terms">Terms</a></p>`)
+		if strings.Count(r.Text, "Terms") != 2 || strings.Count(r.Markdown, "[Terms]") != 2 || len(r.Links) != 2 {
+			t.Fatalf("authored links were merged: %q", r.Markdown)
+		}
+	})
+
+	t.Run("same label with different destinations", func(t *testing.T) {
+		r := convertHTML(t, `<div><a href="/previous"><p>Continue</p></a></div><div><a href="/next"><p>Continue</p></a></div>`)
+		if strings.Count(r.Text, "Continue") != 2 {
+			t.Fatalf("distinct controls were merged: %q", r.Markdown)
+		}
+	})
+
+	t.Run("separated repeated article prose", func(t *testing.T) {
+		r := convertHTML(t, `<p>The deliberate refrain.</p><p>Intervening article content.</p><p>The deliberate refrain.</p>`)
+		if strings.Count(r.Text, "The deliberate refrain.") != 2 {
+			t.Fatalf("repeated prose was merged: %q", r.Markdown)
+		}
+	})
+
+	t.Run("adjacent code and quotations", func(t *testing.T) {
+		r := convertHTML(t, `<pre><code>same line</code></pre><pre><code>same line</code></pre><blockquote>Repeat me.</blockquote><blockquote>Repeat me.</blockquote>`)
+		if strings.Count(r.Text, "same line") != 2 || strings.Count(r.Text, "Repeat me.") != 2 {
+			t.Fatalf("non-control content was merged: %q", r.Markdown)
+		}
+	})
+
+	t.Run("images", func(t *testing.T) {
+		r := convertHTML(t, `<img src="/fallback.png" alt="Fallback"><img src="/fallback.png" alt="Fallback">`)
+		if strings.Count(r.Markdown, "![Fallback]") != 2 || len(r.Images) != 2 {
+			t.Fatalf("image handling was changed by control deduplication: %q", r.Markdown)
+		}
+	})
+}
+
 func TestMathRepresentationsAreEmittedOnce(t *testing.T) {
 	tests := []struct {
 		name, source, want string
