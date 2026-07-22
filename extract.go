@@ -52,6 +52,7 @@ type analysis struct {
 	articleProseBefore                              map[*html.Node]bool
 	selfReferences                                  map[*html.Node]uint8
 	microdataArticleRecords                         map[*html.Node]bool
+	listingWrapperRecords                           map[*html.Node]map[*html.Node]bool
 	dominantMicrodataArticle, textListingPre        *html.Node
 }
 
@@ -1676,7 +1677,7 @@ func (a *analysis) selectedNodes(pageType PageType) (nodes []*html.Node, exclude
 		if !b.selected {
 			continue
 		}
-		if !acceptRecord(listingRecord(b.node)) {
+		if !acceptRecord(a.listingRecord(b.node)) {
 			continue
 		}
 		// Lists and tables are segmented as single blocks. Limit their marked
@@ -1703,6 +1704,13 @@ func listingRecord(n *html.Node) *html.Node {
 	return nil
 }
 
+func (a *analysis) listingRecord(n *html.Node) *html.Node {
+	if record := listingRecord(n); record != nil {
+		return record
+	}
+	return a.inferenceListingRecord(n)
+}
+
 func isListingRecordElement(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode || !containsAny(elementTokens(n), "card", "result", "item", "product", "record") {
 		return false
@@ -1714,6 +1722,115 @@ func isListingRecordElement(n *html.Node) bool {
 	return false
 }
 
+// inferenceListingRecord returns the repeated record containing n. A token on
+// the record itself is preferred. Plural result/listing containers are treated
+// as collection context, with their repeated semantic or direct children used
+// as the record keys instead of collapsing the whole collection into one key.
+func (a *analysis) inferenceListingRecord(n *html.Node) *html.Node {
+	for p := n; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		tokens := elementTokens(p)
+		if containsAny(tokens, "card", "item", "record") {
+			return p
+		}
+		wrapper := containsAny(tokens, "listing", "listings", "results")
+		if wrapper || containsAny(tokens, "result") {
+			for q := n; q != nil && q != p; q = q.Parent {
+				if a.inferenceListingWrapperRecords(p)[q] {
+					return q
+				}
+			}
+			// Singular .result commonly marks an individual record. Only use the
+			// container itself when it did not expose repeated child records.
+			if !wrapper {
+				return p
+			}
+		}
+	}
+	return nil
+}
+
+func (a *analysis) inferenceListingWrapperRecords(wrapper *html.Node) map[*html.Node]bool {
+	if a.listingWrapperRecords == nil {
+		a.listingWrapperRecords = make(map[*html.Node]map[*html.Node]bool)
+	}
+	if records, ok := a.listingWrapperRecords[wrapper]; ok {
+		return records
+	}
+	records := make(map[*html.Node]bool)
+	type semanticCohort struct {
+		parent *html.Node
+		tag    string
+	}
+	cohorts := make(map[semanticCohort][]*html.Node)
+	var cohortOrder []semanticCohort
+
+	// Compare sibling cohorts rather than pooling semantic descendants from the
+	// entire wrapper. Otherwise small tag/feature lists nested inside generic
+	// cards can displace the cards themselves as the inferred records.
+	walk(wrapper, func(n *html.Node) bool {
+		if n == wrapper || n.Type != html.ElementNode {
+			return true
+		}
+		// Type inference runs before a.pageType is assigned. Do not call the
+		// cached, type-dependent isIrrelevantNode here: doing so would preserve an
+		// incomplete result after the final article profile is known.
+		if hardHidden(n) || irrelevantNode(n) || isAdvertisementRegion(n) {
+			return false
+		}
+		tag := strings.ToLower(n.Data)
+		switch tag {
+		case "article", "li", "tr":
+			key := semanticCohort{parent: n.Parent, tag: tag}
+			if _, seen := cohorts[key]; !seen {
+				cohortOrder = append(cohortOrder, key)
+			}
+			cohorts[key] = append(cohorts[key], n)
+			return false
+		}
+		return true
+	})
+
+	var best []*html.Node
+	bestPriority := -1
+	consider := func(candidate []*html.Node, priority int) {
+		if len(candidate) < 2 {
+			return
+		}
+		if len(candidate) > len(best) || (len(candidate) == len(best) && priority > bestPriority) {
+			best = candidate
+			bestPriority = priority
+		}
+	}
+	// Generic direct children form the fallback cohort. Prefer article/tr
+	// cohorts on a tie, but prefer direct cards over nested li metadata.
+	var direct []*html.Node
+	for ch := wrapper.FirstChild; ch != nil; ch = ch.NextSibling {
+		if ch.Type != html.ElementNode || hardHidden(ch) || irrelevantNode(ch) || isAdvertisementRegion(ch) {
+			continue
+		}
+		switch strings.ToLower(ch.Data) {
+		case "div", "section", "a", "figure":
+			direct = append(direct, ch)
+		}
+	}
+	consider(direct, 1)
+	for _, key := range cohortOrder {
+		priority := 0
+		if key.tag == "article" || key.tag == "tr" {
+			priority = 2
+		}
+		consider(cohorts[key], priority)
+	}
+	for _, record := range best {
+		records[record] = true
+	}
+	a.listingWrapperRecords[wrapper] = records
+	return records
+}
+
 func (a *analysis) descendantListingRecords(n *html.Node) (records []*html.Node) {
 	var visit func(*html.Node)
 	visit = func(parent *html.Node) {
@@ -1721,7 +1838,7 @@ func (a *analysis) descendantListingRecords(n *html.Node) (records []*html.Node)
 			if hardHidden(ch) || a.isIrrelevantNode(ch) {
 				continue
 			}
-			if isListingRecordElement(ch) {
+			if isListingRecordElement(ch) || a.inferenceListingRecord(ch) == ch {
 				records = append(records, ch)
 				continue
 			}
@@ -1798,7 +1915,8 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	}
 	counts := map[string]int{}
 	productRecords := map[*html.Node]bool{}
-	linkedRecords := map[*html.Node]bool{}
+	productRegionChars := map[*html.Node]int{}
+	listingRecordChars := map[*html.Node]int{}
 	discussionRecords := map[*html.Node]int{}
 	neutralDiscussionRecords := map[*html.Node]int{}
 	// Discussion vocabulary is page-level evidence only when it belongs to the
@@ -1808,6 +1926,7 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	discussionContext := a.primaryDiscussionContext()
 	documentationContext := false
 	proseChars, codeChars, primaryArticleProse := 0, 0, 0
+	inferenceChars, narrativeProseChars, longNarrativeParagraphs := 0, 0, 0
 	primaryArticles := map[*html.Node]bool{}
 	for _, b := range a.blocks {
 		// Recommendations are page furniture, not records belonging to the page's
@@ -1817,6 +1936,17 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 			continue
 		}
 		counts[b.kind]++
+		blockChars := utf8.RuneCountInString(b.text)
+		inferenceChars += blockChars
+		listingRecord := a.inferenceListingRecord(b.node)
+		if listingRecord != nil {
+			listingRecordChars[listingRecord] += blockChars
+		} else if b.kind == "p" {
+			narrativeProseChars += blockChars
+			if blockChars >= 80 {
+				longNarrativeParagraphs++
+			}
+		}
 		article := a.primaryArticleAncestor(b.node)
 		if article == nil && nodeWithin(b.node, a.dominantMicrodataArticle) {
 			article = a.dominantMicrodataArticle
@@ -1857,19 +1987,15 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 			// discussion merely because an ancestor happens to say “thread”.
 		}
 		if containsAny(tok, "product", "price", "sku") {
-			scores[PageTypeProduct] += 1.5
+			if region := nearestTokenAncestor(b.node, "product", "price", "sku"); region != nil {
+				productRegionChars[region] += blockChars
+			}
 			if record := nearestTokenAncestor(b.node, "product", "sku"); record != nil {
 				productRecords[record] = true
 			}
 		}
 		if containsAny(tok, "docs", "documentation", "api", "reference") {
 			documentationContext = true
-		}
-		if containsAny(tok, "card", "result", "listing", "item") {
-			scores[PageTypeListing]++
-			if record := nearestTokenAncestor(b.node, "card", "result", "item"); record != nil {
-				linkedRecords[record] = true
-			}
 		}
 	}
 	if len(neutralDiscussionRecords) >= 2 {
@@ -1920,11 +2046,48 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	if sectionCount >= 3 {
 		scores[PageTypeService] += 3
 	}
+	// Product and price vocabulary also describes regions, not every heading and
+	// paragraph inside them. Repeated product records are collection evidence;
+	// a single product region remains evidence for a product detail page.
+	if len(productRegionChars) == 1 {
+		for _, chars := range productRegionChars {
+			share := float64(chars) / float64(max(1, inferenceChars))
+			if share >= .5 {
+				// A dominant product wrapper is sufficient detail-page evidence even
+				// when the URL and metadata are neutral.
+				scores[PageTypeProduct] += 2
+			} else {
+				// Keep an embedded price or affiliate widget below the generic prior.
+				scores[PageTypeProduct] += .5
+			}
+		}
+	} else if len(productRegionChars) > 1 {
+		scores[PageTypeProduct] += math.Min(3, .75*float64(len(productRegionChars)))
+	}
 	if len(productRecords) >= 4 {
 		scores[PageTypeCollection] += 2 * float64(len(productRecords))
 	}
-	if len(linkedRecords) >= 4 {
-		scores[PageTypeListing] += 2
+	// Card vocabulary is region-level evidence, not one vote per descendant
+	// block. Repeated records should identify a listing only when they make up a
+	// substantial share of the primary content. This keeps metrics, quotes, and
+	// pricing tiers embedded later in a long article from overwhelming its
+	// dominant prose sequence.
+	if len(listingRecordChars) >= 2 {
+		recordChars := 0
+		for _, chars := range listingRecordChars {
+			recordChars += chars
+		}
+		recordShare := float64(recordChars) / float64(max(1, inferenceChars))
+		scores[PageTypeListing]++ // Repetition is weak evidence by itself.
+		if recordShare >= .35 {
+			scores[PageTypeListing] += math.Min(3, float64(len(listingRecordChars)))
+		}
+		if recordShare >= .55 {
+			scores[PageTypeListing] += 2
+		}
+		if recordShare >= .75 {
+			scores[PageTypeListing]++
+		}
 	}
 	if a.meta.articleType || strings.Contains(schema, "article") || strings.Contains(schema, "news") {
 		scores[PageTypeArticle] += 5
@@ -1971,6 +2134,16 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	}
 	if !documentationContext && counts["p"] >= 4 && proseChars >= 600 && proseChars >= codeChars {
 		scores[PageTypeArticle] += 2
+	}
+	// Several long paragraphs outside record-shaped regions establish one
+	// sequential narrative. Introductory copy on a catalog normally has only one
+	// or two such paragraphs, while an article containing supporting cards keeps
+	// accumulating prose independently of those cards.
+	if !documentationContext && longNarrativeParagraphs >= 3 && narrativeProseChars >= 500 {
+		scores[PageTypeArticle] += 2
+		if longNarrativeParagraphs >= 6 && narrativeProseChars >= 1000 {
+			scores[PageTypeArticle]++
+		}
 	}
 	if len(primaryArticles) == 1 && (counts["p"] >= 2 || primaryArticleProse >= 120) {
 		scores[PageTypeArticle] += 2

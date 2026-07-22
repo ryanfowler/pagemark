@@ -566,6 +566,186 @@ func TestStrongArticleSignalsOutweighRelatedContentCards(t *testing.T) {
 	}
 }
 
+func TestLongNarrativeOutweighsEmbeddedRecordSections(t *testing.T) {
+	longParagraphs := `<p>The project began with a careful review of the existing system, the constraints faced by its users, and the evidence needed to choose a durable direction for the work.</p>` +
+		`<p>The next phase tested those assumptions in production and documented how each change affected reliability, maintenance effort, and the experience of the people using it.</p>` +
+		`<p>That investigation also revealed several tradeoffs which only became clear after the team compared the early prototype with the behavior of the complete implementation.</p>` +
+		`<p>The article now turns to the practical consequences, explaining why the chosen approach works and where future improvements can build on the foundation already in place.</p>` +
+		`<p>Readers should understand the sequence because no single measurement tells the whole story; the conclusion follows from all of the observations considered together over time.</p>` +
+		`<p>Finally, the author describes what comes next and how the lessons from this work apply to teams facing similar technical and organizational decisions.</p>`
+	tests := []struct {
+		name, supporting string
+	}{
+		{"metrics cards", strings.Repeat(`<div class="metric-card"><strong>42%</strong><span>Measured improvement over the previous release</span></div>`, 8)},
+		{"testimonials", strings.Repeat(`<div class="testimonial-card"><blockquote>The new workflow made our daily work clearer and more dependable.</blockquote></div>`, 8)},
+		{"sponsorship tiers", strings.Repeat(`<div class="sponsor-card price"><h3>Supporting sponsor — $500</h3><p>Recognition and project updates for organizations funding the work.</p></div>`, 8)},
+		{"comparison table", `<table><thead><tr><th>Approach</th><th>Result</th></tr></thead><tbody><tr><td>Earlier design</td><td>Manual coordination</td></tr><tr><td>New design</td><td>Automatic coordination</td></tr></tbody></table>`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			html := `<html><head><title>A complete account of the project</title></head><body><main><h1>A complete account of the project</h1>` + longParagraphs + `<h2>Evidence and options</h2>` + tt.supporting + `<h2>Conclusion</h2><p>The evidence supports continuing the project while preserving the principles established throughout the preceding analysis.</p></main></body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/blog/complete-project-account")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.PageType != PageTypeArticle {
+				t.Fatalf("page type = %q (score %.3f), want article", doc.PageType, doc.PageTypeScore)
+			}
+		})
+	}
+}
+
+func TestRepeatedRecordsDominateGenuineListings(t *testing.T) {
+	tests := []struct {
+		name, url, intro, records string
+	}{
+		{
+			name:    "product listing with descriptive intro",
+			url:     "https://example.com/catalog/tools",
+			intro:   `<p>This catalog explains the available workshop tools and helps buyers choose equipment appropriate for different materials and project sizes.</p>`,
+			records: strings.Repeat(`<article class="product-card"><h2>Workshop tool</h2><p>A distinct product with specifications, availability, and ordering details.</p></article>`, 7),
+		},
+		{
+			name:    "article index",
+			url:     "https://example.com/news",
+			intro:   `<p>Reporting and analysis from our writers, updated throughout the week.</p>`,
+			records: strings.Repeat(`<article class="story-card"><h2>Current report</h2><p>A summary of a separate report with enough detail to help readers choose it.</p></article>`, 7),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			html := `<main><h1>Current collection</h1>` + tt.intro + `<div class="results">` + tt.records + `</div></main>`
+			doc, err := ExtractBytes([]byte(html), tt.url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.PageType != PageTypeListing && doc.PageType != PageTypeCollection {
+				t.Fatalf("page type = %q, want listing or collection", doc.PageType)
+			}
+		})
+	}
+}
+
+func TestNeutralRecordsUnderResultsWrapperInferListing(t *testing.T) {
+	html := `<main><h1>Search results</h1><div class="results">` +
+		`<div class="filters"><label>Category <select><option>All</option></select></label></div>` +
+		`<div class="grid">` +
+		`<article><h2>First match</h2><p>The first matching page has a useful descriptive summary.</p></article>` +
+		`<article><h2>Second match</h2><p>The second matching page has another descriptive summary.</p></article>` +
+		`<article><h2>Third match</h2><p>The third matching page completes the result set.</p></article>` +
+		`</div></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/search?q=match", WithMaxRepeatedItems(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeListing {
+		t.Fatalf("page type = %q, want listing", doc.PageType)
+	}
+	for _, want := range []string{"First match", "Second match"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing retained result %q: %s", want, doc.Text)
+		}
+	}
+	if strings.Contains(doc.Text, "Third match") {
+		t.Errorf("neutral result records did not use repeated-item handling: %s", doc.Text)
+	}
+}
+
+func TestArticleWrapperInferenceDoesNotCacheAuthorProfileAsRelevant(t *testing.T) {
+	html := `<html><head><meta property="og:type" content="article"><title>Primary investigation</title></head><body>` +
+		`<main class="results"><article><h1>Primary investigation</h1>` +
+		`<p>The investigation begins with a detailed account of the evidence and the circumstances surrounding the observed behavior.</p>` +
+		`<p>Further analysis explains the cause, the verification process, and the change that resolved the problem reliably.</p>` +
+		`</article><section class="author-profile"><h2>About the author</h2><p>This trailing biography is publication furniture rather than article content.</p></section></main>` +
+		`</body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/reports/investigation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("page type = %q, want article", doc.PageType)
+	}
+	for _, want := range []string{"Primary investigation", "verification process"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing article content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"About the author", "trailing biography"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("cached pre-inference relevance leaked %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestPaginationItemsDoNotOverrideGenericListingRecords(t *testing.T) {
+	html := `<main><h1>Search results</h1><div class="results">` +
+		`<div><h2>First result</h2><p>The first generic result has a useful descriptive summary.</p></div>` +
+		`<div><h2>Second result</h2><p>The second generic result has another descriptive summary.</p></div>` +
+		`<div><h2>Third result</h2><p>The third generic result completes the result set.</p></div>` +
+		`<nav aria-label="Pagination"><ul><li><a href="?page=1">1</a></li><li><a href="?page=2">2</a></li></ul></nav>` +
+		`</div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/search?q=result", WithMaxRepeatedItems(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeListing {
+		t.Fatalf("page type = %q, want listing", doc.PageType)
+	}
+	for _, want := range []string{"First result", "Second result"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing retained result %q: %s", want, doc.Text)
+		}
+	}
+	if strings.Contains(doc.Text, "Third result") {
+		t.Errorf("pagination items displaced generic result records: %s", doc.Text)
+	}
+}
+
+func TestNestedMetadataListsDoNotOverrideGenericListingRecords(t *testing.T) {
+	html := `<main><h1>Project results</h1><div class="results">` +
+		`<div><h2>First project</h2><p>The first project is a web service.</p><ul><li>Go</li><li>Web</li></ul></div>` +
+		`<div><h2>Second project</h2><p>The second project is a command line tool.</p><ul><li>Rust</li><li>CLI</li></ul></div>` +
+		`<div><h2>Third project</h2><p>The third project exposes an application interface.</p><ul><li>Java</li><li>API</li></ul></div>` +
+		`</div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/search/projects", WithMaxRepeatedItems(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeListing {
+		t.Fatalf("page type = %q, want listing", doc.PageType)
+	}
+	for _, want := range []string{"First project", "Second project"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing retained result %q: %s", want, doc.Text)
+		}
+	}
+	if strings.Contains(doc.Text, "Third project") {
+		t.Errorf("nested metadata lists displaced generic result records: %s", doc.Text)
+	}
+}
+
+func TestDominantProductWrapperInfersProductOnNeutralURL(t *testing.T) {
+	html := `<main class="product"><h1>Adjustable standing desk</h1><p>This height-adjustable desk has a solid hardwood surface and a quiet electric frame suitable for a home office.</p><h2>Dimensions and finish</h2><p>The desktop is available in three widths, with a durable finish and a programmable controller included.</p></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/detail/adjustable-desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeProduct {
+		t.Fatalf("page type = %q, want product", doc.PageType)
+	}
+}
+
+func TestExplicitPageTypeOverridesNarrativeInference(t *testing.T) {
+	html := `<main><h1>Long analysis</h1><p>This long analysis explains the complete history and the evidence behind the final decision in a conventional article structure.</p><p>A second substantial paragraph continues the narrative and records the practical consequences for readers.</p></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/blog/analysis", WithPageType(PageTypeListing))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeListing || doc.PageTypeScore != 1 {
+		t.Fatalf("page type = %q score %.3f, want explicit listing with score 1", doc.PageType, doc.PageTypeScore)
+	}
+}
+
 func TestJSONLDItemListEntriesDoNotMakePageAnArticle(t *testing.T) {
 	html := `<html><head><script type="application/ld+json">{"@type":"ItemList","itemListElement":[{"@type":"NewsArticle","headline":"First nested story","datePublished":"2025-01-01"},{"@type":"NewsArticle","headline":"Second nested story","datePublished":"2025-01-02"}]}</script></head><body><main><h1>Latest news</h1><ul><li><a href="/one">First nested story</a></li><li><a href="/two">Second nested story</a></li></ul></main></body></html>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/news")
