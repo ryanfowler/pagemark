@@ -165,7 +165,12 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	}
 	quality := a.quality(selected)
 	if (pageType == PageTypeArticle || pageType == PageTypeGeneric) && quality < .42 {
-		if article, err := readability.ParseNode(root, rawURL, nil); err == nil && article.Node != nil && len(article.TextContent) > 100 {
+		// Preserve classes in readability's cloned result so the normal auxiliary
+		// exclusion can still recognize empty comments and other marked regions.
+		// Classes are not emitted to Markdown.
+		readabilityOptions := readability.DefaultOptions()
+		readabilityOptions.KeepClasses = true
+		if article, err := readability.ParseNode(root, rawURL, &readabilityOptions); err == nil && article.Node != nil && len(article.TextContent) > 100 {
 			selected = []*html.Node{article.Node}
 			repeatedExcluded = nil
 			repeatedDropped = 0
@@ -194,7 +199,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		discussionAuxiliary := pageType == PageTypeDiscussion &&
 			(isDiscussionControlNode(n) || a.hasStandaloneMessageAncestor(n))
 		visualAuxiliary := o.includeImages && isVisualElement(n) && !meaningfulVisual(n)
-		return a.isIrrelevantNode(n) || repeatedExcluded[n] || discussionAuxiliary || visualAuxiliary
+		return a.hasIrrelevantAncestor(n) || repeatedExcluded[n] || discussionAuxiliary || visualAuxiliary
 	}
 	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: append([]string(nil), o.urlPolicy.Schemes...), AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude, PruneEmptyHeadings: true}
 	if a.textListingPre != nil {
@@ -648,7 +653,7 @@ func (a *analysis) score(pt PageType) {
 				score -= 3
 				b.reasons = append(b.reasons, "boilerplate label")
 			}
-			if pt == PageTypeDiscussion && containsAny(tokens, "comment", "answer", "post", "thread") {
+			if pt == PageTypeDiscussion && containsAny(tokens, "comment", "comments", "answer", "post", "thread") {
 				score += 2
 			}
 			if (pt == PageTypeListing || pt == PageTypeCollection) && containsAny(tokens, "card", "item", "result", "product") {
@@ -1410,7 +1415,7 @@ func (a *analysis) highRecall() []*html.Node {
 	var out []*html.Node
 	for i := range a.blocks {
 		b := &a.blocks[i]
-		bad := false
+		bad := a.hasIrrelevantAncestor(b.node)
 		for p := b.node; p != nil; p = p.Parent {
 			if p.Type == html.ElementNode {
 				t := strings.ToLower(p.Data)
@@ -1462,6 +1467,7 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	productRecords := map[*html.Node]bool{}
 	linkedRecords := map[*html.Node]bool{}
 	discussionRecords := map[*html.Node]bool{}
+	neutralDiscussionRecords := map[*html.Node]bool{}
 	discussionContext := false
 	documentationContext := false
 	proseChars, codeChars, primaryArticleProse := 0, 0, 0
@@ -1496,14 +1502,22 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 				tok += " " + elementTokens(p)
 			}
 		}
-		// A comment or post class is also commonly used for annotations and blog
-		// article wrappers. Count distinct records rather than every block below
-		// such a wrapper, and treat unambiguous discussion vocabulary separately.
-		if record := nearestTokenAncestor(b.node, "comment", "answer", "post", "reply", "message"); record != nil {
+		// UI labels and controls often carry the same vocabulary as real threads.
+		// Only let a substantive record establish discussion context; counting its
+		// ancestor once also avoids giving every paragraph in a post another vote.
+		if record := nearestDiscussionRecordAncestor(b.node); record != nil {
 			discussionRecords[record] = true
-		}
-		if containsAny(tok, "answer", "thread", "discussion", "topic", "reply", "message") {
-			discussionContext = true
+			// A lone .post is commonly the wrapper for a blog article. Reserve
+			// the context bonus for thread structure or record-specific roles.
+			if containsAny(tok, "answer", "thread", "discussion", "topic", "reply", "message") {
+				discussionContext = true
+			}
+		} else if record := nearestNeutralDiscussionRecord(b.node); record != nil {
+			// Some forums put all vocabulary on the thread wrapper and use plain
+			// semantic articles for individual messages. Keep these records
+			// separate so one neutral article cannot turn an ordinary page into a
+			// discussion merely because an ancestor happens to say “thread”.
+			neutralDiscussionRecords[record] = true
 		}
 		if containsAny(tok, "product", "price", "sku") {
 			scores[PageTypeProduct] += 1.5
@@ -1519,6 +1533,12 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 			if record := nearestTokenAncestor(b.node, "card", "result", "item"); record != nil {
 				linkedRecords[record] = true
 			}
+		}
+	}
+	if len(neutralDiscussionRecords) >= 2 {
+		discussionContext = true
+		for record := range neutralDiscussionRecords {
+			discussionRecords[record] = true
 		}
 	}
 	if discussionContext {
@@ -2214,6 +2234,12 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 		return irrelevant
 	}
 	irrelevant := irrelevantNode(n)
+	// An empty comments header is auxiliary regardless of the selected profile.
+	// This also covers generic pages, where article-only filtering would otherwise
+	// allow labels such as “thread” and “discussion” into Markdown.
+	if !irrelevant && a.isEmptyCommentControlRegion(n) {
+		irrelevant = true
+	}
 	if !irrelevant && a.pageType == PageTypeArticle {
 		irrelevant = a.articleAuxiliaryNode(n) || a.isTrailingSocialCardRegion(n) || a.microdataArticleRecords[n]
 	}
@@ -2238,8 +2264,12 @@ func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 		if irrelevantNode(p) {
 			return true
 		}
-		// Comment regions are profile-specific and remain page-type evidence here;
-		// otherwise an automatically detected discussion would lose its posts.
+		// Comment regions with substantive records remain page-type evidence;
+		// empty/collapsed widgets are only page furniture. In particular, their
+		// thread and reply vocabulary must not classify an article as a forum.
+		if a.isEmptyCommentControlRegion(p) {
+			return true
+		}
 		if a.articleAuxiliaryNode(p) && !a.isArticleCommentRegion(p) &&
 			(!isRelatedCardRegion(p) || hasSemanticArticleBeforeOrAround(p)) {
 			return true
@@ -2577,6 +2607,49 @@ func isCommentRegionHeading(label string) bool {
 		(fields[1] == "comments" || fields[1] == "responses" || fields[1] == "replies")
 }
 
+// isEmptyCommentControlRegion recognizes comment UI with no visible,
+// substantive messages. It intentionally requires a plural comments marker so
+// an ordinary article element using a singular .comment annotation is not
+// discarded. Hidden records do not count because they cannot be extracted.
+func (a *analysis) isEmptyCommentControlRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || hardHidden(n) {
+		return false
+	}
+	switch strings.ToLower(n.Data) {
+	case "div", "section", "aside", "header", "fieldset":
+	default:
+		return false
+	}
+	if !containsAny(elementTokens(n), "comments", "commentlist") {
+		return false
+	}
+	// A visible prose element can be substantive even when the comments
+	// container itself is the record and has no marked descendants. Known empty
+	// and authentication prompts are still furniture despite using <p>.
+	if hasSubstantiveCommentProse(n) {
+		return false
+	}
+	// Forum software may place message text directly in a div or section and
+	// separate lines with <br>. Apply the same non-control text fallback used
+	// for marked discussion records, while continuing to reject known prompts.
+	text := commentRecordText(n)
+	if utf8.RuneCountInString(text) >= 20 && !isCommentStatusPrompt(text) {
+		return false
+	}
+	found := false
+	walk(n, func(x *html.Node) bool {
+		if found || hardHidden(x) {
+			return false
+		}
+		if x != n && isPlausibleDiscussionRecord(x) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return !found
+}
+
 func (a *analysis) belongsToRepeatedCommentRecords(n *html.Node) bool {
 	for p := n.Parent; p != nil; p = p.Parent {
 		if a.commentRecordCount(p) >= 2 {
@@ -2665,7 +2738,65 @@ func hasCommentRecordProse(n *html.Node) bool {
 	return found
 }
 
+func hasSubstantiveCommentProse(n *html.Node) bool {
+	found := false
+	walk(n, func(x *html.Node) bool {
+		if found || hardHidden(x) {
+			return false
+		}
+		if x != n && x.Type == html.ElementNode {
+			switch strings.ToLower(x.Data) {
+			case "a", "button", "form", "input", "select", "textarea":
+				return false
+			case "p", "blockquote":
+				label := normalizedLabel(nodeText(x))
+				if label != "" && !isCommentStatusPrompt(label) {
+					found = true
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func isCommentStatusPrompt(label string) bool {
+	label = normalizedLabel(label)
+	short := utf8.RuneCountInString(label) <= 80
+	if label == "no comments" || short &&
+		(strings.HasPrefix(label, "no comments yet") ||
+			strings.HasPrefix(label, "there are no comments") ||
+			strings.HasPrefix(label, "comments are closed") ||
+			strings.HasPrefix(label, "comments are disabled") ||
+			strings.HasPrefix(label, "be the first to comment") ||
+			strings.HasPrefix(label, "be the first to reply")) {
+		return true
+	}
+	// Status and promotional phrases are ambiguous at the start of a real
+	// response. Treat them as UI only while they remain short enough to be a
+	// heading or prompt.
+	if short && (strings.HasPrefix(label, "join the conversation") ||
+		strings.HasPrefix(label, "join the discussion") ||
+		strings.HasPrefix(label, "share your thoughts") ||
+		strings.HasPrefix(label, "share your feedback") ||
+		strings.HasPrefix(label, "leave a comment") ||
+		strings.HasPrefix(label, "start the conversation")) {
+		return true
+	}
+	authentication := strings.HasPrefix(label, "sign in") || strings.HasPrefix(label, "sign-in") ||
+		strings.HasPrefix(label, "log in") || strings.HasPrefix(label, "login") ||
+		strings.HasPrefix(label, "please sign in") || strings.HasPrefix(label, "please log in") ||
+		strings.HasPrefix(label, "you must sign in") || strings.HasPrefix(label, "you must log in")
+	return utf8.RuneCountInString(label) <= 100 && authentication &&
+		containsAny(label, "comment", "discussion", "reply", "respond", "join")
+}
+
 func commentRecordTextLength(n *html.Node) int {
+	return utf8.RuneCountInString(commentRecordText(n))
+}
+
+func commentRecordText(n *html.Node) string {
 	var text strings.Builder
 	walk(n, func(x *html.Node) bool {
 		if hardHidden(x) {
@@ -2683,7 +2814,7 @@ func commentRecordTextLength(n *html.Node) int {
 		}
 		return true
 	})
-	return utf8.RuneCountInString(normalizeText(text.String()))
+	return normalizeText(text.String())
 }
 
 func (a *analysis) hasArticleBodyDescendant(root *html.Node) bool {
@@ -2988,6 +3119,90 @@ func nearestTokenAncestor(n *html.Node, values ...string) *html.Node {
 	for p := n; p != nil; p = p.Parent {
 		if p.Type == html.ElementNode && containsAny(elementTokens(p), values...) {
 			return p
+		}
+	}
+	return nil
+}
+
+func nearestDiscussionRecordAncestor(n *html.Node) *html.Node {
+	for p := n; p != nil; p = p.Parent {
+		if isPlausibleDiscussionRecord(p) {
+			return p
+		}
+	}
+	return nil
+}
+
+func isPlausibleDiscussionRecord(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || hardHidden(n) {
+		return false
+	}
+	tag := strings.ToLower(n.Data)
+	switch tag {
+	case "article", "li", "div", "section":
+	default:
+		return false
+	}
+	tokens := elementTokens(n)
+	itemtype := strings.ToLower(attrValue(n, "itemtype"))
+	marked := containsAny(tokens, "comment", "answer", "post", "reply", "message") ||
+		containsAny(itemtype, "comment", "answer", "question")
+	if !marked {
+		return false
+	}
+	// An explicitly marked record is stronger evidence than prompt-like wording.
+	// Do not discard a real short response merely because its sentence starts
+	// with “share your feedback” or similar UI text. All supported record tags
+	// are eligible, but form/status wrappers and input widgets are not. Ordinary
+	// per-comment action buttons do not negate otherwise substantive prose.
+	explicitRecord := (containsAny(tokens, "comment", "answer", "reply", "message") ||
+		containsAny(itemtype, "comment", "answer", "question")) &&
+		!containsAny(tokens, "form", "status", "prompt", "cta", "control") &&
+		!hasDiscussionRecordControls(n)
+	if explicitRecord && (hasCommentRecordProse(n) || commentRecordTextLength(n) >= 20) {
+		return true
+	}
+	// Controls, author links, and headings do not make a message. A prose
+	// element supports legitimately short replies; otherwise require enough
+	// non-control text for div-and-br based forum software.
+	return hasSubstantiveCommentProse(n) ||
+		(commentRecordTextLength(n) >= 20 && !isCommentStatusPrompt(commentRecordText(n)))
+}
+
+// nearestNeutralDiscussionRecord recognizes semantic records whose discussion
+// meaning comes from an explicit ancestor rather than their own attributes.
+func hasDiscussionRecordControls(n *html.Node) bool {
+	found := false
+	walk(n, func(x *html.Node) bool {
+		if found || hardHidden(x) {
+			return false
+		}
+		if x != n && x.Type == html.ElementNode {
+			switch strings.ToLower(x.Data) {
+			case "form", "input", "select", "textarea":
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func nearestNeutralDiscussionRecord(n *html.Node) *html.Node {
+	var record *html.Node
+	for p := n; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		tag := strings.ToLower(p.Data)
+		if record == nil && (tag == "article" || tag == "li") &&
+			(hasSubstantiveCommentProse(p) ||
+				(commentRecordTextLength(p) >= 20 && !isCommentStatusPrompt(commentRecordText(p)))) {
+			record = p
+		}
+		if containsAny(elementTokens(p), "discussion", "thread", "topic") {
+			return record
 		}
 	}
 	return nil
