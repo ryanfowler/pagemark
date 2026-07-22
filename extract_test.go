@@ -1098,6 +1098,116 @@ func TestSiblingHeaderDoesNotExcludeSharedLayout(t *testing.T) {
 	}
 }
 
+func TestTrailingOrganizationProfileIsExcluded(t *testing.T) {
+	html := `<main><article><h1>Product release notes</h1><p>Substantial article content explains the changes included in this release.</p><h2>Stay tuned</h2><p>Final article conclusion describes what readers can expect next.</p></article><section class="company-info"><h2>About Us</h2><p>Example Corp is a global company building products for customers around the world.</p></section></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/blog/release", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Product release notes", "Stay tuned", "readers can expect next"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing article content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"About Us", "global company", "around the world"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included organization boilerplate %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestTrailingOrganizationProfileInsideArticleIsExcluded(t *testing.T) {
+	html := `<html><head><meta property="og:site_name" content="Example Corp"><meta property="og:type" content="article"></head><body><article><h1>Product release notes</h1><div><p>Substantial article content explains the changes included in this release.</p></div><div><h2>Stay tuned</h2><p>Final article conclusion describes what readers can expect next.</p></div><div><h2>About Us</h2><p>Example Corp is the software company building a complete suite of useful products.</p></div></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/blog/release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "Final article conclusion") {
+		t.Fatalf("article conclusion was lost: %s", doc.Text)
+	}
+	if strings.Contains(doc.Text, "About Us") || strings.Contains(doc.Text, "software company") {
+		t.Fatalf("included organization boilerplate: %s", doc.Text)
+	}
+}
+
+func TestTrailingOrganizationProfileBeforeArticleFooterIsExcluded(t *testing.T) {
+	html := `<html><head><meta property="og:type" content="article"></head><body><article><h1>Product release notes</h1><p>The release notes explain the completed work, the design decisions behind it, and all implementation details readers need.</p><p>The final article paragraph documents verification results, remaining limitations, and the conclusions reached by the engineering team.</p><section class="company"><h2>About Us</h2><p>Example Corp is a global company building products for customers around the world.</p></section><footer><p>Written by Jane Doe.</p></footer></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/blog/release", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "final article paragraph") {
+		t.Fatalf("article conclusion was lost: %s", doc.Text)
+	}
+	for _, unwanted := range []string{"About Us", "global company", "Written by Jane Doe"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included trailing auxiliary content %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestTrailingOrganizationProfileUsesSchemaAndOrganizationLink(t *testing.T) {
+	for _, tc := range []struct {
+		name, href string
+	}{
+		{"about path", "/about"},
+		{"LinkedIn profile", "https://www.linkedin.com/company/example"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			html := `<main><article><h1>Product update</h1><p>The article explains the product update, the design decisions behind it, and the implementation details readers need to understand the release.</p><p>A second substantial paragraph documents the verification process, observed results, remaining limitations, and the final conclusions reached by the team.</p></article><section itemscope itemtype="https://schema.org/Organization"><h2>About Us</h2><p>Learn more about our work.</p><a href="` + tc.href + `">Our profile</a></section></main>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/blog/update", WithPageType(PageTypeArticle))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(doc.Text, "About Us") || strings.Contains(doc.Text, "Learn more about our work") {
+				t.Fatalf("included organization profile supported by %s: %s", tc.name, doc.Text)
+			}
+		})
+	}
+}
+
+func TestSiteIdentityRequiresWordBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name, head, pageURL, prose string
+	}{
+		{
+			name:    "hostname inside readers",
+			pageURL: "https://read.com/article",
+			prose:   "This section explains why Readers Guild is a company case study for the article.",
+		},
+		{
+			name:    "metadata inside pressure",
+			head:    `<meta property="og:site_name" content="Press">`,
+			pageURL: "https://example.com/article",
+			prose:   "This section explains why Pressure Labs is a company case study for the article.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			html := `<html><head>` + tc.head + `</head><body><main><article><h1>Writing company case studies</h1><p>The article examines evidence and methods for preparing an accurate case study.</p></article><section><h2>About Us</h2><p>` + tc.prose + `</p></section></main></body></html>`
+			doc, err := ExtractBytes([]byte(html), tc.pageURL, WithPageType(PageTypeArticle))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(doc.Text, "About Us") || !strings.Contains(doc.Text, tc.prose) {
+				t.Fatalf("legitimate section was removed by a substring identity match: %s", doc.Text)
+			}
+		})
+	}
+}
+
+func TestLegitimateArticleAboutUsSectionIsRetained(t *testing.T) {
+	html := `<article><h1>Why websites need an About Us page</h1><p>The introduction explains how company websites communicate with their audiences.</p><section><h2>About Us</h2><p>This section analyzes how the phrase is used and why its wording matters.</p></section><section><h2>Conclusion</h2><p>The final argument summarizes the analysis for website authors.</p></section></article>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/articles/about-pages", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"About Us", "phrase is used", "Conclusion", "final argument"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing legitimate article content %q: %s", want, doc.Text)
+		}
+	}
+}
+
 func TestSubjectNamedLikeBoilerplateIsRetained(t *testing.T) {
 	html := `<main><h1>Authentication reference</h1><section id="login"><h2>Login API</h2><p>The login endpoint exchanges user credentials for an access token.</p></section><section class="related"><h2>Related records</h2><p>The related records field connects an account to its organization.</p></section><section id="advertisement"><h2>Advertisement model</h2><p>The advertisement model documents campaign properties and status values.</p></section></main>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/docs/auth", WithPageType(PageTypeDocumentation))

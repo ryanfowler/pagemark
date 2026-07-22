@@ -2463,8 +2463,251 @@ func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 		if isRelatedCardRegion(n) {
 			return true
 		}
+		if a.isTrailingOrganizationProfileRegion(n) {
+			return true
+		}
 	}
 	return false
+}
+
+// isTrailingOrganizationProfileRegion identifies a separately headed company
+// profile appended to an article. "About Us" by itself is deliberately not an
+// auxiliary label: it is excluded only when trailing structure and at least two
+// independent organization-profile signals agree.
+func (a *analysis) isTrailingOrganizationProfileRegion(n *html.Node) bool {
+	if !isOrganizationAboutHeading(firstRegionHeading(n), a.meta.site) ||
+		a.hasLaterArticleContent(n) || !hasArticleContentBefore(n) {
+		return false
+	}
+
+	text := strings.ToLower(normalizeText(nodeText(n)))
+	signals := 0
+	tokens := elementTokens(n)
+	if containsAny(tokens, "company", "corporate", "organization", "organisation", "about-us", "aboutus") {
+		signals++
+	}
+	if organizationProfileLanguage(text) {
+		signals++
+	}
+	if a.mentionsSiteIdentity(text) {
+		signals++
+	}
+
+	hasOrganizationSchema, hasOrganizationLink := false, false
+	walk(n, func(x *html.Node) bool {
+		if hardHidden(x) {
+			return false
+		}
+		if x.Type != html.ElementNode {
+			return true
+		}
+		if containsAny(strings.ToLower(attrValue(x, "itemtype")), "organization", "organisation", "corporation") {
+			hasOrganizationSchema = true
+		}
+		if strings.EqualFold(x.Data, "a") && isOrganizationLink(attrValue(x, "href"), a.base) {
+			hasOrganizationLink = true
+		}
+		return !(hasOrganizationSchema && hasOrganizationLink)
+	})
+	if hasOrganizationSchema {
+		signals++
+	}
+	if hasOrganizationLink {
+		signals++
+	}
+	return signals >= 2
+}
+
+func isOrganizationAboutHeading(label, site string) bool {
+	if label == "about us" || label == "about the company" || label == "about our company" ||
+		label == "about the organization" || label == "about the organisation" {
+		return true
+	}
+	if !strings.HasPrefix(label, "about ") || len(strings.Fields(label)) > 7 {
+		return false
+	}
+	// A publisher name makes "About <organization>" strong heading evidence.
+	// Partial names must match complete words and contain a meaningful token;
+	// this avoids treating "About Press" as a match for "Pressure Labs".
+	normalizedSite := normalizedLabel(site)
+	organization := strings.TrimPrefix(label, "about ")
+	return normalizedSite != "" && (label == "about "+normalizedSite ||
+		hasMeaningfulIdentity(organization) && containsWordSequence(normalizedSite, organization))
+}
+
+func isOrganizationLink(raw string, base *url.URL) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	if base != nil {
+		u = base.ResolveReference(u)
+	}
+	if u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, socialHost := range []string{"linkedin.com", "facebook.com", "instagram.com"} {
+		if host == socialHost || strings.HasSuffix(host, "."+socialHost) {
+			return true
+		}
+	}
+	for _, segment := range strings.Split(strings.ToLower(strings.Trim(u.Path, "/")), "/") {
+		switch strings.Trim(segment, "-_") {
+		case "about", "about-us", "about_us", "company", "careers", "contact", "products":
+			return true
+		}
+	}
+	return false
+}
+
+func (a *analysis) mentionsSiteIdentity(text string) bool {
+	if site := strings.ToLower(normalizeText(a.meta.site)); hasMeaningfulIdentity(site) && containsWordSequence(text, site) {
+		return true
+	}
+	if a.pageURL == nil {
+		return false
+	}
+	// Publisher metadata is not universal. A distinctive hostname label is a
+	// useful fallback identity signal (for example system76.com -> system76),
+	// but generic hosting and site-purpose labels are ignored.
+	generic := map[string]bool{"www": true, "blog": true, "news": true, "medium": true, "wordpress": true, "blogspot": true, "github": true}
+	for _, label := range strings.Split(strings.ToLower(a.pageURL.Hostname()), ".") {
+		if hasMeaningfulIdentity(label) && !generic[label] && containsWordSequence(text, label) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsWordSequence(text, phrase string) bool {
+	textWords := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	phraseWords := strings.FieldsFunc(strings.ToLower(phrase), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	if len(phraseWords) == 0 || len(phraseWords) > len(textWords) {
+		return false
+	}
+	for i := 0; i+len(phraseWords) <= len(textWords); i++ {
+		matched := true
+		for j := range phraseWords {
+			if textWords[i+j] != phraseWords[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMeaningfulIdentity(identity string) bool {
+	for _, word := range strings.FieldsFunc(identity, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if len([]rune(word)) >= 4 {
+			return true
+		}
+	}
+	return false
+}
+
+func organizationProfileLanguage(text string) bool {
+	organizationWord := strings.Contains(text, " company") || strings.Contains(text, " organization") ||
+		strings.Contains(text, " organisation") || strings.Contains(text, " corporation")
+	if !organizationWord {
+		return false
+	}
+	return strings.Contains(text, " is a ") || strings.Contains(text, " is an ") ||
+		strings.Contains(text, " is the ") || strings.Contains(text, "we are a ") ||
+		strings.Contains(text, "we are an ") || strings.Contains(text, "our company") ||
+		strings.Contains(text, "founded in ") || strings.Contains(text, "headquartered in ")
+}
+
+// hasArticleContentBefore requires the candidate to be a distinct region after
+// the primary article body, either as a later sibling or as a final child of a
+// semantic article. This intentionally does not classify ordinary About
+// headings embedded directly in flowing article content.
+func hasArticleContentBefore(n *html.Node) bool {
+	if hasNonCardArticleAncestor(n) {
+		for branch := n; branch != nil && branch.Parent != nil; branch = branch.Parent {
+			for sibling := branch.PrevSibling; sibling != nil; sibling = sibling.PrevSibling {
+				if subtreeHasArticleText(sibling) {
+					return true
+				}
+			}
+			if strings.EqualFold(branch.Parent.Data, "article") {
+				break
+			}
+		}
+		return false
+	}
+	return hasSemanticArticleBeforeOrAround(n)
+}
+
+// hasLaterArticleContent keeps an About section when the article resumes after
+// it (for example with a Conclusion section). Already-classified auxiliary
+// siblings do not count as resumed content.
+func (a *analysis) hasLaterArticleContent(n *html.Node) bool {
+	if !hasNonCardArticleAncestor(n) {
+		return false
+	}
+	for branch := n; branch != nil && branch.Parent != nil; branch = branch.Parent {
+		for sibling := branch.NextSibling; sibling != nil; sibling = sibling.NextSibling {
+			if a.subtreeHasRelevantArticleText(sibling) {
+				return true
+			}
+		}
+		if strings.EqualFold(branch.Parent.Data, "article") {
+			break
+		}
+	}
+	return false
+}
+
+func (a *analysis) subtreeHasRelevantArticleText(n *html.Node) (found bool) {
+	walk(n, func(x *html.Node) bool {
+		if found || hardHidden(x) {
+			return false
+		}
+		// Prune complete boilerplate regions before looking at their paragraphs
+		// or headings. Calling the classifier on a later sibling is safe: an
+		// organization-profile check only scans forward, so it cannot recurse
+		// back into the profile currently being classified.
+		if x.Type == html.ElementNode && a.isIrrelevantNode(x) {
+			return false
+		}
+		if x.Type == html.ElementNode {
+			tag := strings.ToLower(x.Data)
+			if (tag == "p" || tag == "li" || isHeadingTag(tag)) && normalizeText(nodeText(x)) != "" {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func subtreeHasArticleText(n *html.Node) (found bool) {
+	walk(n, func(x *html.Node) bool {
+		if found || hardHidden(x) {
+			return false
+		}
+		if x.Type == html.ElementNode {
+			tag := strings.ToLower(x.Data)
+			if (tag == "p" || tag == "li" || isHeadingTag(tag)) && normalizeText(nodeText(x)) != "" {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
 }
 
 // isSubscriptionRegion identifies the wrapper around a newsletter form, not
