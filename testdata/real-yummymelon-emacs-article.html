@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><title>Malleable Computing, Emacs, and You - notes from /dev/null</title></head><body>
+<h1 class="siteTitle"><a href=".">notes from /dev/null</a></h1><p>by Charles Choi 최민수</p><hr>
+<div class="base"><div class="main" data-pagefind-body>
+<h1 class="articleTitle" data-pagefind-meta="title">Malleable Computing, Emacs, and You</h1>
+<p>22 Jul 2026&nbsp;&nbsp;Charles Choi</p>
+<p>It all started with a routine task. I use GitHub issues for all of my public-facing projects but my preference is keeping track of things in Org Agenda.</p>
+<p>This post recounts how I automated this task and, in doing so, highlights the malleable computing capabilities of Emacs.</p>
+<h1>Implementation</h1>
+<p>The implementation is published as a package. Of note is the function below, which retrieves GitHub issues using the command-line client.</p>
+<div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span class="normal">1</span>
+<span class="normal">2</span>
+<span class="normal">3</span></pre></div></td><td class="code"><div><pre><span></span><code>(defun fj-request-issues (repo)
+  "Request issues for REPO."
+  (shell-command-to-string "gh issue list"))</code></pre></div></td></tr></table></div>
+<p>The returned result is processed to populate a table where the user can navigate through the issues.</p>
+<h1>Closing Thoughts</h1>
+<p>This concrete example shows how new behavior can be created by leveraging both code and program reuse in an improvised fashion.</p>
+</div></div></body></html>

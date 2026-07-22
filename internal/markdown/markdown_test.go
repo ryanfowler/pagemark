@@ -466,6 +466,24 @@ func TestOrderedListAttributesAndIndentation(t *testing.T) {
 	}
 }
 
+func TestSyntaxHighlightTableDropsLineNumberGutter(t *testing.T) {
+	r := convertHTML(t, `<table class="highlighttable"><tr><td class="linenos"><pre>1
+2</pre></td><td class="code"><pre><code>alpha()
+beta()</code></pre></td></tr></table>`)
+	if strings.Contains(r.Text, "1 2") || !strings.Contains(r.Text, "alpha()") || !strings.Contains(r.Text, "beta()") {
+		t.Fatalf("syntax-highlight gutter was retained or source was lost: %q", r.Markdown)
+	}
+}
+
+func TestOrdinaryTableRetainsLineNumbersColumn(t *testing.T) {
+	r := convertHTML(t, `<table class="highlighttable"><tr><th class="line-numbers">Line number</th><th>Finding</th></tr><tr><td>42</td><td>Invalid record</td></tr></table>`)
+	for _, want := range []string{"| Line number | Finding |", "| 42 | Invalid record |"} {
+		if !strings.Contains(r.Markdown, want) {
+			t.Fatalf("ordinary table column was discarded; missing %q: %s", want, r.Markdown)
+		}
+	}
+}
+
 func TestTableHeaderCaptionAlignmentAndBreak(t *testing.T) {
 	r := convertHTML(t, `<table><caption>Sizes</caption><tr><th align="right">Name</th><th style="text-align:center">Value</th></tr><tr><td>A<br>B</td><td>x|y</td></tr></table>`)
 	want := "Sizes\n\n| Name | Value |\n| ---: | :---: |\n| A B | x\\|y |"

@@ -448,6 +448,12 @@ var archiveDatePattern = regexp.MustCompile(`(?i)(?:` +
 	`\b(?:0?[1-9]|[12]\d|3[01])\s+` + archiveMonthPattern + `\s+(?:19|20)\d{2}\b|` +
 	`\b(?:19|20)\d{2}\s+` + archiveMonthPattern + `\b)`)
 
+// A yearless date is too ambiguous for general archive detection, but a short
+// standalone publication-furniture block commonly uses this exact shape.
+var standaloneYearlessDatePattern = regexp.MustCompile(`(?i)^\s*(?:` +
+	archiveMonthPattern + `\s+(?:0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?,?|` +
+	`(?:0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\s+` + archiveMonthPattern + `)\s*$`)
+
 func listingLineEvidence(text string) (nonempty, dated int) {
 	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		line = strings.TrimSpace(line)
@@ -904,13 +910,36 @@ func (a *analysis) ensureDocumentTitle(nodes []*html.Node, cfg markdown.Config, 
 		return a.ensureArticleTitle(nodes, cfg)
 	}
 	title := a.restorationTitle()
+	// A prose page can be classified as generic when an old template has no
+	// article element. If a later selected h1 exactly identifies the document,
+	// do not let a site masthead before it remain the apparent title.
+	if title != "" && a.hasDominantProseOutput(nodes, cfg) {
+		for i := range a.blocks {
+			b := &a.blocks[i]
+			if b.kind != "h1" || !titleEquivalent(b.text, title, a.meta.site) || !representedBySelection(b.node, nodes) || adjacentSelectedBlockDistance(a.blocks, i, nodes, 2) == 0 {
+				continue
+			}
+			content := removeSelectedNode(nodes, b.node)
+			for j := 0; j < i; j++ {
+				before := &a.blocks[j]
+				if isHeadingTag(before.kind) && !titleEquivalent(before.text, title, a.meta.site) {
+					content = removeSelectedNode(content, before.node)
+				}
+			}
+			withTitle := append([]*html.Node{b.node}, content...)
+			if a.titleLeavesOutputForArticleProse(withTitle, cfg) {
+				return withTitle
+			}
+			return content
+		}
+	}
 	if title == "" || a.hasEquivalentHeading(nodes, title, cfg) || a.hasLeadingOutputHeading(nodes, cfg) || !a.hasDominantProseOutput(nodes, cfg) {
 		return nodes
 	}
 	titleNode := articleTitleNode(title)
 	a.irrelevant[titleNode] = false
 	withTitle := append([]*html.Node{titleNode}, nodes...)
-	if !titleLeavesOutputForContent(withTitle, cfg) {
+	if !a.titleLeavesOutputForArticleProse(withTitle, cfg) {
 		return nodes
 	}
 	return withTitle
@@ -931,7 +960,7 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 	// mistaken for the article title, while allowing publication metadata or a
 	// byline between the heading and body.
 	bestIndex, bestDistance := -1, 3
-	bestEquivalent, bestCredible := false, false
+	bestEquivalent, bestRepresented, bestMarked, bestCredible := false, false, false, false
 	for i := range a.blocks {
 		b := &a.blocks[i]
 		if (b.kind != "h1" && b.kind != "h2") || hardHidden(b.node) || a.hasIrrelevantAncestor(b.node) {
@@ -944,6 +973,8 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 			continue
 		}
 		equivalent := restorationTitle != "" && titleEquivalent(b.text, restorationTitle, a.meta.site)
+		represented := representedBySelection(b.node, nodes)
+		marked := hasArticleHeadlineMarker(b.node)
 		credible := a.isCredibleArticleHeading(i, nodes)
 		// A conflicting heading is authoritative only with independent structural
 		// evidence. This prevents an adjacent site masthead from replacing the
@@ -956,14 +987,53 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 		// ambiguous choice. Only compare structural credibility after equivalence;
 		// otherwise an internal marked heading can beat the real title merely
 		// because both happen to be near selected prose.
-		if bestIndex < 0 || (equivalent && !bestEquivalent) || (equivalent == bestEquivalent && credible && !bestCredible) || (equivalent == bestEquivalent && credible == bestCredible && distance < bestDistance) {
-			bestIndex, bestDistance, bestEquivalent, bestCredible = i, distance, equivalent, credible
+		if bestIndex < 0 || (equivalent && !bestEquivalent) ||
+			(equivalent == bestEquivalent && represented && !bestRepresented) ||
+			(equivalent == bestEquivalent && represented == bestRepresented && marked && !bestMarked) ||
+			(equivalent == bestEquivalent && represented == bestRepresented && marked == bestMarked && credible && !bestCredible) ||
+			(equivalent == bestEquivalent && represented == bestRepresented && marked == bestMarked && credible == bestCredible && distance < bestDistance) {
+			bestIndex, bestDistance, bestEquivalent, bestRepresented, bestMarked, bestCredible = i, distance, equivalent, represented, marked, credible
 		}
 	}
 	if bestIndex >= 0 {
 		candidate := &a.blocks[bestIndex]
 		if candidate.kind == "h1" && representedBySelection(candidate.node, nodes) {
-			return nodes
+			// A source headline may follow an unmarked site masthead when the page
+			// has no semantic article wrapper. Make the matching headline the
+			// document root and discard only unsupported headings before it. Dates
+			// and bylines remain, now correctly following the document title.
+			directlySelected := false
+			for _, n := range nodes {
+				directlySelected = directlySelected || n == candidate.node
+			}
+			content := removeSelectedNode(nodes, candidate.node)
+			for i := 0; i < bestIndex; i++ {
+				b := &a.blocks[i]
+				if isHeadingTag(b.kind) && !titleEquivalent(b.text, restorationTitle, a.meta.site) && !a.isCredibleArticleHeading(i, nodes) {
+					content = removeSelectedNode(content, b.node)
+					// A fallback can select an ancestor rather than individual blocks.
+					// Exclude the nested masthead when removing its block root cannot
+					// affect that selected ancestor.
+					if !directlySelected {
+						a.irrelevant[b.node] = true
+					}
+				}
+			}
+			if !directlySelected {
+				a.irrelevant[candidate.node] = true
+				title := articleTitleNode(candidate.text)
+				a.irrelevant[title] = false
+				withTitle := append([]*html.Node{title}, content...)
+				if a.titleLeavesOutputForArticleProse(withTitle, cfg) {
+					return withTitle
+				}
+				return content
+			}
+			withTitle := append([]*html.Node{candidate.node}, content...)
+			if a.titleLeavesOutputForArticleProse(withTitle, cfg) {
+				return withTitle
+			}
+			return content
 		}
 
 		// Render an h2 article headline as the document's h1. Use a detached node
@@ -985,12 +1055,12 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 			}
 		}
 		withTitle := append([]*html.Node{title}, content...)
-		if titleLeavesOutputForContent(withTitle, cfg) {
+		if a.titleLeavesOutputForArticleProse(withTitle, cfg) {
 			return withTitle
 		}
-		// Do not replace an omitted source title with metadata: either title
-		// would consume budget intended for the article body.
-		return nodes
+		// Omit the selected source headline too when its promoted form would
+		// consume budget intended for the article body.
+		return content
 	}
 	if restorationTitle == "" || a.hasEquivalentHeading(nodes, restorationTitle, cfg) {
 		return nodes
@@ -1018,7 +1088,7 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 	// as relevant so article auxiliary heuristics cannot classify it by itself.
 	a.irrelevant[title] = false
 	withTitle := append([]*html.Node{title}, content...)
-	if !titleLeavesOutputForContent(withTitle, cfg) {
+	if !a.titleLeavesOutputForArticleProse(withTitle, cfg) {
 		return nodes
 	}
 	return withTitle
@@ -1060,14 +1130,116 @@ func (a *analysis) demoteConflictingSelectedH1s(nodes []*html.Node, title string
 	return out
 }
 
-func titleLeavesOutputForContent(nodes []*html.Node, cfg markdown.Config) bool {
+// titleLeavesOutputForArticleProse prevents a short date or byline from being
+// mistaken for the body block that a reordered title must leave room for.
+func (a *analysis) titleLeavesOutputForArticleProse(nodes []*html.Node, cfg markdown.Config) bool {
 	if cfg.MaxBytes <= 0 {
 		return true
 	}
-	// Rendering stops at the first block that exceeds the budget. Keep a title
-	// only when a paragraph, list, code block, or other substantive block also
-	// survives; another heading alone is not article content.
-	return markdown.Convert(nodes, cfg).EmittedContentBlocks > 0
+	actualContent := markdown.Convert(nodes, cfg).EmittedContentBlocks
+	if actualContent == 0 {
+		return false
+	}
+
+	// Count only publication furniture preceding the first body block. Derive
+	// this prefix from the selected tree itself: readability returns cloned nodes
+	// which cannot be matched against a.blocks from the original DOM. Furniture
+	// after the body is deliberately ignored so removing prose cannot pull a
+	// trailing date forward and make a fitting title look unsafe.
+	prefix := publicationFurniturePrefix(nodes, cfg)
+	prefixFurniture := markdown.Convert(prefix, cfg).EmittedContentBlocks
+	return actualContent > prefixFurniture
+}
+
+func publicationFurniturePrefix(nodes []*html.Node, cfg markdown.Config) []*html.Node {
+	prefix := make([]*html.Node, 0, 4)
+	seen := map[*html.Node]bool{}
+	stopped := false
+	var visit func(*html.Node)
+	visit = func(n *html.Node) {
+		if stopped || n == nil || seen[n] || hardHidden(n) || cfg.Exclude != nil && cfg.Exclude(n) {
+			return
+		}
+		seen[n] = true
+		if n.Type == html.TextNode {
+			if normalizeText(n.Data) != "" {
+				stopped = true
+			}
+			return
+		}
+		if n.Type == html.ElementNode {
+			tag := strings.ToLower(n.Data)
+			if isBlockTag(tag) {
+				if isHeadingTag(tag) || tag == "hr" || isPublicationFurnitureBlock(n) {
+					prefix = append(prefix, n)
+					return
+				}
+				stopped = true
+				return
+			}
+			if tag == "img" || tag == "svg" {
+				stopped = true
+				return
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			visit(child)
+			if stopped {
+				return
+			}
+		}
+	}
+	for _, n := range nodes {
+		visit(n)
+		if stopped {
+			break
+		}
+	}
+	return prefix
+}
+
+func isPublicationFurnitureBlock(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	if hasPublicationMetadataElement(n) {
+		return true
+	}
+	text := normalizeText(nodeText(n))
+	if utf8.RuneCountInString(text) > 100 {
+		return false
+	}
+	label := normalizedLabel(text)
+	if strings.HasPrefix(label, "by ") {
+		return true
+	}
+	nonempty, dated := listingLineEvidence(text)
+	return nonempty == 1 && (dated == 1 || standaloneYearlessDatePattern.MatchString(text))
+}
+
+func hasPublicationMetadataElement(n *html.Node) bool {
+	if isPublicationMetadataElement(n) {
+		return true
+	}
+	blockText := normalizeText(nodeText(n))
+	var visit func(*html.Node) bool
+	visit = func(current *html.Node) bool {
+		for child := current.FirstChild; child != nil; child = child.NextSibling {
+			if child.Type != html.ElementNode {
+				continue
+			}
+			// Inline time can also appear in ordinary prose. Treat the wrapper as
+			// furniture only when the metadata element supplies all of its text.
+			if isPublicationMetadataElement(child) && normalizeText(nodeText(child)) == blockText {
+				return true
+			}
+			if visit(child) {
+				return true
+			}
+		}
+		return false
+	}
+	return blockText != "" && visit(n)
 }
 
 // restorationTitle returns a document-specific metadata title. Social titles
@@ -2671,6 +2843,7 @@ var articleAuxiliaryLabels = map[string]bool{
 	"related posts": true, "read more": true, "share": true,
 	"share this article": true, "share this post": true,
 	"share this story": true, "more by": true,
+	"leave a comment": true, "leave a comment below": true,
 }
 
 func isArticleAuxiliaryLabel(label string) bool {
