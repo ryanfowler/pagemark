@@ -1109,6 +1109,38 @@ func TestArticleCommentRegionIsProfileSpecific(t *testing.T) {
 	}
 }
 
+func TestWordPressArticleBodyIsNotExcludedWithSiblingComments(t *testing.T) {
+	html := `<html><head><meta property="og:type" content="article"><meta property="og:title" content="Example article"></head><body><div id="content" role="main"><div id="post-123" class="post type-post hentry"><h2 class="entry-title">Example article</h2><div class="entry-content"><p>This is a substantial opening paragraph that clearly introduces the article and its central subject.</p><p>This is another substantial article paragraph that develops the subject with useful supporting detail.</p></div></div><div id="comments"><h3>19 Responses to Example article</h3><ol class="commentlist"><li class="comment"><p>A reader response that should not appear in the extracted article.</p></li><li class="comment"><p>Another reader response that should also be excluded from the article.</p></li></ol></div></div></body></html>`
+
+	for _, tc := range []struct {
+		name string
+		opts []Option
+	}{
+		{name: "inferred"},
+		{name: "explicit", opts: []Option{WithPageType(PageTypeArticle)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, err := ExtractBytes([]byte(html), "https://example.com/2026/07/20/example-article/", tc.opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.PageType != PageTypeArticle {
+				t.Fatalf("page type = %q, want article", doc.PageType)
+			}
+			for _, want := range []string{"Example article", "substantial opening paragraph"} {
+				if !strings.Contains(doc.Text, want) {
+					t.Errorf("article content %q missing: %s", want, doc.Text)
+				}
+			}
+			for _, unwanted := range []string{"A reader response", "Another reader response", "19 Responses"} {
+				if strings.Contains(doc.Text, unwanted) {
+					t.Errorf("reader comments included %q: %s", unwanted, doc.Text)
+				}
+			}
+		})
+	}
+}
+
 func TestShortRepeatedCommentsAreRemovedFromArticle(t *testing.T) {
 	html := `<main><article><h1>A complete field report</h1><p>The report records the observations, explains the method used to verify them, and presents the conclusion supported by the collected evidence.</p></article><div class="feedback"><div class="comment"><p>Thanks!</p></div><div class="comment"><p>Well written.</p></div></div></main>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/articles/field-report", WithPageType(PageTypeArticle))
