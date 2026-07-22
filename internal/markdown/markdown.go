@@ -41,16 +41,18 @@ const (
 )
 
 type Node struct {
-	Kind     Kind
-	Level    int
-	Start    int
-	Reversed bool
-	HasValue bool
-	Value    string
-	URL      string
-	Info     string
-	Align    string
-	Children []*Node
+	Kind          Kind
+	Level         int
+	Start         int
+	Reversed      bool
+	HasValue      bool
+	Value         string
+	URL           string
+	Info          string
+	Align         string
+	Children      []*Node
+	section       bool
+	sourceSection *html.Node
 }
 
 type URLPolicy struct {
@@ -67,6 +69,9 @@ type Config struct {
 	// Exclude removes extraction-specific boilerplate subtrees. Hidden DOM
 	// handling remains built in to the converter.
 	Exclude func(*html.Node) bool
+	// PruneEmptyHeadings removes headings that do not label any emitted content.
+	// It is intended for extraction, after selection and exclusions are final.
+	PruneEmptyHeadings bool
 }
 type Result struct {
 	Markdown, Text       string
@@ -98,9 +103,21 @@ func Convert(nodes []*html.Node, cfg Config) Result {
 			doc.Children = append(doc.Children, x)
 		}
 	}
-	r := render(doc, cfg.MaxBytes)
+	if cfg.PruneEmptyHeadings {
+		pruneEmptySections(doc)
+	}
+	r := render(doc, cfg.MaxBytes, cfg.PruneEmptyHeadings)
 	r.Rejected = c.rejected
 	return r
+}
+
+func enclosingSection(n *html.Node) *html.Node {
+	for current := n; current != nil; current = current.Parent {
+		if current.Type == html.ElementNode && strings.EqualFold(current.Data, "section") {
+			return current
+		}
+	}
+	return nil
 }
 
 func (c *converter) skip(n *html.Node) bool {
@@ -115,7 +132,12 @@ func (c *converter) skip(n *html.Node) bool {
 	return false
 }
 
-func (c *converter) block(n *html.Node) *Node {
+func (c *converter) block(n *html.Node) (result *Node) {
+	defer func() {
+		if result != nil {
+			result.sourceSection = enclosingSection(n)
+		}
+	}()
 	if c.skip(n) {
 		return nil
 	}
@@ -166,8 +188,10 @@ func (c *converter) block(n *html.Node) *Node {
 		return c.table(n)
 	case "hr":
 		return &Node{Kind: ThematicBreak}
-	case "html", "body", "figure", "article", "section", "main", "div", "aside", "header", "footer", "nav", "address", "details":
+	case "html", "body", "figure", "article", "main", "div", "aside", "header", "footer", "nav", "address", "details":
 		return &Node{Kind: Document, Children: c.blocks(n)}
+	case "section":
+		return &Node{Kind: Document, Children: c.blocks(n), section: true}
 	case "summary":
 		return &Node{Kind: Paragraph, Children: c.inlines(n)}
 	default:
@@ -187,7 +211,7 @@ func (c *converter) blocks(n *html.Node) []*Node {
 	var pending []*html.Node
 	flush := func() {
 		if in := c.inlineNodes(pending); len(in) > 0 && clean(plain(&Node{Kind: Document, Children: in})) != "" {
-			out = append(out, &Node{Kind: Paragraph, Children: in})
+			out = append(out, &Node{Kind: Paragraph, Children: in, sourceSection: enclosingSection(n)})
 		}
 		pending = nil
 	}
@@ -968,7 +992,44 @@ func parseIntegerAttr(n *html.Node, key string) (int, bool) {
 	return v, err == nil
 }
 
-func render(doc *Node, max int) Result {
+// pruneEmptySections removes semantic sections whose exclusions and conversion
+// left no emitted content other than headings. This prevents a section title
+// from borrowing content that follows the section wrapper.
+func pruneEmptySections(n *Node) bool {
+	if n == nil {
+		return false
+	}
+	if n.Kind == Document {
+		kept := n.Children[:0]
+		for _, child := range n.Children {
+			if pruneEmptySections(child) {
+				kept = append(kept, child)
+			}
+		}
+		n.Children = kept
+		if n.section && !hasSubstantiveBlock(n) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasSubstantiveBlock(n *Node) bool {
+	if n == nil {
+		return false
+	}
+	if n.Kind == Document {
+		for _, child := range n.Children {
+			if hasSubstantiveBlock(child) {
+				return true
+			}
+		}
+		return false
+	}
+	return n.Kind != Heading && n.Kind != ThematicBreak && strings.TrimSpace(renderBlock(n, 0)) != ""
+}
+
+func render(doc *Node, max int, pruneHeadings bool) Result {
 	var markdownBlocks, keptText []string
 	var keptNodes []*Node
 	var blocks []*Node
@@ -985,6 +1046,9 @@ func render(doc *Node, max int) Result {
 		}
 	}
 	flatten(doc)
+	if pruneHeadings {
+		blocks = pruneStandaloneHeadings(blocks)
+	}
 	used, truncated := 0, false
 	for _, n := range blocks {
 		s := strings.TrimSpace(renderBlock(n, 0))
@@ -1023,6 +1087,48 @@ func render(doc *Node, max int) Result {
 		Links: links, Images: images, Sections: retainedSections(keptNodes),
 		EmittedBlocks: len(keptNodes), EmittedContentBlocks: contentBlocks, Truncated: truncated,
 	}
+}
+
+// pruneStandaloneHeadings keeps a heading when a substantive block follows it
+// before the next heading of equal or higher level. Lower-level headings do not
+// end the range because their content also belongs to the enclosing section.
+func pruneStandaloneHeadings(blocks []*Node) []*Node {
+	kept := make([]*Node, 0, len(blocks))
+	for i, block := range blocks {
+		if block.Kind != Heading {
+			kept = append(kept, block)
+			continue
+		}
+		hasContent := false
+		for _, following := range blocks[i+1:] {
+			if following.Kind == Heading && following.Level <= block.Level {
+				break
+			}
+			// A separately selected section heading must not borrow content
+			// that follows its section wrapper. Content in a nested semantic
+			// section still belongs to the enclosing section.
+			if block.sourceSection != nil && !sectionWithin(following.sourceSection, block.sourceSection) {
+				break
+			}
+			if hasSubstantiveBlock(following) {
+				hasContent = true
+				break
+			}
+		}
+		if hasContent {
+			kept = append(kept, block)
+		}
+	}
+	return kept
+}
+
+func sectionWithin(section, ancestor *html.Node) bool {
+	for current := section; current != nil; current = enclosingSection(current.Parent) {
+		if current == ancestor {
+			return true
+		}
+	}
+	return false
 }
 
 func retainedMedia(nodes []*Node) ([]LinkValue, []ImageValue) {

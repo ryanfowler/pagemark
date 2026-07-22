@@ -1113,7 +1113,7 @@ func TestMaxRepeatedDoesNotTruncateProseSiblings(t *testing.T) {
 		paragraphs.WriteByte(byte('0' + i))
 		paragraphs.WriteString(`.</p>`)
 	}
-	html := `<main><h1>Long article</h1>` + paragraphs.String() + `<h2>What comes next?</h2></main>`
+	html := `<main><h1>Long article</h1>` + paragraphs.String() + `<h2>What comes next?</h2><p>A final prose paragraph follows the section heading.</p></main>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithMaxRepeatedItems(3))
 	if err != nil {
 		t.Fatal(err)
@@ -1126,8 +1126,8 @@ func TestMaxRepeatedDoesNotTruncateProseSiblings(t *testing.T) {
 			t.Fatalf("unexpected repetition warning: %#v", warning)
 		}
 	}
-	if doc.Stats.SelectedBlocks != 10 {
-		t.Fatalf("selected blocks = %d, want 10", doc.Stats.SelectedBlocks)
+	if doc.Stats.SelectedBlocks != 11 {
+		t.Fatalf("selected blocks = %d, want 11", doc.Stats.SelectedBlocks)
 	}
 }
 
@@ -1272,6 +1272,25 @@ func TestAccessibleSVGInternalsRemainOpaque(t *testing.T) {
 	}
 	if doc.Quality != baseline.Quality || doc.PageType != baseline.PageType {
 		t.Fatalf("SVG internals changed analysis: quality %v vs %v, type %v vs %v", doc.Quality, baseline.Quality, doc.PageType, baseline.PageType)
+	}
+}
+
+func TestEmptyAuxiliarySectionHeadingIsPruned(t *testing.T) {
+	html := `<main><h1>SSH tunnel guide</h1><p>This substantive introduction explains how to configure and use an SSH tunnel safely.</p><h2>Installation</h2><div><p>Run the installer.</p></div><section class="webmentions"><h2>Web mentions</h2><div id="webmentions"></div></section></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/guide", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(doc.Markdown, "Web mentions") || strings.Contains(doc.Text, "Web mentions") {
+		t.Fatalf("empty section heading survived:\n%s", doc.Markdown)
+	}
+	if !strings.Contains(doc.Markdown, "## Installation\n\nRun the installer.") {
+		t.Fatalf("heading with nested content was removed:\n%s", doc.Markdown)
+	}
+	for _, section := range doc.Sections {
+		if section.Heading == "Web mentions" {
+			t.Fatalf("pruned heading survived in Document.Sections: %#v", doc.Sections)
+		}
 	}
 }
 
