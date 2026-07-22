@@ -963,18 +963,39 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 	bestEquivalent, bestRepresented, bestMarked, bestCredible := false, false, false, false
 	for i := range a.blocks {
 		b := &a.blocks[i]
-		if (b.kind != "h1" && b.kind != "h2") || hardHidden(b.node) || a.hasIrrelevantAncestor(b.node) {
+		if (b.kind != "h1" && b.kind != "h2") || hardHidden(b.node) {
+			continue
+		}
+		headingText := articleHeadingText(b.node)
+		equivalent := restorationTitle != "" && titleEquivalent(headingText, restorationTitle, a.meta.site)
+		marked := hasArticleHeadlineMarker(b.node)
+		// Article headers are often scored as page chrome because they contain a
+		// byline and publication controls. An explicitly marked headline that
+		// agrees with document metadata remains usable across a short run of that
+		// furniture; weaker headings still obey the irrelevant-region score.
+		strongDetachedHeadline := equivalent && marked
+		if a.hasIrrelevantAncestor(b.node) && !strongDetachedHeadline {
 			continue
 		}
 		distance := adjacentSelectedBlockDistance(a.blocks, i, nodes, 2)
+		if distance == 0 && strongDetachedHeadline {
+			distance = adjacentSelectedBlockDistance(a.blocks, i, nodes, 6)
+			// Readability fallback nodes are clones and cannot be matched by pointer
+			// against the segmented DOM. In that case, containment in the semantic
+			// article supplies the structural tie instead of pointer proximity.
+			if distance == 0 {
+				region := primaryHeadingRegion(b.node)
+				if region != nil && strings.EqualFold(region.Data, "article") {
+					distance = 3
+				}
+			}
+		}
 		if distance == 0 {
-			// Proximity is required even when the text matches metadata. Otherwise
-			// a headline from a recommendation or another article could win.
+			// Proximity is required even with metadata agreement. Otherwise a
+			// headline from a recommendation or another article could win.
 			continue
 		}
-		equivalent := restorationTitle != "" && titleEquivalent(b.text, restorationTitle, a.meta.site)
 		represented := representedBySelection(b.node, nodes)
-		marked := hasArticleHeadlineMarker(b.node)
 		credible := a.isCredibleArticleHeading(i, nodes)
 		// A conflicting heading is authoritative only with independent structural
 		// evidence. This prevents an adjacent site masthead from replacing the
@@ -1021,7 +1042,7 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 			}
 			if !directlySelected {
 				a.irrelevant[candidate.node] = true
-				title := articleTitleNode(candidate.text)
+				title := articleTitleNode(articleHeadingText(candidate.node))
 				a.irrelevant[title] = false
 				withTitle := append([]*html.Node{title}, content...)
 				if a.titleLeavesOutputForArticleProse(withTitle, cfg) {
@@ -1036,15 +1057,24 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 			return content
 		}
 
-		// Render an h2 article headline as the document's h1. Use a detached node
-		// rather than mutating the caller's DOM, and remove the original selected
-		// h2 so the title is not duplicated.
+		// Render an h2 article headline as the document's h1. Also detach any
+		// headline nested inside a selected ancestor: removing its block root alone
+		// cannot prevent the ancestor renderer from emitting it a second time.
+		directlySelected := false
+		for _, n := range nodes {
+			directlySelected = directlySelected || n == candidate.node
+		}
 		title := candidate.node
 		content := nodes
-		if candidate.kind == "h2" {
-			title = articleTitleNode(candidate.text)
+		if candidate.kind == "h2" || !directlySelected {
+			title = articleTitleNode(articleHeadingText(candidate.node))
 			a.irrelevant[title] = false
 			content = removeSelectedNode(content, candidate.node)
+			if !directlySelected {
+				a.irrelevant[candidate.node] = true
+			}
+		}
+		if candidate.kind == "h2" {
 			// A selected h1 before an h2 headline is usually the page masthead. Drop
 			// only unsupported, metadata-conflicting h1 blocks before the candidate.
 			for i := 0; i < bestIndex; i++ {
@@ -1054,6 +1084,7 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 				}
 			}
 		}
+		content = a.demoteConflictingSelectedH1s(content, articleHeadingText(candidate.node))
 		withTitle := append([]*html.Node{title}, content...)
 		if a.titleLeavesOutputForArticleProse(withTitle, cfg) {
 			return withTitle
@@ -1111,23 +1142,39 @@ func removeSelectedNode(nodes []*html.Node, remove *html.Node) []*html.Node {
 }
 
 func (a *analysis) demoteConflictingSelectedH1s(nodes []*html.Node, title string) []*html.Node {
-	out := append([]*html.Node(nil), nodes...)
-	for i := range a.blocks {
-		b := &a.blocks[i]
-		if b.kind != "h1" || titleEquivalent(b.text, title, a.meta.site) || a.isCredibleArticleHeading(i, nodes) {
-			continue
-		}
-		for selectedIndex, selected := range out {
-			if selected != b.node {
-				continue
+	demote := map[*html.Node]bool{}
+	for _, selected := range nodes {
+		walk(selected, func(n *html.Node) bool {
+			if n.Type == html.ElementNode && strings.EqualFold(n.Data, "h1") &&
+				!titleEquivalent(articleHeadingText(n), title, a.meta.site) {
+				demote[n] = true
 			}
-			section := cloneHTMLNode(b.node)
-			section.Data = "h2"
-			out[selectedIndex] = section
-			break
-		}
+			return true
+		})
+	}
+	if len(demote) == 0 {
+		return nodes
+	}
+	out := make([]*html.Node, len(nodes))
+	for i, root := range nodes {
+		out[i] = a.cloneWithHeadingDemotions(root, demote)
 	}
 	return out
+}
+
+func (a *analysis) cloneWithHeadingDemotions(n *html.Node, demote map[*html.Node]bool) *html.Node {
+	clone := &html.Node{Type: n.Type, DataAtom: n.DataAtom, Data: n.Data, Namespace: n.Namespace,
+		Attr: append([]html.Attribute(nil), n.Attr...)}
+	if demote[n] {
+		clone.Data = "h2"
+	}
+	if irrelevant, ok := a.irrelevant[n]; ok {
+		a.irrelevant[clone] = irrelevant
+	}
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		clone.AppendChild(a.cloneWithHeadingDemotions(child, demote))
+	}
+	return clone
 }
 
 // titleLeavesOutputForArticleProse prevents a short date or byline from being
@@ -1630,6 +1677,78 @@ func primaryHeadingRegion(n *html.Node) *html.Node {
 		}
 	}
 	return primary
+}
+
+// articleHeadingText omits publication furniture embedded in a heading. Some
+// templates put the date and byline in a nested <small> inside the article h2,
+// while others use <small> for a real subtitle, so the tag alone is not enough
+// to discard its text.
+func articleHeadingText(heading *html.Node) string {
+	var text strings.Builder
+	var visit func(*html.Node)
+	visit = func(n *html.Node) {
+		if n.Type == html.TextNode {
+			text.WriteString(n.Data)
+			return
+		}
+		if n != heading && n.Type == html.ElementNode {
+			if isExplicitHeadingPublicationMetadata(n) || strings.EqualFold(n.Data, "small") && headingPublicationFurniture(n) {
+				return
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			visit(child)
+		}
+	}
+	visit(heading)
+	return normalizeText(text.String())
+}
+
+// isExplicitHeadingPublicationMetadata is narrower than the general metadata
+// detector because an unmarked <time> may be part of the headline itself (for
+// example, "The 2024 Report"). Time elements need publication-specific markup
+// or an enclosing furniture wrapper before articleHeadingText drops them.
+func isExplicitHeadingPublicationMetadata(n *html.Node) bool {
+	if !strings.EqualFold(n.Data, "time") {
+		return isPublicationMetadataElement(n)
+	}
+	for _, value := range strings.Fields(attrValue(n, "itemprop")) {
+		value = strings.ToLower(value)
+		if strings.Contains(value, "datepublished") || strings.Contains(value, "datemodified") || strings.Contains(value, "datecreated") {
+			return true
+		}
+	}
+	property := strings.ToLower(attrValue(n, "property"))
+	if strings.Contains(property, "published_time") || strings.Contains(property, "modified_time") {
+		return true
+	}
+	tokens := elementTokens(n)
+	if containsAny(tokens, "byline", "dateline", "published") {
+		return true
+	}
+	for _, token := range strings.Fields(tokens) {
+		token = strings.ReplaceAll(token, "_", "-")
+		switch token {
+		case "post-date", "entry-date", "article-date", "publication-date", "post-meta", "entry-meta", "article-meta":
+			return true
+		}
+	}
+	return false
+}
+
+func headingPublicationFurniture(n *html.Node) bool {
+	if isPublicationFurnitureBlock(n) {
+		return true
+	}
+	found := false
+	walk(n, func(current *html.Node) bool {
+		if current != n && current.Type == html.ElementNode && isExplicitHeadingPublicationMetadata(current) {
+			found = true
+			return false
+		}
+		return !found
+	})
+	return found
 }
 
 func isSubstantiveProseBlock(b *block) bool {
