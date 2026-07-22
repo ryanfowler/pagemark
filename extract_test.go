@@ -2100,3 +2100,105 @@ func BenchmarkExtract(b *testing.B) {
 		}
 	}
 }
+
+func TestArticleContinuityBridgesInlineAdvertisement(t *testing.T) {
+	html := `<html><head><meta property="og:type" content="article"><title>Article title</title></head><body>
+<article><h1>Article title</h1>
+<p>Long introduction explains the subject with enough detail to establish the article body clearly.</p>
+<p>More article prose develops the evidence and gives readers important context for what follows.</p>
+<aside class="advertisement"><p>Sponsored product copy that must never appear.</p><a rel="sponsored" href="/buy">Buy now</a></aside>
+<p>Important continuation explains the result after the interruption in substantive detail.</p>
+<p>Article conclusion summarizes the findings and their consequences for the reader.</p>
+</article>
+<section class="author-profile"><h2>About the author</h2><p>Generic biography that is outside the article body.</p></section>
+<section class="related-stories"><h2>Related stories</h2><div class="story-card"><p>Unrelated card one.</p></div><div class="story-card"><p>Unrelated card two.</p></div></section>
+</body></html>`
+	doc, err := Extract(strings.NewReader(html), "https://example.com/article")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Long introduction", "More article prose", "Important continuation", "Article conclusion"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing article prose %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Sponsored product", "Buy now", "Generic biography", "Unrelated card"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included auxiliary content %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestGenericProseContinuityBridgesInlineAdvertisement(t *testing.T) {
+	html := `<main><div class="entry-content"><h1>Article title</h1>
+<p>The opening paragraph establishes a substantial prose region and introduces the central subject.</p>
+<p>A second paragraph supplies enough supporting detail to confirm the document body.</p>
+<div class="advertisement"><a rel="sponsored" href="/offer">Advertisement offer</a></div>
+<p>The important continuation remains part of the same prose region after the interruption.</p>
+<p>The final paragraph records the conclusion in source order for every reader.</p>
+</div></main>`
+	doc, err := Extract(strings.NewReader(html), "https://example.com/story")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"opening paragraph", "second paragraph", "important continuation", "final paragraph"} {
+		if !strings.Contains(strings.ToLower(doc.Text), want) {
+			t.Errorf("missing generic prose %q: %s", want, doc.Text)
+		}
+	}
+	if strings.Contains(doc.Text, "Advertisement offer") {
+		t.Fatalf("included inline advertisement: %s", doc.Text)
+	}
+}
+
+func TestAffiliateWidgetDoesNotHideOrReclassifyContentContainer(t *testing.T) {
+	html := `<main><div class="entry-content"><h1>Independent field report</h1>
+<p>The opening report describes the observation, its background, and the evidence gathered during a careful investigation.</p>
+<p>A second editorial paragraph explains the method and gives readers enough context to understand the reported result.</p>
+<div class="affiliate-product">
+<h2 class="product-title">Portable field recorder</h2>
+<div class="product-feature">Long battery life for field work.</div>
+<div class="product-price">Special price today.</div>
+<ul class="product-features"><li>Compact product design.</li><li>Includes a carrying case.</li></ul>
+<a rel="sponsored" href="/buy">Buy this product</a>
+</div>
+<p>The report continues after the commercial interruption with analysis of the collected evidence.</p>
+<p>The concluding editorial paragraph summarizes the finding and identifies the remaining uncertainty.</p>
+</div></main>`
+	doc, err := Extract(strings.NewReader(html), "https://example.com/field-report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"opening report", "second editorial paragraph", "report continues", "concluding editorial paragraph"} {
+		if !strings.Contains(strings.ToLower(doc.Text), want) {
+			t.Errorf("missing editorial content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Portable field recorder", "Special price", "Buy this product"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included affiliate widget content %q: %s", unwanted, doc.Text)
+		}
+	}
+	if doc.PageType == PageTypeProduct || doc.PageType == PageTypeCollection || doc.PageType == PageTypeListing {
+		t.Fatalf("affiliate widget changed page type to %s", doc.PageType)
+	}
+}
+
+func TestMalformedParagraphContinuesAfterBlockAdvertisement(t *testing.T) {
+	html := `<article><h1>Article title</h1><p>A substantial introduction establishes the article body before malformed publisher markup.
+<div class="advertisement"><a rel="sponsored" href="/offer">Advertisement offer</a></div>
+Important continuation text remains useful article prose even though the HTML parser places it directly in the content container.<br>
+The article conclusion also remains available after the inline advertisement.</p></article>`
+	doc, err := Extract(strings.NewReader(html), "https://example.com/malformed", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"substantial introduction", "Important continuation text", "article conclusion"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing malformed-flow prose %q: %s", want, doc.Text)
+		}
+	}
+	if strings.Contains(doc.Text, "Advertisement offer") {
+		t.Fatalf("included malformed inline advertisement: %s", doc.Text)
+	}
+}
