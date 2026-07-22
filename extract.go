@@ -3138,7 +3138,15 @@ func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	if isSubscriptionRegion(n) || a.isArticleCommentRegion(n) {
+	if isSubscriptionRegion(n) {
+		// Subscription evidence may live in a trailing child of a page-wide or
+		// article-wide wrapper. Exclude that child when it is visited, rather
+		// than hiding substantive prose that precedes it in the shared wrapper.
+		if !a.hasArticleBodyDescendant(n) && !hasSubstantiveContentBeforeDescendant(n, isFormElement) {
+			return true
+		}
+	}
+	if a.isArticleCommentRegion(n) {
 		return true
 	}
 	// A separately marked author profile is publication furniture, even when it
@@ -3173,7 +3181,8 @@ func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 			(tag == "aside" && containsAny(tokens, "author", "byline", "bio", "profile"))) {
 			return true
 		}
-		if isRelatedCardRegion(n) {
+		if isRelatedCardRegion(n) && !a.hasArticleBodyDescendant(n) &&
+			!hasSubstantiveContentBeforeDescendant(n, isMarkedCard) {
 			return true
 		}
 		if hasAuxiliaryHeading(n) && countLinkedRecords(n, 2) >= 2 {
@@ -3655,6 +3664,15 @@ func isSubscriptionRegion(n *html.Node) bool {
 		return true
 	})
 
+	// Readability may remove form controls from a cloned article while leaving
+	// the marked signup wrapper and its prompt. Keep that narrower tail
+	// excludable, but preserve marked form-free sections with enough explanatory
+	// prose to be authored discussion of subscription workflows.
+	if !hasForm && subscriptionAttributeMarker(n) && cta && isSubscriptionPromptHeading(heading) &&
+		!substantialArticleScope(n) {
+		return true
+	}
+
 	formEvidence := hasEmail || subscriptionForm || (hasForm && cta)
 	if isSubscriptionPromptHeading(heading) {
 		return formEvidence && cta
@@ -4044,7 +4062,62 @@ func isTrailingArticleCardRegion(n *html.Node) bool {
 	if countArticleCards(n, 2) < 2 {
 		return false
 	}
+	// A layout wrapper can contain both the article body and a final card grid.
+	// The cards are still classified when their narrower region is visited;
+	// marking the shared wrapper would make every selected prose block vanish
+	// through hasIrrelevantAncestor.
+	if hasSubstantiveContentBeforeDescendant(n, isMarkedArticleCard) {
+		return false
+	}
 	return hasSemanticArticleBeforeOrAround(n)
+}
+
+func isFormElement(n *html.Node) bool {
+	return n != nil && n.Type == html.ElementNode && strings.EqualFold(n.Data, "form")
+}
+
+func isMarkedCard(n *html.Node) bool {
+	return n != nil && n.Type == html.ElementNode && containsAny(elementTokens(n), "card")
+}
+
+func isMarkedArticleCard(n *html.Node) bool {
+	if !isMarkedCard(n) {
+		return false
+	}
+	tokens := elementTokens(n)
+	return strings.EqualFold(n.Data, "article") || containsAny(tokens, "article", "post", "story", "newsletter")
+}
+
+// hasSubstantiveContentBeforeDescendant protects a shared ancestor from tail
+// classification. The target must be a proper descendant, and prose must occur
+// before it in document order; prose inside the promotional target therefore
+// cannot protect the target itself.
+func hasSubstantiveContentBeforeDescendant(root *html.Node, target func(*html.Node) bool) bool {
+	if root == nil {
+		return false
+	}
+	paragraphs, chars, longest := 0, 0, 0
+	foundTarget := false
+	walk(root, func(n *html.Node) bool {
+		if foundTarget || hardHidden(n) {
+			return false
+		}
+		if n != root && target(n) {
+			foundTarget = true
+			return false
+		}
+		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "p") {
+			length := utf8.RuneCountInString(normalizeText(nodeText(n)))
+			paragraphs++
+			chars += length
+			if length > longest {
+				longest = length
+			}
+			return false
+		}
+		return true
+	})
+	return foundTarget && (longest >= 120 || (paragraphs >= 2 && chars >= 120))
 }
 
 func isPromotionalCardRegion(n *html.Node) bool {
