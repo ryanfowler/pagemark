@@ -783,7 +783,6 @@ func (a *analysis) strengthenArticleContinuity(pt PageType) {
 	if pt != PageTypeArticle && pt != PageTypeGeneric {
 		return
 	}
-	strong := make(map[*html.Node]int)
 	regionFor := func(n *html.Node) *html.Node {
 		if article := a.primaryArticleAncestor(n); article != nil {
 			return article
@@ -798,23 +797,99 @@ func (a *analysis) strengthenArticleContinuity(pt PageType) {
 		}
 		return n.Parent
 	}
+
+	strong := make(map[*html.Node]int)
+	regions := make([]*html.Node, len(a.blocks))
 	for i := range a.blocks {
 		b := &a.blocks[i]
+		regions[i] = regionFor(b.node)
 		length := utf8.RuneCountInString(b.text)
 		if b.kind == "p" && b.selected && length >= 60 && linkTextLength(b.node)*2 < max(1, length) {
-			strong[regionFor(b.node)]++
+			strong[regions[i]]++
 		}
 	}
+
+	// Retain the established-region behavior for ordinary paragraphs, including
+	// a final paragraph before sources or other article furniture. A second,
+	// bounded bridge below handles short transitions only when selected prose is
+	// present on both sides.
 	for i := range a.blocks {
 		b := &a.blocks[i]
 		if b.selected || b.kind != "p" || utf8.RuneCountInString(b.text) < 40 ||
-			strong[regionFor(b.node)] < 2 || a.hasIrrelevantAncestor(b.node) {
+			strong[regions[i]] < 2 || !a.plausibleArticleBridge(b, regions[i]) {
 			continue
 		}
 		b.score = math.Max(b.score, 1)
 		b.selected = true
 		b.reasons = append(b.reasons, "article region continuity")
 	}
+
+	const maxBridgeBlocks = 12
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		region := regions[i]
+		length := utf8.RuneCountInString(b.text)
+		if b.selected || b.kind != "p" || length < 12 || strong[region] < 2 ||
+			!a.plausibleArticleBridge(b, region) {
+			continue
+		}
+		before, after := false, false
+		for distance := 1; distance <= maxBridgeBlocks; distance++ {
+			if j := i - distance; j >= 0 && regions[j] == region && selectedArticleProse(&a.blocks[j]) {
+				before = true
+				break
+			}
+		}
+		for distance := 1; distance <= maxBridgeBlocks; distance++ {
+			if j := i + distance; j < len(a.blocks) && regions[j] == region && selectedArticleProse(&a.blocks[j]) {
+				after = true
+				break
+			}
+		}
+		if !before || !after {
+			continue
+		}
+		b.score = math.Max(b.score, 1)
+		b.selected = true
+		b.reasons = append(b.reasons, "article prose bridge")
+	}
+}
+
+func selectedArticleProse(b *block) bool {
+	if b == nil || !b.selected {
+		return false
+	}
+	switch b.kind {
+	case "p", "blockquote", "generic":
+		return utf8.RuneCountInString(b.text) >= 20 && linkTextLength(b.node)*2 < max(1, utf8.RuneCountInString(b.text))
+	}
+	return false
+}
+
+// plausibleArticleBridge rechecks local auxiliary signals before continuity
+// can override a block's independent score. The dominant region itself is not
+// checked for boilerplate tokens: newsletter/article wrappers often carry such
+// names, which is precisely why otherwise valid paragraphs need continuity.
+func (a *analysis) plausibleArticleBridge(b *block, region *html.Node) bool {
+	if b == nil || region == nil || a.hasIrrelevantAncestor(b.node) {
+		return false
+	}
+	length := utf8.RuneCountInString(b.text)
+	if length == 0 || linkTextLength(b.node)*2 >= length || controls(b.node) > 0 ||
+		isArticleAuxiliaryLabel(normalizedLabel(b.text)) || auxiliaryLabels[normalizedLabel(b.text)] {
+		return false
+	}
+	for p := b.node; p != nil && p != region; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		tag := strings.ToLower(p.Data)
+		if tag == "aside" || tag == "header" || tag == "footer" || tag == "nav" ||
+			isAdvertisementRegion(p) || hasBoilerplateToken(p) || isListingRecordElement(p) {
+			return false
+		}
+	}
+	return nodeWithin(b.node, region)
 }
 
 // ensureDocumentTitle restores titles according to the shape of the selected

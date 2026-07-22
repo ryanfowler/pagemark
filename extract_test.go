@@ -2202,3 +2202,70 @@ The article conclusion also remains available after the inline advertisement.</p
 		t.Fatalf("included malformed inline advertisement: %s", doc.Text)
 	}
 }
+
+func TestArticleContinuityAcrossStructuralNodes(t *testing.T) {
+	anchorOne := "The selected opening analysis establishes the dominant article body with detailed technical evidence for readers. " + strings.Repeat("It also supplies enough explanatory context to make this an independently strong paragraph. ", 4)
+	anchorTwo := "The selected closing analysis continues the same article body with detailed technical evidence for readers. " + strings.Repeat("It also supplies enough explanatory context to make this an independently strong paragraph. ", 4)
+	figure := `<figure><img src="https://example.com/diagram.jpg" width="800" height="600" alt="Technical diagram"><figcaption>Technical diagram caption</figcaption></figure>`
+
+	tests := []struct {
+		name, middle, want string
+		unwanted           string
+		images             bool
+	}{
+		{
+			name:   "figure before rejected paragraph",
+			middle: figure + `<p>The process changed after that result.</p>`,
+			want:   "The process changed after that result.",
+		},
+		{
+			name: "share toolbar and image",
+			middle: `<div class="share-toolbar" role="toolbar"><button>Share</button><button>Copy link</button></div>` +
+				`<p>The next experiment confirmed the change.</p><img src="https://example.com/result.jpg" width="900" height="600" alt="Experiment result">`,
+			want:     "The next experiment confirmed the change.",
+			unwanted: "Copy link",
+			images:   true,
+		},
+		{
+			name:     "advertisement paragraph remains excluded",
+			middle:   `<aside class="advertisement"><p>This sponsored card describes an unrelated product that readers should buy immediately.</p></aside>`,
+			unwanted: "sponsored card",
+		},
+		{
+			name:   "several consecutive figures",
+			middle: figure + figure + figure + figure + `<p>The measurements still agreed.</p>` + figure + figure + figure,
+			want:   "The measurements still agreed.",
+		},
+		{
+			name:   "short transition",
+			middle: `<p>That changed in 2024.</p>`,
+			want:   "That changed in 2024.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			html := `<html><head><meta property="og:type" content="article"><title>Continuity report</title></head><body><article class="newsletter"><h1>Continuity report</h1><p>` + anchorOne + `</p>` + tt.middle + `<p>` + anchorTwo + `</p></article></body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/report", WithIncludeImages(tt.images), WithDiagnostics(true))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.want != "" && !strings.Contains(doc.Text, tt.want) {
+				t.Fatalf("missing bridged paragraph %q:\n%s", tt.want, doc.Text)
+			}
+			if tt.unwanted != "" && strings.Contains(doc.Text, tt.unwanted) {
+				t.Fatalf("included auxiliary text %q:\n%s", tt.unwanted, doc.Text)
+			}
+			if strings.Index(doc.Text, anchorOne[:40]) > strings.Index(doc.Text, anchorTwo[:40]) {
+				t.Fatalf("article blocks were emitted out of DOM order:\n%s", doc.Text)
+			}
+			if tt.want != "" {
+				for _, block := range doc.Diagnostics.Blocks {
+					if strings.Contains(block.Text, tt.want) && (!block.Selected || block.Score < 1) {
+						t.Fatalf("diagnostic does not report restored block: %+v", block)
+					}
+				}
+			}
+		})
+	}
+}
