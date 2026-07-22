@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+  <title>Implementing newsletter delivery safely</title>
+  <meta property="og:type" content="article">
+</head>
+<body>
+  <main>
+    <article>
+      <h1>Implementing newsletter delivery safely</h1>
+      <p>A newsletter implementation should validate each email address, record consent, and make the subscription form accessible without hiding useful error messages.</p>
+      <section class="newsletter-example">
+        <h2>Newsletter form implementation</h2>
+        <p>This example explains how to subscribe users safely while preserving consent and validation errors.</p>
+        <form action="/subscribe">
+          <label>Example email <input type="email" name="example-email"></label>
+          <button type="submit">Subscribe example user</button>
+        </form>
+      </section>
+      <p>The delivery worker then processes confirmed recipients in bounded batches so retries do not send the same issue twice.</p>
+      <section class="newsletter-signup">
+        <h3>Stay updated</h3>
+        <p>Subscribe to get updates on new features and releases. This is a very low volume mailing list!</p>
+        <form action="/subscribe" method="post">
+          <label>Email address <input type="email" name="email"></label>
+          <button type="submit">Subscribe</button>
+        </form>
+      </section>
+    </article>
+  </main>
+</body>
+</html>

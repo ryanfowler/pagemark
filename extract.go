@@ -2048,7 +2048,7 @@ func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	if a.isArticleCommentRegion(n) {
+	if isSubscriptionRegion(n) || a.isArticleCommentRegion(n) {
 		return true
 	}
 	tag := strings.ToLower(n.Data)
@@ -2080,6 +2080,76 @@ func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 		}
 	}
 	return false
+}
+
+// isSubscriptionRegion identifies the wrapper around a newsletter form, not
+// merely the controls that Markdown conversion already omits. A promotional
+// heading is required in addition to form and CTA evidence: class names such as
+// newsletter-example are common on substantive tutorials with embedded forms.
+func isSubscriptionRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	switch strings.ToLower(n.Data) {
+	case "div", "section", "aside", "fieldset":
+	default:
+		return false
+	}
+
+	if !isSubscriptionPromptHeading(firstRegionHeading(n)) {
+		return false
+	}
+
+	text := strings.ToLower(normalizeText(nodeText(n)))
+	cta := strings.Contains(text, "subscribe") || strings.Contains(text, "sign up") ||
+		strings.Contains(text, "mailing list") || strings.Contains(text, "get updates")
+
+	hasForm, hasEmail, subscriptionForm := false, false, false
+	walk(n, func(x *html.Node) bool {
+		if hardHidden(x) {
+			return false
+		}
+		if x.Type != html.ElementNode {
+			return true
+		}
+		switch strings.ToLower(x.Data) {
+		case "input":
+			if strings.EqualFold(strings.TrimSpace(attrValue(x, "type")), "email") {
+				hasEmail = true
+			}
+		case "form":
+			hasForm = true
+			if subscriptionAttributeMarker(x) || containsSubscriptionWord(attrValue(x, "action")) {
+				subscriptionForm = true
+			}
+		}
+		return true
+	})
+
+	formEvidence := hasEmail || subscriptionForm || (hasForm && cta)
+	return formEvidence && cta
+}
+
+func isSubscriptionPromptHeading(heading string) bool {
+	if heading == "stay updated" || strings.HasPrefix(heading, "stay updated ") ||
+		heading == "get updates" || strings.HasPrefix(heading, "get updates ") ||
+		heading == "subscribe" || strings.HasPrefix(heading, "subscribe to ") {
+		return true
+	}
+	return heading == "join our newsletter" || heading == "join the newsletter" ||
+		heading == "newsletter signup" || heading == "newsletter sign-up" ||
+		heading == "sign up" || strings.HasPrefix(heading, "sign up for updates")
+}
+
+func subscriptionAttributeMarker(n *html.Node) bool {
+	return containsSubscriptionWord(attrValue(n, "id")) || containsSubscriptionWord(attrValue(n, "class"))
+}
+
+func containsSubscriptionWord(value string) bool {
+	value = strings.ToLower(value)
+	return strings.Contains(value, "subscribe") || strings.Contains(value, "subscription") ||
+		strings.Contains(value, "newsletter") || strings.Contains(value, "signup") ||
+		strings.Contains(value, "sign-up")
 }
 
 // isArticleCommentRegion identifies the region containing reader responses,
