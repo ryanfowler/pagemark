@@ -127,13 +127,67 @@ func enclosingSection(n *html.Node) *html.Node {
 }
 
 func (c *converter) skip(n *html.Node) bool {
-	if n == nil || (c.cfg.Exclude != nil && c.cfg.Exclude(n)) {
+	if n == nil || isSourceCodeLineNumberGutter(n) || (c.cfg.Exclude != nil && c.cfg.Exclude(n)) {
 		return true
 	}
 	if dom.Hidden(n) {
 		// SVG is opaque to all generic traversal. The converter only admits its
 		// accessible label through the dedicated SVG branch below.
 		return !(c.cfg.Images && dom.AccessibleSVGLabel(n) != "")
+	}
+	return false
+}
+
+// Syntax highlighters often use a two-column layout table whose first cell is
+// only a line-number gutter. It is presentation, not source code: retaining it
+// produces a second fenced block and corrupts copied examples. Require an
+// exact gutter class, a recognized highlighter table, and a sibling source-code
+// cell so an ordinary data column with the same class remains intact.
+func isSourceCodeLineNumberGutter(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || (!strings.EqualFold(n.Data, "td") && !strings.EqualFold(n.Data, "th")) || !hasAnyClassToken(n, "linenos", "line-numbers", "linenumbers", "rouge-gutter") {
+		return false
+	}
+	row := n.Parent
+	if row == nil || !strings.EqualFold(row.Data, "tr") {
+		return false
+	}
+	var table *html.Node
+	for p := row.Parent; p != nil; p = p.Parent {
+		if p.Type == html.ElementNode && strings.EqualFold(p.Data, "table") {
+			table = p
+			break
+		}
+	}
+	if table == nil || !hasAnyClassToken(table, "highlighttable", "highlight-table", "codehilitetable", "rouge-table") {
+		return false
+	}
+	for sibling := row.FirstChild; sibling != nil; sibling = sibling.NextSibling {
+		if sibling == n || sibling.Type != html.ElementNode || (!strings.EqualFold(sibling.Data, "td") && !strings.EqualFold(sibling.Data, "th")) {
+			continue
+		}
+		if hasDescendantElement(sibling, "pre") && (hasDescendantElement(sibling, "code") || hasAnyClassToken(sibling, "code", "source")) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAnyClassToken(n *html.Node, wanted ...string) bool {
+	for _, token := range strings.Fields(strings.ToLower(attr(n, "class"))) {
+		for _, candidate := range wanted {
+			if token == candidate {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasDescendantElement(n *html.Node, tag string) bool {
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if (child.Type == html.ElementNode && strings.EqualFold(child.Data, tag)) || hasDescendantElement(child, tag) {
+			return true
+		}
 	}
 	return false
 }

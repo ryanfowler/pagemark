@@ -180,6 +180,176 @@ func TestRealPerlinFixtureUsesLeadingTitleSingleMathAndFigures(t *testing.T) {
 	}
 }
 
+func TestRealBeejFixtureUsesArticleTitleInsteadOfSiteMasthead(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-beej-making-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://beej.us/blog/data/ai-making/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# On Making\n") {
+		t.Fatalf("article title was not first:\n%s", doc.Markdown)
+	}
+	for _, unwanted := range []string{"Beej's Bit Bucket", "Tech and Programming Fun", "# Comments"} {
+		if strings.Contains(doc.Markdown, unwanted) {
+			t.Errorf("site or comment chrome survived %q:\n%s", unwanted, doc.Markdown)
+		}
+	}
+	for _, want := range []string{"## I Am Uncomfortable", "## What Did I Make Recently?", "It's the loss of making"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("missing article content %q:\n%s", want, doc.Markdown)
+		}
+	}
+}
+
+func TestReorderedRealArticleTitleDoesNotConsumeBodyBudget(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-beej-making-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://beej.us/blog/data/ai-making/", WithMaxOutputBytes(180))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "I gain a lot of fulfillment by making things") {
+		t.Fatalf("reordered title consumed the article body budget:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Text, "On Making") {
+		t.Fatalf("title should be omitted when it displaces article prose:\n%s", doc.Markdown)
+	}
+}
+
+func TestReorderedArticleTitleBudgetRecognizesYearlessPublicationDates(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-beej-making-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		date string
+	}{
+		{name: "plain text", date: "March 12"},
+		{name: "nested time", date: `<time datetime="2026-03-12">March 12</time>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			variant := strings.Replace(string(source), "2026-03-12", tc.date, 1)
+			doc, err := ExtractBytes([]byte(variant), "https://beej.us/blog/data/ai-making/", WithMaxOutputBytes(180))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(doc.Text, "I gain a lot of fulfillment by making things") {
+				t.Fatalf("yearless publication date was mistaken for body prose:\n%s", doc.Markdown)
+			}
+			if strings.Contains(doc.Text, "On Making") {
+				t.Fatalf("title should be omitted when it displaces article prose:\n%s", doc.Markdown)
+			}
+		})
+	}
+}
+
+func TestReorderedGenericTitleDoesNotConsumeBodyBudget(t *testing.T) {
+	html := `<html><head><title>Actual Guide</title></head><body><main><p>March 12</p><h1>Actual Guide</h1><p>I explain the practical workflow in enough detail that this useful guide paragraph should survive when a reordered title would consume the limited budget.</p><p>This second explanatory paragraph establishes one dominant prose document even though the constrained renderer will stop after the first useful paragraph.</p></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/guide", WithPageType(PageTypeGeneric), WithMaxOutputBytes(170))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "I explain the practical workflow") {
+		t.Fatalf("generic title displaced body prose:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Text, "Actual Guide") {
+		t.Fatalf("generic title should be omitted when it displaces prose:\n%s", doc.Markdown)
+	}
+}
+
+func TestSelectedH2HeadlineDoesNotConsumeBodyBudget(t *testing.T) {
+	body := "This complete body explains the practical workflow, preserves every important instruction, and fits only when a lower-value headline does not displace it today."
+	html := `<html><head><title>Actual Guide</title></head><body><article><p>March 12</p><h2 itemprop="headline">Actual Guide</h2><p>` + body + `</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/guide", WithPageType(PageTypeArticle), WithMaxOutputBytes(180))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "This complete body explains") {
+		t.Fatalf("selected h2 headline displaced body prose:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Text, "Actual Guide") {
+		t.Fatalf("selected h2 should be omitted when it displaces prose:\n%s", doc.Markdown)
+	}
+}
+
+func TestTrailingPublicationFurnitureDoesNotRemoveFittingTitle(t *testing.T) {
+	html := `<html><head><title>Actual Guide</title></head><body><article><h1>Actual Guide</h1><p>This body paragraph fits together with its title and must remain recognized as prose under the constrained output budget.</p><p>March 12</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/guide", WithPageType(PageTypeArticle), WithMaxOutputBytes(140))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Actual Guide\n") || !strings.Contains(doc.Text, "This body paragraph fits together") {
+		t.Fatalf("trailing publication furniture caused a fitting title to be omitted:\n%s", doc.Markdown)
+	}
+}
+
+func TestReadabilityFallbackTitleBudgetPreservesBody(t *testing.T) {
+	body := "This complete linked body explains the practical workflow, preserves every important instruction, and fits only when a lower-value title does not displace it."
+	html := `<html><head><title>Actual Guide</title></head><body><article><h1>Actual Guide</h1><p>March 12</p><p><a href="/complete">` + body + `</a></p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/guide", WithPageType(PageTypeArticle), WithMaxOutputBytes(210))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readabilityFallback := false
+	for _, warning := range doc.Warnings {
+		if warning.Code == "fallback" && strings.Contains(strings.ToLower(warning.Message), "readability") {
+			readabilityFallback = true
+		}
+	}
+	if !readabilityFallback {
+		t.Fatalf("test did not exercise readability fallback: %#v", doc.Warnings)
+	}
+	if !strings.Contains(doc.Text, "This complete linked body") {
+		t.Fatalf("readability publication furniture displaced body prose:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Text, "Actual Guide") {
+		t.Fatalf("title should be omitted when it displaces readability prose:\n%s", doc.Markdown)
+	}
+}
+
+func TestRealYummymelonFixtureDropsCodeLineNumberGutter(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-yummymelon-emacs-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "http://yummymelon.com/devnull/malleable-computing-emacs-and-you.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Malleable Computing, Emacs, and You\n") {
+		t.Fatalf("article title was not first:\n%s", doc.Markdown)
+	}
+	if strings.Count(doc.Markdown, "```") != 2 || !strings.Contains(doc.Markdown, "(defun fj-request-issues (repo)") {
+		t.Fatalf("highlighted source was not one code block:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Markdown, "```\n1\n2\n3") {
+		t.Fatalf("line-number gutter survived as code:\n%s", doc.Markdown)
+	}
+}
+
+func TestRealFidderyFixtureExcludesEmptyCommentPrompt(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-fiddery-menu-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://blog.fiddery.com/businesses-with-ugly-ai-menu-redesigns/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "restaurant revamped their menu") {
+		t.Fatalf("article body was lost: %s", doc.Text)
+	}
+	if strings.Contains(strings.ToLower(doc.Text), "leave a comment") {
+		t.Fatalf("empty comment prompt survived:\n%s", doc.Markdown)
+	}
+}
+
 func TestRealSheetsFixtureKeepsLayoutItemBoundaries(t *testing.T) {
 	source, err := os.ReadFile("testdata/real-sheets-layout.html")
 	if err != nil {
