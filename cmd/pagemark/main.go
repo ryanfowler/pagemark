@@ -2,18 +2,22 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ryanfowler/pagemark"
+	"golang.org/x/net/html"
 	"golang.org/x/net/html/charset"
 )
 
@@ -75,7 +79,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, client *h
 	if contentType != "" && !strings.Contains(normalizedContentType, "text/html") && !strings.Contains(normalizedContentType, "application/xhtml+xml") {
 		return fmt.Errorf("pagemark: response is not HTML: %s", contentType)
 	}
-	utf8Body, err := charset.NewReader(resp.Body, contentType)
+	// Buffer at most maxBytes plus one byte so encoding decisions can consider
+	// the complete (bounded) response without weakening the input limit.
+	readLimit := *maxBytes
+	if readLimit < math.MaxInt64 {
+		readLimit++
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, readLimit))
+	if err != nil {
+		return fmt.Errorf("pagemark: read response body: %w", err)
+	}
+	if int64(len(body)) > *maxBytes {
+		return &pagemark.LimitError{Resource: "input bytes", Count: int64(len(body)), Max: *maxBytes}
+	}
+	utf8Body, err := decodeHTML(body, contentType)
 	if err != nil {
 		return fmt.Errorf("pagemark: decode HTML: %w", err)
 	}
@@ -88,6 +105,95 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, client *h
 		return fmt.Errorf("pagemark: write output: %w", err)
 	}
 	return nil
+}
+
+func decodeHTML(body []byte, contentType string) (io.Reader, error) {
+	// Preserve charset.DetermineEncoding's BOM, recognized HTTP charset, and
+	// early HTML metadata precedence. Only override its default Windows-1252
+	// fallback when checking the complete body establishes that it is UTF-8.
+	_, name, certain := charset.DetermineEncoding(body, contentType)
+	if certain || name != "windows-1252" || hasMetaCharset(body, name) || !utf8.Valid(body) {
+		return charset.NewReader(bytes.NewReader(body), contentType)
+	}
+	return bytes.NewReader(body), nil
+}
+
+// hasMetaCharset distinguishes a detected Windows-1252 meta declaration from
+// DetermineEncoding's indistinguishable Windows-1252 default. DetermineEncoding
+// only examines the first 1024 bytes, so this helper uses the same window.
+func hasMetaCharset(body []byte, detectedName string) bool {
+	if len(body) > 1024 {
+		body = body[:1024]
+	}
+	z := html.NewTokenizer(bytes.NewReader(body))
+	for {
+		switch z.Next() {
+		case html.ErrorToken:
+			return false
+		case html.StartTagToken, html.SelfClosingTagToken:
+			token := z.Token()
+			if !strings.EqualFold(token.Data, "meta") {
+				continue
+			}
+			attrs := make(map[string]string, len(token.Attr))
+			for _, attr := range token.Attr {
+				key := strings.ToLower(attr.Key)
+				if _, exists := attrs[key]; !exists {
+					attrs[key] = attr.Val
+				}
+			}
+			if metaCharsetMatches(attrs["charset"], detectedName) {
+				return true
+			}
+			if strings.EqualFold(attrs["http-equiv"], "content-type") &&
+				metaCharsetMatches(metaContentCharset(attrs["content"]), detectedName) {
+				return true
+			}
+		}
+	}
+}
+
+// metaContentCharset follows the permissive extraction used by the HTML
+// charset prescan. A content attribute need not be a valid MIME media type.
+func metaContentCharset(content string) string {
+	s := strings.ToLower(content)
+	for s != "" {
+		charsetAt := strings.Index(s, "charset")
+		if charsetAt < 0 {
+			return ""
+		}
+		s = strings.TrimLeft(s[charsetAt+len("charset"):], " \t\n\f\r")
+		if !strings.HasPrefix(s, "=") {
+			continue
+		}
+		s = strings.TrimLeft(s[1:], " \t\n\f\r")
+		if s == "" {
+			return ""
+		}
+		if quote := s[0]; quote == '\'' || quote == '"' {
+			s = s[1:]
+			if end := strings.IndexByte(s, quote); end >= 0 {
+				return s[:end]
+			}
+			return ""
+		}
+		if end := strings.IndexAny(s, "; \t\n\f\r"); end >= 0 {
+			return s[:end]
+		}
+		return s
+	}
+	return ""
+}
+
+func metaCharsetMatches(label, detectedName string) bool {
+	if label == "" {
+		return false
+	}
+	_, name := charset.Lookup(label)
+	if strings.HasPrefix(name, "utf-16") {
+		name = "utf-8"
+	}
+	return name == detectedName
 }
 
 func parsePageURL(raw string) (*url.URL, error) {
