@@ -725,11 +725,56 @@ func hasClassToken(n *html.Node, want string) bool {
 // boundaries: authors commonly split a single word across them for styling.
 func (c *converter) inlineBoundary(left, right *html.Node) bool {
 	if left.Type != html.ElementNode || right.Type != html.ElementNode ||
-		c.skip(left) || c.skip(right) || strings.EqualFold(right.Data, "sup") ||
-		!layoutItem(left) || !layoutItem(right) {
+		c.skip(left) || c.skip(right) || strings.EqualFold(right.Data, "sup") {
 		return false
 	}
+	if !layoutItem(left) || !layoutItem(right) {
+		if !c.structuredNumberedRecordSiblings(left, right) {
+			return false
+		}
+	}
 	return clean(c.nodeText(left)) != "" && clean(c.nodeText(right)) != ""
+}
+
+// structuredNumberedRecordSiblings recognizes compact layout rows whose source
+// omits whitespace because CSS supplies the columns. A leading integer, a
+// bold label, and a description are common for numbered procedures and visual
+// explainers. Requiring that complete shape avoids adding spaces between
+// arbitrary styling spans which may deliberately split a single word.
+func (c *converter) structuredNumberedRecordSiblings(left, right *html.Node) bool {
+	if left.Parent == nil || left.Parent != right.Parent || left.Parent.Type != html.ElementNode ||
+		!strings.EqualFold(left.Parent.Data, "div") {
+		return false
+	}
+	var fields []*html.Node
+	for ch := left.Parent.FirstChild; ch != nil; ch = ch.NextSibling {
+		if c.skip(ch) || ch.Type == html.TextNode && strings.TrimSpace(ch.Data) == "" {
+			continue
+		}
+		if ch.Type != html.ElementNode {
+			return false
+		}
+		fields = append(fields, ch)
+	}
+	if len(fields) != 3 {
+		return false
+	}
+	// CSS-driven columns need styling hooks on both the row and ordinal field.
+	// Without them, this shape is also common in ordinary inline markup such as
+	// <span>1</span><b>st</b><span> place</span>.
+	if !hasStyleHook(left.Parent) || !hasStyleHook(fields[0]) {
+		return false
+	}
+	ordinal := clean(c.nodeText(fields[0]))
+	if ordinal == "" || strings.IndexFunc(ordinal, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+		return false
+	}
+	labelTag := strings.ToLower(fields[1].Data)
+	return labelTag == "b" || labelTag == "strong"
+}
+
+func hasStyleHook(n *html.Node) bool {
+	return strings.TrimSpace(attr(n, "class")) != "" || strings.TrimSpace(attr(n, "id")) != ""
 }
 
 func layoutItem(n *html.Node) bool {
