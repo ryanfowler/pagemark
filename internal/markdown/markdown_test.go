@@ -278,6 +278,21 @@ func TestUnsafeLinkIsRejectedAfterOutputLimit(t *testing.T) {
 	}
 }
 
+func TestWhitespaceOnlyFormattingPreservesWordBoundary(t *testing.T) {
+	for _, source := range []string{
+		`<p>Tuscany,<strong> </strong>used DNA.</p>`,
+		`<p>one<em> </em>two</p>`,
+	} {
+		got := convertHTML(t, source).Markdown
+		if strings.Contains(got, "Tuscany,used") || strings.Contains(got, "onetwo") {
+			t.Fatalf("formatting swallowed separating whitespace: %q", got)
+		}
+	}
+	if got := convertHTML(t, `<p>well<strong></strong>being</p>`).Markdown; got != "wellbeing" {
+		t.Fatalf("truly empty formatting invented whitespace: %q", got)
+	}
+}
+
 func TestFormattedLinkAndLinkedImage(t *testing.T) {
 	r := convertHTML(t, `<p><a href="/docs"><strong>Read</strong> now</a> <a href="/"><img src="/logo.png" alt="Logo"></a></p>`)
 	want := `[**Read** now](https://example.com/docs) [![Logo](https://example.com/logo.png)](https://example.com/)`
@@ -307,6 +322,11 @@ func TestSerializedMediaTextIsNotEmittedAsProse(t *testing.T) {
 			"standalone image example is preserved",
 			`<p>&lt;img src="example.png"&gt;</p>`,
 			`\<img src="example.png"\>`,
+		},
+		{
+			"serialized rendered component in noscript",
+			`<noscript>&lt;div&gt;&lt;time datetime=&quot;2026-07-16&quot;&gt;Updated July 16&lt;/time&gt;&lt;/div&gt;</noscript><p>Updated July 16</p>`,
+			"Updated July 16",
 		},
 		{
 			"serialized iframe in noscript",

@@ -325,8 +325,16 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 		}
 		if isGenericContainer(tag) && !hasPostBody && !hasBlockDescendant(n) {
 			text := normalizeText(nodeText(n))
-			if utf8.RuneCountInString(text) >= 12 {
-				a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: n, kind: "generic", text: text})
+			visual := a.o.includeImages && hasMeaningfulVisual(n)
+			if utf8.RuneCountInString(text) >= 12 || visual {
+				kind := "generic"
+				if visual {
+					// Publishers frequently build a figure from div, picture, and
+					// caption divs rather than using <figure>. Treat that complete wrapper
+					// as one visual block so its caption does not prevent image selection.
+					kind = "figure"
+				}
+				a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: n, kind: kind, text: text, imageOnly: visual && text == ""})
 				return
 			}
 		}
@@ -967,8 +975,9 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 			continue
 		}
 		headingText := articleHeadingText(b.node)
-		equivalent := restorationTitle != "" && titleEquivalent(headingText, restorationTitle, a.meta.site)
 		marked := hasArticleHeadlineMarker(b.node)
+		equivalent := restorationTitle != "" && (titleEquivalent(headingText, restorationTitle, a.meta.site) ||
+			marked && articleTitleVariantEquivalent(headingText, restorationTitle))
 		// Article headers are often scored as page chrome because they contain a
 		// byline and publication controls. An explicitly marked headline that
 		// agrees with document metadata remains usable across a short run of that
@@ -1857,6 +1866,39 @@ func titleEquivalent(heading, title string, siteName ...string) bool {
 		}
 	}
 	return false
+}
+
+// articleTitleVariantEquivalent recognizes editorial rewrites of the same
+// headline. Social metadata often adds search-oriented words while the visible
+// headline stays concise. This is used only for explicitly marked article
+// headings; it is intentionally not part of general title equivalence.
+func articleTitleVariantEquivalent(heading, title string) bool {
+	words := func(value string) map[string]bool {
+		out := make(map[string]bool)
+		for _, word := range strings.Fields(normalizedLabel(value)) {
+			switch word {
+			case "a", "an", "and", "the", "to", "of", "for", "in", "on", "with", "after", "before",
+				"may", "might", "can", "could", "be", "been", "is", "are", "was", "were", "new",
+				"more", "than", "over":
+				continue
+			}
+			out[word] = true
+		}
+		return out
+	}
+	a, b := words(heading), words(title)
+	if len(a) < 4 || len(b) < 4 {
+		return false
+	}
+	shared := 0
+	for word := range a {
+		if b[word] {
+			shared++
+		}
+	}
+	shorter := min(len(a), len(b))
+	union := len(a) + len(b) - shared
+	return shared >= 4 && float64(shared)/float64(shorter) >= .8 && float64(shared)/float64(union) >= .55
 }
 
 func stripSiteTitleDecoration(title, site string) string {
@@ -3003,6 +3045,16 @@ func irrelevantNode(n *html.Node) bool {
 		return true
 	}
 	if containsToken(tokens, navigationStructureTokens) && !headingDocumentsStructure(n, tokens) && hasNavigationShape(n) {
+		return true
+	}
+	// Interactive control strips are commonly generic divs rather than nav or
+	// toolbar roles. Likewise, an inline related-content component may contain a
+	// single recommendation, so repeated-card detection cannot identify it.
+	// Require both conventional compound naming and navigational shape to avoid
+	// excluding prose merely because one broad word occurs in a class name.
+	controlBar := containsAny(tokens, "action", "control", "follow") && containsAny(tokens, "bar", "toolbar")
+	relatedContent := containsAny(tokens, "related", "recommended") && containsAny(tokens, "content", "story", "article", "card")
+	if (controlBar || relatedContent) && hasNavigationShape(n) {
 		return true
 	}
 	label := normalizedLabel(firstNonempty(attrValue(n, "aria-label"), attrValue(n, "title")))

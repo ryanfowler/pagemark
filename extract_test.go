@@ -3089,6 +3089,42 @@ The article conclusion also remains available after the inline advertisement.</p
 	}
 }
 
+func TestRealCNNArticleLayout(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-cnn-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://www.cnn.com/2026/07/15/science/medici-family-mystery-dna-malaria")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTitle := "Medici family mystery may be solved after more than 400 years"
+	if !strings.HasPrefix(doc.Markdown, "# "+wantTitle+"\n") {
+		t.Fatalf("visible article headline was not used as title:\n%s", doc.Markdown)
+	}
+	if strings.Count(doc.Markdown, "Medici family mystery") != 1 || strings.Contains(doc.Markdown, "Medici family murder mystery") {
+		t.Fatalf("metadata rewrite produced a duplicate headline:\n%s", doc.Markdown)
+	}
+	for _, want := range []string{
+		"![The Chapel of the Princes, a lavish burial site for the Medici family in Florence.](https://media.cnn.com/chapel.jpg)",
+		"Tuscany, used DNA extracted from the skeletal remains",
+		"## Two species of malaria",
+		"Historical sources supported the assumption",
+	} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Fatalf("missing article content %q:\n%s", want, doc.Markdown)
+		}
+	}
+	for _, unwanted := range []string{
+		`\<div\>`, "See all topics", "Link Copied!",
+		"Scientists find first physical evidence", "A view of the ancient city",
+	} {
+		if strings.Contains(doc.Markdown, unwanted) {
+			t.Fatalf("article furniture %q survived:\n%s", unwanted, doc.Markdown)
+		}
+	}
+}
+
 func TestArticleContinuityAcrossStructuralNodes(t *testing.T) {
 	anchorOne := "The selected opening analysis establishes the dominant article body with detailed technical evidence for readers. " + strings.Repeat("It also supplies enough explanatory context to make this an independently strong paragraph. ", 4)
 	anchorTwo := "The selected closing analysis continues the same article body with detailed technical evidence for readers. " + strings.Repeat("It also supplies enough explanatory context to make this an independently strong paragraph. ", 4)

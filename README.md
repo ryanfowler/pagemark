@@ -34,7 +34,9 @@ func main() {
 
 You can also use `ExtractBytes` or `ExtractNode`. `ExtractNode` does not change the supplied tree.
 
-The `Document` result contains metadata, a page type, Markdown, plain text, sections, safe links, a quality score, warnings, and extraction statistics. Enable diagnostics only when you need block scores and rejected-link details:
+The `Document` result contains metadata, a page type, Markdown, plain text, sections, safe links, useful images, a quality score, warnings, and extraction statistics. Useful images are included by default as Markdown image syntax and in `Document.Images`; Pagemark records their safe remote URLs but does not fetch them. Pass `WithIncludeImages(false)` for text-only output.
+
+Enable diagnostics only when you need block scores and rejected-link details:
 
 ```go
 doc, err := pagemark.ExtractBytes(source, pageURL, pagemark.WithDiagnostics(true))
