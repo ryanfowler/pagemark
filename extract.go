@@ -2319,9 +2319,11 @@ func (a *analysis) isArticleCommentRegion(n *html.Node) (result bool) {
 			return true
 		}
 		// Some systems omit a comments heading and expose only repeated records.
-		// Do not apply this to a layout that also contains the semantic article;
+		// Do not apply this to a layout that also contains the article body;
 		// otherwise a page-wide wrapper could hide the article along with replies.
-		if !a.hasSemanticArticleDescendant(n) && a.commentRecordCount(n) >= 2 {
+		// WordPress commonly uses a .type-post wrapper and .entry-content instead
+		// of the semantic article element.
+		if !a.hasArticleBodyDescendant(n) && a.commentRecordCount(n) >= 2 {
 			return true
 		}
 	}
@@ -2447,7 +2449,7 @@ func commentRecordTextLength(n *html.Node) int {
 	return utf8.RuneCountInString(normalizeText(text.String()))
 }
 
-func (a *analysis) hasSemanticArticleDescendant(root *html.Node) bool {
+func (a *analysis) hasArticleBodyDescendant(root *html.Node) bool {
 	if root == nil || hardHidden(root) {
 		return false
 	}
@@ -2462,12 +2464,21 @@ func (a *analysis) hasSemanticArticleDescendant(root *html.Node) bool {
 		if hardHidden(ch) || ch.Type != html.ElementNode {
 			continue
 		}
-		if strings.EqualFold(ch.Data, "article") &&
-			!containsAny(elementTokens(ch), "card", "comment", "reply") {
+		tokens := elementTokens(ch)
+		semanticArticle := strings.EqualFold(ch.Data, "article") &&
+			!containsAny(tokens, "card", "comment", "reply")
+		// WordPress and several other publishing systems predate widespread use
+		// of <article>. Their conventional *-content wrappers are equivalent
+		// evidence that this subtree contains the primary article body.
+		conventionalArticleBody := (containsAny(tokens, "entry") ||
+			containsAny(tokens, "post") || containsAny(tokens, "article")) &&
+			containsAny(tokens, "content") &&
+			!containsAny(tokens, "comment", "reply")
+		if semanticArticle || conventionalArticleBody {
 			found = true
 			break
 		}
-		found = a.hasSemanticArticleDescendant(ch)
+		found = a.hasArticleBodyDescendant(ch)
 	}
 	if found {
 		a.semanticArticleDescendants[root] = 2
