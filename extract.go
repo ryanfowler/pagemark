@@ -1466,9 +1466,13 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	counts := map[string]int{}
 	productRecords := map[*html.Node]bool{}
 	linkedRecords := map[*html.Node]bool{}
-	discussionRecords := map[*html.Node]bool{}
-	neutralDiscussionRecords := map[*html.Node]bool{}
-	discussionContext := false
+	discussionRecords := map[*html.Node]int{}
+	neutralDiscussionRecords := map[*html.Node]int{}
+	// Discussion vocabulary is page-level evidence only when it belongs to the
+	// primary container. Vocabulary inherited from an arbitrary ancestor is
+	// deliberately not used: a sidebar or comments widget may itself be called a
+	// thread without making the page a thread.
+	discussionContext := a.primaryDiscussionContext()
 	documentationContext := false
 	proseChars, codeChars, primaryArticleProse := 0, 0, 0
 	primaryArticles := map[*html.Node]bool{}
@@ -1502,22 +1506,22 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 				tok += " " + elementTokens(p)
 			}
 		}
-		// UI labels and controls often carry the same vocabulary as real threads.
-		// Only let a substantive record establish discussion context; counting its
-		// ancestor once also avoids giving every paragraph in a post another vote.
+		// Count substantive records independently, but do not promote vocabulary
+		// inherited from their enclosing widget to page-level context. In
+		// particular, one .message in a discussion sidebar and one .post article
+		// are weak evidence. Repetition and prose volume are considered below.
 		if record := nearestDiscussionRecordAncestor(b.node); record != nil {
-			discussionRecords[record] = true
-			// A lone .post is commonly the wrapper for a blog article. Reserve
-			// the context bonus for thread structure or record-specific roles.
-			if containsAny(tok, "answer", "thread", "discussion", "topic", "reply", "message") {
-				discussionContext = true
+			if _, seen := discussionRecords[record]; !seen {
+				discussionRecords[record] = commentRecordTextLength(record)
 			}
 		} else if record := nearestNeutralDiscussionRecord(b.node); record != nil {
+			if _, seen := neutralDiscussionRecords[record]; !seen {
+				neutralDiscussionRecords[record] = commentRecordTextLength(record)
+			}
 			// Some forums put all vocabulary on the thread wrapper and use plain
 			// semantic articles for individual messages. Keep these records
 			// separate so one neutral article cannot turn an ordinary page into a
 			// discussion merely because an ancestor happens to say “thread”.
-			neutralDiscussionRecords[record] = true
 		}
 		if containsAny(tok, "product", "price", "sku") {
 			scores[PageTypeProduct] += 1.5
@@ -1536,10 +1540,20 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 		}
 	}
 	if len(neutralDiscussionRecords) >= 2 {
-		discussionContext = true
-		for record := range neutralDiscussionRecords {
-			discussionRecords[record] = true
+		for record, chars := range neutralDiscussionRecords {
+			discussionRecords[record] = chars
 		}
+	}
+	discussionProse := 0
+	for _, chars := range discussionRecords {
+		discussionProse += chars
+	}
+	// Repeated, substantive records establish thread context. A lone marked
+	// record remains compatible with an article, and several tiny status/action
+	// records do not amount to a conversation.
+	substantiveDiscussionRecords := len(discussionRecords) >= 2 && discussionProse >= 80
+	if substantiveDiscussionRecords {
+		discussionContext = true
 	}
 	if discussionContext {
 		scores[PageTypeDiscussion] += 2
@@ -1547,11 +1561,15 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	switch len(discussionRecords) {
 	case 0:
 	case 1:
-		scores[PageTypeDiscussion] += .5
+		scores[PageTypeDiscussion] += .25
 	default:
-		// Repeated comment-like records are useful evidence, but are capped so
-		// annotations cannot overwhelm publication and dominant-prose signals.
-		scores[PageTypeDiscussion] += math.Min(4, float64(len(discussionRecords)))
+		if substantiveDiscussionRecords {
+			// Repeated comment-like records are useful evidence, but are capped so
+			// annotations cannot overwhelm publication and dominant-prose signals.
+			scores[PageTypeDiscussion] += math.Min(4, float64(len(discussionRecords)))
+		} else {
+			scores[PageTypeDiscussion] += math.Min(1.5, .5*float64(len(discussionRecords)))
+		}
 	}
 	if documentationContext {
 		// Ancestor tokens describe one region, not each descendant block. An
@@ -1581,7 +1599,8 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	if strings.Contains(schema, "product") {
 		scores[PageTypeProduct] += 5
 	}
-	if strings.Contains(schema, "discussion") || strings.Contains(schema, "question") {
+	if strings.Contains(schema, "discussion") || strings.Contains(schema, "question") ||
+		strings.Contains(schema, "qapage") || strings.Contains(schema, "forumposting") {
 		scores[PageTypeDiscussion] += 5
 	}
 	if strings.Contains(schema, "itemlist") || a.meta.microdataListing {
@@ -1646,7 +1665,10 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	if articleURLPath(urlPath) {
 		scores[PageTypeArticle] += 2
 	}
-	if strings.Contains(urlPath, "forum") || strings.Contains(urlPath, "question") || strings.Contains(urlPath, "issue") || strings.Contains(urlPath, "/t/") || strings.Contains(title, " forum") {
+	if strings.Contains(urlPath, "forum") || strings.Contains(urlPath, "question") || strings.Contains(urlPath, "issue") ||
+		strings.Contains(urlPath, "/thread/") || strings.Contains(urlPath, "/threads/") ||
+		strings.Contains(urlPath, "/topic/") || strings.Contains(urlPath, "/topics/") ||
+		strings.Contains(urlPath, "/t/") || strings.Contains(title, " forum") {
 		scores[PageTypeDiscussion] += 3
 	}
 	if strings.Contains(urlPath, "product") {
@@ -2262,6 +2284,13 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 	for p := n; p != nil; p = p.Parent {
 		if irrelevantNode(p) {
+			return true
+		}
+		if p.Type == html.ElementNode && (strings.EqualFold(p.Data, "aside") ||
+			containsAny(elementTokens(p), "sidebar")) {
+			// Asides and explicitly named sidebars may contain complete-looking
+			// comments or message previews, but they are not candidates for the
+			// page's primary shape.
 			return true
 		}
 		// Comment regions with substantive records remain page-type evidence;
@@ -3367,6 +3396,59 @@ func nearestTokenAncestor(n *html.Node, values ...string) *html.Node {
 	return nil
 }
 
+// primaryDiscussionContext recognizes explicit page-level thread structure.
+// It intentionally examines only the main container (or body when no main is
+// present), rather than inheriting tokens from every block ancestor.
+func (a *analysis) primaryDiscussionContext() bool {
+	var primary *html.Node
+	walk(a.root, func(n *html.Node) bool {
+		if hardHidden(n) {
+			return false
+		}
+		if primary != nil {
+			return false
+		}
+		if n.Type != html.ElementNode {
+			return true
+		}
+		if strings.EqualFold(n.Data, "main") || strings.EqualFold(attrValue(n, "role"), "main") {
+			primary = n
+			return false
+		}
+		return true
+	})
+	if primary == nil {
+		walk(a.root, func(n *html.Node) bool {
+			if primary == nil && n.Type == html.ElementNode && strings.EqualFold(n.Data, "body") {
+				primary = n
+			}
+			return primary == nil
+		})
+	}
+	if primary == nil {
+		return false
+	}
+	if containsAny(elementTokens(primary), "discussion", "thread", "topic", "forum", "qna", "question") {
+		return true
+	}
+	label := ""
+	walk(primary, func(n *html.Node) bool {
+		if label != "" || hardHidden(n) {
+			return false
+		}
+		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "h1") && !a.inferenceAuxiliaryBlock(n) {
+			label = normalizedLabel(nodeText(n))
+			return false
+		}
+		return true
+	})
+	switch label {
+	case "discussion", "community discussion", "forum", "question", "questions and answers", "q&a":
+		return true
+	}
+	return false
+}
+
 func nearestDiscussionRecordAncestor(n *html.Node) *html.Node {
 	for p := n; p != nil; p = p.Parent {
 		if isPlausibleDiscussionRecord(p) {
@@ -3388,6 +3470,9 @@ func isPlausibleDiscussionRecord(n *html.Node) bool {
 	}
 	tokens := elementTokens(n)
 	itemtype := strings.ToLower(attrValue(n, "itemtype"))
+	// A generic .question class is common in FAQs, surveys, and forms. It only
+	// identifies a discussion record when backed by Question microdata; QAPage
+	// schema and explicit primary thread structure are scored separately.
 	marked := containsAny(tokens, "comment", "answer", "post", "reply", "message") ||
 		containsAny(itemtype, "comment", "answer", "question")
 	if !marked {

@@ -1346,6 +1346,98 @@ func TestEmptyCommentsControlsDoNotMakeArticleDiscussion(t *testing.T) {
 	}
 }
 
+func TestInferenceUsesPrimaryRatherThanAuxiliaryDiscussionEvidence(t *testing.T) {
+	articleParagraphs := `<p>The opening section provides a detailed account of the subject, its history, and the practical constraints that shaped the work over several months.</p><p>The next section explains the decisions in enough depth for readers to understand the alternatives and the reasons those alternatives were rejected.</p><p>Testing uncovered several subtle problems, so the team repeated each measurement and documented the results before drawing any conclusions.</p><p>The final section connects those results to the original goal and records the remaining limitations for future work and independent verification.</p><p>An appendix adds implementation details and examples that make the central explanation useful without relying on any reader responses below.</p>`
+	tests := []struct {
+		name, source, pageURL string
+		want                  PageType
+		retained, omitted     []string
+	}{
+		{
+			name: "long article with empty comments controls", pageURL: "https://example.com/articles/measurements",
+			source: `<main><article><h1>Careful measurements</h1>` + articleParagraphs + `</article><aside class="comments discussion"><button>Open discussion</button><form hidden><textarea class="reply"></textarea></form></aside></main>`,
+			want:   PageTypeArticle, retained: []string{"opening section", "final section"}, omitted: []string{"Open discussion"},
+		},
+		{
+			name: "long article with one reader comment", pageURL: "https://example.com/articles/measurements",
+			source: `<main><article><h1>Careful measurements</h1>` + articleParagraphs + `</article><aside class="comments"><article class="comment message"><p>A reader suggests one additional measurement that could be useful in a later experiment.</p></article></aside></main>`,
+			want:   PageTypeArticle, retained: []string{"opening section"}, omitted: []string{"reader suggests"},
+		},
+		{
+			name: "long article with several comments", pageURL: "https://example.com/articles/measurements",
+			source: `<main><article><h1>Careful measurements</h1>` + articleParagraphs + `</article><section class="comments"><article class="comment"><p>Ada proposes repeating the test with a second device to compare the observed results.</p></article><article class="comment"><p>Ben asks whether the same setup was used for every measurement reported in the article.</p></article><article class="comment"><p>Chen confirms the procedure and contributes another independent result from a similar device.</p></article></section></main>`,
+			want:   PageTypeArticle, retained: []string{"implementation details"}, omitted: []string{"Ada proposes", "Ben asks", "Chen confirms"},
+		},
+		{
+			name: "forum topic with replies", pageURL: "https://example.com/forum/topic/42",
+			source: `<main class="forum topic"><article class="post message"><p>The initial post describes a reproducible configuration failure and lists the relevant settings.</p></article><article class="reply message"><p>The first reply identifies the incorrect setting and explains the required replacement value.</p></article><article class="reply message"><p>The second reply confirms the fix and provides a command that verifies the new configuration.</p></article></main>`,
+			want:   PageTypeDiscussion, retained: []string{"initial post", "first reply", "second reply"},
+		},
+		{
+			name: "question and answers", pageURL: "https://example.com/help/42",
+			source: `<html><head><script type="application/ld+json">{"@context":"https://schema.org","@type":"QAPage"}</script></head><body><main><div class="question"><p>How can the worker be configured to finish every queued task before shutdown?</p></div><div class="answer"><p>Set the graceful timeout before starting the worker, then verify the value in its status output.</p></div><div class="answer"><p>You can also send the drain signal and wait until the queue count reaches zero.</p></div></main></body></html>`,
+			want:   PageTypeDiscussion, retained: []string{"How can the worker", "graceful timeout", "drain signal"},
+		},
+		{
+			name: "faq questions are not discussion records", pageURL: "https://example.com/faq",
+			source: `<main><h1>Frequently asked questions</h1><div class="question"><h2>Where is account data stored?</h2><p>Account data is stored in the selected region and remains there until the account is deleted.</p></div><div class="question"><h2>How can an account be exported?</h2><p>Use the export command in settings to download a complete archive in a portable format.</p></div></main>`,
+			want:   PageTypeGeneric, retained: []string{"Where is account data stored?", "export command"},
+		},
+		{
+			name: "survey questions are not discussion records", pageURL: "https://example.com/research/survey",
+			source: `<main><h1>Reader survey</h1><div class="question"><p>Which features are most useful in your daily work, and why do they improve the process?</p></div><div class="question"><p>What changes would make the application easier for a new member of your team to adopt?</p></div></main>`,
+			want:   PageTypeGeneric, retained: []string{"Which features", "What changes"},
+		},
+		{
+			name: "hidden discussion template", pageURL: "https://example.com/about",
+			source: `<div hidden><main class="forum thread"><article class="message"><p>A hidden template message must never provide evidence about the visible page.</p></article></main></div><section><h1>Project overview</h1><p>This visible generic page describes the project goals and the resources available to visitors.</p></section>`,
+			want:   PageTypeGeneric, retained: []string{"visible generic page"}, omitted: []string{"hidden template"},
+		},
+		{
+			name: "generic discussion button", pageURL: "https://example.com/about",
+			source: `<main><h1>Project overview</h1><p>This page gives a concise overview of the project and points visitors toward the available resources.</p><button class="reply discussion">Start discussion</button></main>`,
+			want:   PageTypeGeneric, retained: []string{"concise overview"}, omitted: []string{"Start discussion"},
+		},
+		{
+			name: "message previews in sidebar", pageURL: "https://example.com/about",
+			source: `<main><h1>Project overview</h1><p>This primary region explains the project purpose and provides the information visitors need.</p><div class="discussion sidebar"><div class="message"><p>A preview message asks a detailed question about an unrelated community topic.</p></div><div class="message"><p>Another preview message gives a substantive answer and links to the full conversation.</p></div></div></main>`,
+			want:   PageTypeGeneric, retained: []string{"primary region"},
+		},
+		{
+			name: "blog post class", pageURL: "https://example.com/read/42",
+			source: `<main><div class="post"><h1>Building a dependable worker</h1>` + articleParagraphs + `</div></main>`,
+			want:   PageTypeArticle, retained: []string{"opening section", "independent verification"},
+		},
+		{
+			name: "documentation about message threads", pageURL: "https://example.com/guide/messages",
+			source: `<main class="documentation"><h1>Messaging guide</h1><p>This guide explains the messaging API and the lifecycle of a delivery.</p><section class="message-threads"><h2>Message threads</h2><p>A message thread groups related events under one stable identifier for later retrieval.</p><p>Applications should store that identifier and pass it to each subsequent API request.</p></section><p>The reference section documents error handling, pagination, authentication, and retry behavior.</p></main>`,
+			want:   PageTypeDocumentation, retained: []string{"Message threads", "stable identifier", "error handling"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, err := ExtractBytes([]byte(tc.source), tc.pageURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.PageType != tc.want {
+				t.Fatalf("page type = %q, want %q; markdown: %s", doc.PageType, tc.want, doc.Markdown)
+			}
+			for _, want := range tc.retained {
+				if !strings.Contains(doc.Markdown, want) {
+					t.Errorf("missing retained text %q: %s", want, doc.Markdown)
+				}
+			}
+			for _, unwanted := range tc.omitted {
+				if strings.Contains(doc.Markdown, unwanted) {
+					t.Errorf("retained auxiliary text %q: %s", unwanted, doc.Markdown)
+				}
+			}
+		})
+	}
+}
+
 func TestRepeatedSubstantiveMessagesAreInferredAsDiscussion(t *testing.T) {
 	html := `<main class="discussion thread"><article class="post message"><p>The initial question explains the failing behavior and includes enough detail to reproduce it reliably.</p></article><article class="reply message"><p>The first answer recommends changing the worker setting before trying the operation again.</p></article><article class="reply message"><p>The second answer adds a concrete verification step and explains the expected result.</p></article></main>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/conversation/42")
