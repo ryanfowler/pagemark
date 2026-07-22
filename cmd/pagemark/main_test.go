@@ -51,6 +51,94 @@ func TestRunDoesNotDecodeUTF8ResponseTwice(t *testing.T) {
 	}
 }
 
+func TestRunPreservesUTF8WhenCharsetDeclarationIsLate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		body := `<html><head><style>` + strings.Repeat("a", 2048) +
+			`</style><meta http-equiv="content-type" content="text/html; charset=utf-8"></head>` +
+			`<body><main><p>It’s correct and doesn’t become mojibake.</p></main></body></html>`
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
+		t.Fatal(err)
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "It’s") || !strings.Contains(got, "doesn’t") {
+		t.Fatalf("output does not preserve UTF-8: %q", got)
+	}
+	if strings.Contains(got, "â€™") {
+		t.Fatalf("output contains mojibake: %q", got)
+	}
+}
+
+func TestRunHonorsUTF8BOMOverHTTPCharset(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=windows-1252")
+		_, _ = w.Write(append([]byte{0xef, 0xbb, 0xbf}, []byte(`<main><p>It’s UTF-8.</p></main>`)...))
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "It’s UTF-8.\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestRunDecodesISO2022JPFromMetaCharset(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		body := []byte("<meta charset=\"iso-2022-jp\"><main><p>\x1b$BF|K\\8l$G$9!#\x1b(B</p></main>")
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "日本語です。\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestRunHonorsPermissiveMetaCharset(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<meta http-equiv="content-type" content="charset=windows-1252"><main><p>It’s labeled Windows-1252.</p></main>`))
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "Itâ€™s labeled Windows-1252.\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestRunIgnoresUnknownHTTPCharset(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=unknown")
+		_, _ = w.Write([]byte(`<main><p>It’s valid UTF-8.</p></main>`))
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "It’s valid UTF-8.\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
 func TestRunDecodesResponseToUTF8(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=iso-8859-1")
