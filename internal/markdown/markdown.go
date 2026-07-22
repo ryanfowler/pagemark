@@ -157,6 +157,15 @@ func (c *converter) block(n *html.Node) (result *Node) {
 		return nil
 	}
 	tag := strings.ToLower(n.Data)
+	// ARIA tables and grids are frequently built entirely from divs. Handle the
+	// explicit table root before generic container traversal so row/cell
+	// relationships are not flattened into prose.
+	if tag != "table" && semanticTableRole(n) {
+		if !c.cfg.Tables {
+			return c.fallbackSemanticTable(n)
+		}
+		return c.semanticTable(n)
+	}
 	switch tag {
 	case "h1", "h2", "h3", "h4", "h5", "h6":
 		previousHeading := c.heading
@@ -254,7 +263,7 @@ func (c *converter) blocks(n *html.Node) []*Node {
 		if c.skip(ch) {
 			continue
 		}
-		if ch.Type != html.ElementNode || (!isBlockElement(strings.ToLower(ch.Data)) && !c.hasBlockDescendant(ch)) {
+		if ch.Type != html.ElementNode || (!isBlockElement(strings.ToLower(ch.Data)) && !semanticTableRole(ch) && !c.hasBlockDescendant(ch)) {
 			pending = append(pending, ch)
 			continue
 		}
@@ -284,7 +293,7 @@ func (c *converter) hasBlockDescendant(n *html.Node) bool {
 		if c.skip(child) || child.Type != html.ElementNode {
 			continue
 		}
-		if isBlockElement(strings.ToLower(child.Data)) || c.hasBlockDescendant(child) {
+		if isBlockElement(strings.ToLower(child.Data)) || semanticTableRole(child) || c.hasBlockDescendant(child) {
 			return true
 		}
 	}
@@ -532,17 +541,28 @@ func (c *converter) definitionItems(n *html.Node) []*Node {
 	return out
 }
 
+type tableSource struct {
+	rows     [][]*html.Node
+	caption  *html.Node
+	ariaGrid bool
+	semantic bool
+	title    *html.Node
+}
+
 func (c *converter) table(n *html.Node) *Node {
-	var rows [][]*html.Node
-	var caption []*Node
+	s := tableSource{ariaGrid: strings.EqualFold(strings.TrimSpace(attr(n, "role")), "grid")}
 	var walk func(*html.Node)
 	walk = func(x *html.Node) {
 		if c.skip(x) {
 			return
 		}
+		// Never borrow rows or captions from a nested table.
+		if x != n && x.Type == html.ElementNode && strings.EqualFold(x.Data, "table") {
+			return
+		}
 		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "caption") {
-			if caption == nil {
-				caption = c.inlines(x)
+			if s.caption == nil {
+				s.caption = x
 			}
 			return
 		}
@@ -554,7 +574,7 @@ func (c *converter) table(n *html.Node) *Node {
 				}
 			}
 			if len(row) > 0 {
-				rows = append(rows, row)
+				s.rows = append(s.rows, row)
 			}
 			return
 		}
@@ -563,18 +583,104 @@ func (c *converter) table(n *html.Node) *Node {
 		}
 	}
 	walk(n)
-	fallback := func() *Node { return tableWithCaption(c.fallbackTable(n), caption) }
-	if len(rows) == 0 {
-		return tableWithCaption(nil, caption)
+	return c.buildTable(s, func() *Node { return c.fallbackTable(n) })
+}
+
+func semanticTableRole(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
 	}
-	width := len(rows[0])
-	total := 0
-	for _, r := range rows {
-		if len(r) != width {
+	switch strings.ToLower(strings.TrimSpace(attr(n, "role"))) {
+	case "table", "grid":
+		return true
+	}
+	return false
+}
+
+// semanticTable reconstructs only explicitly bounded ARIA rows and cells. In
+// particular, class names and repeated div layouts are not considered table
+// evidence, which keeps ordinary card grids as prose.
+func (c *converter) semanticTable(n *html.Node) *Node {
+	s := tableSource{semantic: true, ariaGrid: strings.EqualFold(strings.TrimSpace(attr(n, "role")), "grid")}
+	var rows func(*html.Node)
+	rows = func(x *html.Node) {
+		if c.skip(x) || (x != n && semanticTableRole(x)) {
+			return
+		}
+		if x != n && strings.EqualFold(strings.TrimSpace(attr(x, "role")), "row") {
+			var row []*html.Node
+			var cells func(*html.Node)
+			cells = func(y *html.Node) {
+				if c.skip(y) {
+					return
+				}
+				if y != x {
+					role := strings.ToLower(strings.TrimSpace(attr(y, "role")))
+					if role == "row" || semanticTableRole(y) {
+						return
+					}
+					switch role {
+					case "cell", "gridcell", "columnheader", "rowheader":
+						row = append(row, y)
+						return
+					}
+				}
+				for ch := y.FirstChild; ch != nil; ch = ch.NextSibling {
+					cells(ch)
+				}
+			}
+			cells(x)
+			if len(row) > 0 {
+				s.rows = append(s.rows, row)
+			}
+			return
+		}
+		for ch := x.FirstChild; ch != nil; ch = ch.NextSibling {
+			rows(ch)
+		}
+	}
+	rows(n)
+	return c.buildTable(s, func() *Node { return c.fallbackSemanticTable(n) })
+}
+
+func (c *converter) buildTable(s tableSource, fallbackContent func() *Node) *Node {
+	caption := func() []*Node {
+		if s.caption != nil {
+			return c.inlines(s.caption)
+		}
+		return nil
+	}
+	fallback := func() *Node {
+		// Captions render before fallback rows and must therefore consume link and
+		// image budgets first as well.
+		captions := caption()
+		return tableWithCaption(fallbackContent(), captions)
+	}
+	if len(s.rows) == 0 {
+		return tableWithCaption(nil, caption())
+	}
+
+	// A common publishing-table shape uses one full-width first cell as its
+	// title, followed by the actual header row. Treat that cell like a caption,
+	// but only after the remaining rectangular table has been validated.
+	rows := s.rows
+	if !s.semantic && len(rows) > 1 && len(rows[0]) == 1 {
+		span := integerAttr(rows[0][0], "colspan", 1)
+		if span > 1 && len(rows[1]) == span && integerAttr(rows[0][0], "rowspan", 1) == 1 {
+			s.title = rows[0][0]
+			rows = rows[1:]
+		}
+	}
+	if len(rows) == 0 {
+		return fallback()
+	}
+	width, total := len(rows[0]), 0
+	for _, row := range rows {
+		if len(row) != width {
 			return fallback()
 		}
-		total += len(r)
-		for _, cell := range r {
+		total += len(row)
+		for _, cell := range row {
 			if integerAttr(cell, "colspan", 1) != 1 || integerAttr(cell, "rowspan", 1) != 1 {
 				return fallback()
 			}
@@ -583,25 +689,162 @@ func (c *converter) table(n *html.Node) *Node {
 	if width == 0 || c.cfg.MaxTableCells <= 0 || c.cells+total > c.cfg.MaxTableCells {
 		return fallback()
 	}
+
 	header := true
 	for _, cell := range rows[0] {
-		header = header && strings.EqualFold(cell.Data, "th")
+		role := strings.ToLower(strings.TrimSpace(attr(cell, "role")))
+		header = header && (strings.EqualFold(cell.Data, "th") || role == "columnheader")
 	}
-	// GFM requires a column-header row. A mixed th/td row generally uses th
-	// as a row header, so promoting its td cells would change the semantics.
+	if !header && s.ariaGrid {
+		// ARIA grids use gridcell for both their heading and data rows. The
+		// explicit grid/row/cell contract and rectangular shape make promotion of
+		// the first row substantially safer than guessing from arbitrary divs.
+		header = len(rows) > 1 && width > 1
+	}
+	if !header && !s.semantic && s.title != nil {
+		header = visualHeaderRow(c, rows[0])
+	}
+	// GFM requires a header row. Do not promote mixed native th/td rows: those
+	// normally represent row headers rather than column headers.
 	if !header {
 		return fallback()
 	}
+
+	// Reserve the complete outer table before converting any content. Cell
+	// conversion may encounter nested tables; those tables must observe the
+	// reduced remaining budget rather than allowing the final total to exceed
+	// MaxTableCells.
+	c.cells += total
+
+	// Caption and promoted-title content appears before body cells, so convert it
+	// first to preserve document-order link and image limits.
+	captions := caption()
+	if s.title != nil {
+		title := c.tableCellInlines(s.title)
+		if clean(plain(&Node{Kind: Document, Children: captions})) != "" &&
+			clean(plain(&Node{Kind: Document, Children: title})) != "" {
+			captions = append(captions, &Node{Kind: Text, Value: " "})
+		}
+		captions = append(captions, title...)
+	}
+
 	t := &Node{Kind: Table}
-	for _, r := range rows {
+	for _, row := range rows {
 		rr := &Node{Kind: TableRow}
-		for _, cell := range r {
-			rr.Children = append(rr.Children, &Node{Kind: TableCell, Align: cellAlignment(cell), Children: c.inlines(cell)})
-			c.cells++
+		for _, cell := range row {
+			rr.Children = append(rr.Children, &Node{Kind: TableCell, Align: cellAlignment(cell), Children: c.tableCellInlines(cell)})
 		}
 		t.Children = append(t.Children, rr)
 	}
-	return tableWithCaption(t, caption)
+	return tableWithCaption(t, captions)
+}
+
+// tableCellInlines compacts block-level and line-oriented cell content into a
+// single Markdown-table line while retaining a boundary between each block.
+// Running normal block conversion first also keeps link and image sanitization
+// identical to content outside tables.
+func (c *converter) tableCellInlines(n *html.Node) []*Node {
+	parts := c.mixedItem(n)
+	var out []*Node
+	var flatten func(*Node, *[]*Node)
+	flatten = func(x *Node, dst *[]*Node) {
+		if x == nil {
+			return
+		}
+		switch x.Kind {
+		case Text, Emphasis, Strong, Superscript, InlineCode, Link, Image, HardBreak:
+			*dst = append(*dst, x)
+		case CodeBlock:
+			// Markdown tables cannot contain fenced blocks. Preserve the code as a
+			// compact inline span rather than dropping Value-only CodeBlock nodes.
+			if value := clean(x.Value); value != "" {
+				*dst = append(*dst, &Node{Kind: InlineCode, Value: value})
+			}
+		case Paragraph, Heading, TableCell:
+			for _, child := range x.Children {
+				flatten(child, dst)
+			}
+		default:
+			// Documents, lists, and other block containers may place several
+			// line-level children inside one wrapper div. Keep those boundaries.
+			for _, child := range x.Children {
+				var childIn []*Node
+				flatten(child, &childIn)
+				if clean(plain(&Node{Kind: Document, Children: childIn})) == "" {
+					continue
+				}
+				if len(*dst) > 0 {
+					*dst = append(*dst, &Node{Kind: Text, Value: " "})
+				}
+				*dst = append(*dst, childIn...)
+			}
+		}
+	}
+	for _, part := range parts {
+		var in []*Node
+		flatten(part, &in)
+		if clean(plain(&Node{Kind: Document, Children: in})) == "" {
+			continue
+		}
+		if len(out) > 0 {
+			out = append(out, &Node{Kind: Text, Value: " "})
+		}
+		out = append(out, in...)
+	}
+	return out
+}
+
+// visualHeaderRow is deliberately narrow: it is only used after a full-width
+// title row in a native table, and requires an empty corner plus fully bold
+// column labels. This covers responsive publishing tables without making bold
+// card layouts look tabular.
+func visualHeaderRow(c *converter, row []*html.Node) bool {
+	if len(row) < 2 || clean(c.nodeText(row[0])) != "" {
+		return false
+	}
+	for _, cell := range row[1:] {
+		if clean(c.nodeText(cell)) == "" || !allCellTextStrong(cell, false) {
+			return false
+		}
+	}
+	return true
+}
+
+func allCellTextStrong(n *html.Node, strong bool) bool {
+	if n.Type == html.TextNode {
+		return strings.TrimSpace(n.Data) == "" || strong
+	}
+	if n.Type == html.ElementNode {
+		strong = strong || strings.EqualFold(n.Data, "b") || strings.EqualFold(n.Data, "strong")
+	}
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		if !allCellTextStrong(ch, strong) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *converter) fallbackSemanticTable(n *html.Node) *Node {
+	root := &Node{Kind: UnorderedList}
+	var walk func(*html.Node)
+	walk = func(x *html.Node) {
+		if c.skip(x) || (x != n && semanticTableRole(x)) {
+			return
+		}
+		if x != n && strings.EqualFold(strings.TrimSpace(attr(x, "role")), "row") {
+			item := &Node{Kind: ListItem, Children: c.mixedItem(x)}
+			if clean(plain(item)) != "" {
+				root.Children = append(root.Children, item)
+			}
+			return
+		}
+		for ch := x.FirstChild; ch != nil; ch = ch.NextSibling {
+			walk(ch)
+		}
+	}
+	walk(n)
+	return root
 }
 
 func tableWithCaption(table *Node, caption []*Node) *Node {
