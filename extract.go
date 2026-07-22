@@ -55,8 +55,8 @@ type analysis struct {
 }
 
 type metadata struct {
-	title, description, author, site, language, published, canonical, schemaType string
-	articlePublished, articleType, headline, microdataListing                    bool
+	title, browserTitle, socialTitle, description, author, site, language, published, canonical, schemaType string
+	articlePublished, articleType, headline, microdataListing                                               bool
 }
 
 // Extract reads UTF-8 HTML and extracts useful content. Callers must decode
@@ -200,9 +200,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	if a.textListingPre != nil {
 		cfg.TextPreformatted = func(n *html.Node) bool { return n == a.textListingPre }
 	}
-	if pageType == PageTypeArticle {
-		selected = a.ensureArticleTitle(selected, cfg)
-	}
+	selected = a.ensureDocumentTitle(selected, cfg, pageType)
 	mr := markdown.Convert(selected, cfg)
 	if strings.TrimSpace(mr.Text) == "" {
 		return nil, ErrNoContent
@@ -706,11 +704,38 @@ func (a *analysis) score(pt PageType) {
 	}
 }
 
+// ensureDocumentTitle restores titles according to the shape of the selected
+// output. Articles retain the broader source-heading recovery below. Other
+// classifications only receive a synthetic title when they still look like a
+// single prose document; this covers prose pages misclassified by surrounding
+// widgets without adding browser titles to collections or application shells.
+func (a *analysis) ensureDocumentTitle(nodes []*html.Node, cfg markdown.Config, pageType PageType) []*html.Node {
+	if pageType == PageTypeArticle {
+		return a.ensureArticleTitle(nodes, cfg)
+	}
+	title := a.restorationTitle()
+	if title == "" || a.hasEquivalentHeading(nodes, title, cfg) || a.hasLeadingOutputHeading(nodes, cfg) || !a.hasDominantProseOutput(nodes, cfg) {
+		return nodes
+	}
+	titleNode := articleTitleNode(title)
+	a.irrelevant[titleNode] = false
+	withTitle := append([]*html.Node{titleNode}, nodes...)
+	if !titleLeavesOutputForContent(withTitle, cfg) {
+		return nodes
+	}
+	return withTitle
+}
+
 // ensureArticleTitle restores a source headline next to selected article
 // content. Publishers sometimes use h2 for the article headline because a
 // page-level h1 is reserved for the site or section name. Metadata remains the
 // fallback when no nearby, well-supported source heading exists.
 func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) []*html.Node {
+	// Use the same preferred, normalized metadata title for source-heading
+	// selection and synthetic fallback. In particular, a site masthead matching
+	// the browser title must not override a distinct social title.
+	restorationTitle := a.restorationTitle()
+
 	// Prefer the source heading over metadata. Looking only a small number of
 	// segmented blocks away keeps headings elsewhere on the page from being
 	// mistaken for the article title, while allowing publication metadata or a
@@ -728,13 +753,13 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 			// a headline from a recommendation or another article could win.
 			continue
 		}
-		equivalent := a.meta.title != "" && titleEquivalent(b.text, a.meta.title, a.meta.site)
+		equivalent := restorationTitle != "" && titleEquivalent(b.text, restorationTitle, a.meta.site)
 		credible := a.isCredibleArticleHeading(i, nodes)
 		// A conflicting heading is authoritative only with independent structural
 		// evidence. This prevents an adjacent site masthead from replacing the
 		// metadata fallback. H2 also requires such evidence when metadata is absent;
 		// proximity alone must not turn an ordinary section heading into a title.
-		if (a.meta.title != "" && !equivalent && !credible) || (b.kind == "h2" && !equivalent && !credible) {
+		if (restorationTitle != "" && !equivalent && !credible) || (b.kind == "h2" && !equivalent && !credible) {
 			continue
 		}
 		if bestIndex < 0 || (credible && !bestCredible) || (credible == bestCredible && equivalent && !bestEquivalent) || (credible == bestCredible && equivalent == bestEquivalent && distance < bestDistance) {
@@ -760,7 +785,7 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 			// only unsupported, metadata-conflicting h1 blocks before the candidate.
 			for i := 0; i < bestIndex; i++ {
 				b := &a.blocks[i]
-				if b.kind == "h1" && !titleEquivalent(b.text, a.meta.title, a.meta.site) && !a.isCredibleArticleHeading(i, nodes) {
+				if b.kind == "h1" && !titleEquivalent(b.text, restorationTitle, a.meta.site) && !a.isCredibleArticleHeading(i, nodes) {
 					content = removeSelectedNode(content, b.node)
 				}
 			}
@@ -773,15 +798,28 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 		// would consume budget intended for the article body.
 		return nodes
 	}
-	if a.hasTitleEquivalentHeading(nodes) || a.meta.title == "" {
+	if restorationTitle == "" || a.hasEquivalentHeading(nodes, restorationTitle, cfg) {
 		return nodes
 	}
+	// Remove only an unsupported h1 positively identified as the browser-title
+	// masthead. A different nearby heading may be a legitimate section (for
+	// example, "Introduction") and must survive below the synthesized title.
+	// Structurally credible article headings were already selected above and
+	// never reach this fallback.
+	content := nodes
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		browserMasthead := b.kind == "h1" && a.meta.browserTitle != "" && titleEquivalent(b.text, a.meta.browserTitle, a.meta.site)
+		if browserMasthead && !titleEquivalent(b.text, restorationTitle, a.meta.site) && !a.isCredibleArticleHeading(i, nodes) && adjacentSelectedBlockDistance(a.blocks, i, nodes, 2) > 0 {
+			content = removeSelectedNode(content, b.node)
+		}
+	}
 
-	title := articleTitleNode(a.meta.title)
+	title := articleTitleNode(restorationTitle)
 	// Synthetic nodes are not part of the indexed DOM. Explicitly mark this one
 	// as relevant so article auxiliary heuristics cannot classify it by itself.
 	a.irrelevant[title] = false
-	withTitle := append([]*html.Node{title}, nodes...)
+	withTitle := append([]*html.Node{title}, content...)
 	if !titleLeavesOutputForContent(withTitle, cfg) {
 		return nodes
 	}
@@ -814,14 +852,147 @@ func titleLeavesOutputForContent(nodes []*html.Node, cfg markdown.Config) bool {
 	return markdown.Convert(nodes, cfg).EmittedContentBlocks > 0
 }
 
-func (a *analysis) hasTitleEquivalentHeading(nodes []*html.Node) bool {
+// restorationTitle returns a document-specific metadata title. Social titles
+// are preferred because they normally omit browser chrome. For a plain
+// <title>, a site prefix or suffix is removed only when it agrees with explicit
+// site metadata or the page hostname.
+func (a *analysis) restorationTitle() string {
+	title := firstNonempty(a.meta.socialTitle, a.meta.title)
+	if title == "" {
+		return ""
+	}
+	sites := []string{a.meta.site}
+	if a.pageURL != nil {
+		host := strings.TrimPrefix(strings.ToLower(a.pageURL.Hostname()), "www.")
+		if host != "" {
+			sites = append(sites, host)
+			if dot := strings.IndexByte(host, '.'); dot > 0 {
+				sites = append(sites, host[:dot])
+			}
+		}
+	}
+	for _, site := range sites {
+		if normalizedLabel(site) == "" {
+			continue
+		}
+		if normalizedLabel(title) == normalizedLabel(site) {
+			return ""
+		}
+		if stripped := stripTitleDecorationPreservingCase(title, site); stripped != title {
+			title = stripped
+			break
+		}
+	}
+	normalized := normalizedLabel(title)
+	if normalized == "" || utf8.RuneCountInString(title) > 180 || genericDocumentTitle(normalized) {
+		return ""
+	}
+	// A browser-only title at the origin root is usually the publication or
+	// product name. Stronger social metadata remains eligible there.
+	if a.meta.socialTitle == "" && a.pageURL != nil && (a.pageURL.Path == "" || a.pageURL.Path == "/") && title == a.meta.browserTitle {
+		return ""
+	}
+	return normalizeText(title)
+}
+
+func stripTitleDecorationPreservingCase(title, site string) string {
+	runes := []rune(title)
+	for i, r := range runes {
+		if !isTitleSeparator(r) {
+			continue
+		}
+		left := strings.TrimSpace(string(runes[:i]))
+		right := strings.TrimSpace(string(runes[i+1:]))
+		if normalizedLabel(left) == normalizedLabel(site) && right != "" {
+			return right
+		}
+		if normalizedLabel(right) == normalizedLabel(site) && left != "" {
+			return left
+		}
+	}
+	return title
+}
+
+func genericDocumentTitle(title string) bool {
+	switch title {
+	case "home", "homepage", "welcome", "index", "untitled", "website", "site", "menu", "navigation":
+		return true
+	}
+	words := strings.Fields(title)
+	return len(words) <= 3 && len(words) > 0 && (words[len(words)-1] == "site" || words[len(words)-1] == "website" || words[len(words)-1] == "homepage")
+}
+
+// hasLeadingOutputHeading prevents a discussion topic (or another surviving
+// structural title) from being replaced merely because it differs slightly
+// from metadata. Later section headings do not block restoration.
+func (a *analysis) hasLeadingOutputHeading(nodes []*html.Node, cfg markdown.Config) bool {
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		if !representedBySelection(b.node, nodes) || hardHidden(b.node) || a.hasIrrelevantAncestor(b.node) || (cfg.Exclude != nil && cfg.Exclude(b.node)) {
+			continue
+		}
+		if isHeadingTag(b.kind) {
+			return true
+		}
+		if isSubstantiveProseBlock(b) {
+			return false
+		}
+	}
+	return false
+}
+
+// hasDominantProseOutput is intentionally conservative. A title-less document
+// must contain multiple substantial paragraphs, with most prose sharing one
+// immediate content container. Card grids naturally spread their text across
+// record containers and therefore fail this test even if page type inference
+// was explicitly forced to generic.
+func (a *analysis) hasDominantProseOutput(nodes []*html.Node, cfg markdown.Config) bool {
+	seen := map[*html.Node]bool{}
+	regions := map[*html.Node]int{}
+	total, paragraphs := 0, 0
+	for _, root := range nodes {
+		walk(root, func(n *html.Node) bool {
+			if hardHidden(n) || a.hasIrrelevantAncestor(n) || (cfg.Exclude != nil && cfg.Exclude(n)) {
+				return false
+			}
+			if seen[n] || n.Type != html.ElementNode {
+				return true
+			}
+			seen[n] = true
+			tag := strings.ToLower(n.Data)
+			if tag != "p" && tag != "blockquote" {
+				return true
+			}
+			length := utf8.RuneCountInString(normalizeText(nodeText(n)))
+			if length < 40 {
+				return false
+			}
+			paragraphs++
+			total += length
+			regions[n.Parent] += length
+			return false
+		})
+	}
+	if paragraphs < 2 || total < 160 {
+		return false
+	}
+	largest := 0
+	for _, length := range regions {
+		if length > largest {
+			largest = length
+		}
+	}
+	return float64(largest)/float64(total) >= .70
+}
+
+func (a *analysis) hasEquivalentHeading(nodes []*html.Node, title string, cfg markdown.Config) bool {
 	found := false
 	for _, root := range nodes {
 		walk(root, func(n *html.Node) bool {
-			if found || hardHidden(n) || a.hasIrrelevantAncestor(n) {
+			if found || hardHidden(n) || a.hasIrrelevantAncestor(n) || (cfg.Exclude != nil && cfg.Exclude(n)) {
 				return false
 			}
-			if n.Type == html.ElementNode && isHeadingTag(strings.ToLower(n.Data)) && titleEquivalent(nodeText(n), a.meta.title, a.meta.site) {
+			if n.Type == html.ElementNode && isHeadingTag(strings.ToLower(n.Data)) && titleEquivalent(nodeText(n), title, a.meta.site) {
 				found = true
 				return false
 			}
@@ -1494,7 +1665,15 @@ func (a *analysis) extractMetadata() {
 		if tag == "html" {
 			m.language = attrValue(n, "lang")
 		}
-		if (tag == "title" || tag == "h1") && m.title == "" {
+		if tag == "title" {
+			value := normalizeText(nodeText(n))
+			if m.browserTitle == "" {
+				m.browserTitle = value
+			}
+			if m.title == "" {
+				m.title = value
+			}
+		} else if tag == "h1" && m.title == "" {
 			m.title = normalizeText(nodeText(n))
 		}
 		itemprop := strings.ToLower(attrValue(n, "itemprop"))
@@ -1544,6 +1723,9 @@ func (a *analysis) extractMetadata() {
 					m.published = v
 				}
 			case "og:title", "twitter:title":
+				if m.socialTitle == "" {
+					m.socialTitle = v
+				}
 				if m.title == "" {
 					m.title = v
 				}

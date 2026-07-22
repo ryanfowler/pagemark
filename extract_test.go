@@ -769,11 +769,67 @@ func TestSemanticMastheadOutsideArticleDoesNotOverrideMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Actual Story | Example Site\n") {
-		t.Fatalf("metadata fallback was not used:\n%s", doc.Markdown)
+	if !strings.HasPrefix(doc.Markdown, "# Actual Story\n") {
+		t.Fatalf("document-specific metadata fallback was not used:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Markdown, "Example Site") {
+		t.Fatalf("browser title site suffix was retained:\n%s", doc.Markdown)
 	}
 	if strings.Contains(doc.Text, "Publisher Home") {
 		t.Fatalf("site masthead was selected in addition to metadata: %q", doc.Text)
+	}
+}
+
+func TestArticleSocialTitleOverridesAdjacentBrowserTitleMasthead(t *testing.T) {
+	html := `<html><head><title>Example Site</title><meta property="og:title" content="Actual Story"></head><body><h1>Example Site</h1><article><p>The actual story body contains substantial reporting about the event and enough detail to establish the selected primary prose.</p><p>A second paragraph confirms that this is one article whose social title should override the adjacent site masthead.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Actual Story\n") {
+		t.Fatalf("preferred social title was not restored:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Text, "Example Site") {
+		t.Fatalf("browser-title masthead overrode the social title: %q", doc.Text)
+	}
+}
+
+func TestArticleSocialTitleBeforeBrowserTitleOverridesAdjacentMasthead(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="Actual Story"><title>Example Site</title></head><body><h1>Example Site</h1><article><p>The actual story body contains substantial reporting about the event and enough detail to establish the selected primary prose.</p><p>A second paragraph confirms that metadata order cannot allow the adjacent site masthead to override the social title.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Actual Story\n") {
+		t.Fatalf("preferred social title was not restored when it preceded title:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Text, "Example Site") {
+		t.Fatalf("later browser-title masthead overrode the social title: %q", doc.Text)
+	}
+}
+
+func TestArticleMetadataTitleRetainsLeadingSectionHeading(t *testing.T) {
+	html := `<html><head><title>Actual Story</title><meta property="og:title" content="Actual Story"></head><body><main><h2>Introduction</h2><p>This substantial opening paragraph introduces the article subject and establishes the selected primary prose region.</p><p>This second substantial paragraph continues the introduction with useful context for the rest of the article.</p></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Actual Story\n\n## Introduction\n") {
+		t.Fatalf("legitimate leading section heading was not retained:\n%s", doc.Markdown)
+	}
+	if strings.Count(doc.Text, "Actual Story") != 1 || strings.Count(doc.Text, "Introduction") != 1 {
+		t.Fatalf("title or section heading was duplicated: %q", doc.Text)
+	}
+}
+
+func TestExcludedEquivalentHeadingDoesNotBlockTitleRestoration(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="Actual Story"></head><body><main><h1 class="thread-tools">Actual Story</h1><div class="content"><p>This substantial opening paragraph explains the actual story with enough detail to establish one dominant prose region.</p><p>This second substantial paragraph continues the same document after the excluded discussion control heading.</p></div></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/story", WithPageType(PageTypeDiscussion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Actual Story\n") || strings.Count(doc.Text, "Actual Story") != 1 {
+		t.Fatalf("excluded equivalent heading blocked restoration:\n%s", doc.Markdown)
 	}
 }
 
@@ -813,6 +869,54 @@ func TestArticlePrependsMetadataTitleWhenHeadingIsMissing(t *testing.T) {
 	}
 	if !strings.HasPrefix(doc.Markdown, "# How to pack ternary numbers in 8-bit bytes\n") {
 		t.Fatalf("metadata title was not prepended:\n%s", doc.Markdown)
+	}
+}
+
+func TestGenericDominantProseRestoresMetadataTitle(t *testing.T) {
+	html := `<html><head><title>A Useful Guide — Example Site</title><meta property="og:title" content="A Useful Guide"></head><body><div class="content"><p>This is a long opening paragraph with enough prose to explain the useful subject clearly and establish a primary document region.</p><p>This is a second substantial paragraph that develops the guide with practical details for readers who need the information.</p></div></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/guides/useful", WithPageType(PageTypeGeneric))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# A Useful Guide\n") || strings.Count(doc.Text, "A Useful Guide") != 1 {
+		t.Fatalf("generic prose title was not restored exactly once:\n%s", doc.Markdown)
+	}
+}
+
+func TestGenericDominantProseDoesNotRestoreSiteOnlyTitle(t *testing.T) {
+	html := `<html><head><title>Example Site</title></head><body><main><p>This substantial opening paragraph contains enough prose to resemble a document while describing the publication generally.</p><p>This second substantial paragraph ensures output shape alone cannot turn a generic site name into a document heading.</p></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/about", WithPageType(PageTypeGeneric))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(doc.Markdown, "# Example Site") {
+		t.Fatalf("generic site title was synthesized:\n%s", doc.Markdown)
+	}
+}
+
+func TestGenericDominantProseDoesNotDuplicateEquivalentHeading(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="A Useful Guide"></head><body><main><h1>A Useful Guide</h1><p>This substantial opening paragraph explains the subject and gives the selected output a clear primary prose region.</p><p>This second substantial paragraph supplies further useful details without requiring metadata title restoration.</p></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/guides/useful", WithPageType(PageTypeGeneric))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(doc.Text, "A Useful Guide") != 1 {
+		t.Fatalf("surviving generic heading was duplicated: %q", doc.Text)
+	}
+}
+
+func TestForcedGenericListingDoesNotRestoreMetadataTitle(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="Useful Resources"></head><body><main>` +
+		`<div class="card"><h2><a href="/one">First record</a></h2><p>The first linked record has a substantial descriptive summary for readers browsing the collection.</p></div>` +
+		`<div class="card"><h2><a href="/two">Second record</a></h2><p>The second linked record has a substantial descriptive summary for readers browsing the collection.</p></div>` +
+		`<div class="card"><h2><a href="/three">Third record</a></h2><p>The third linked record has a substantial descriptive summary for readers browsing the collection.</p></div>` +
+		`<div class="card"><h2><a href="/four">Fourth record</a></h2><p>The fourth linked record has a substantial descriptive summary for readers browsing the collection.</p></div></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/resources", WithPageType(PageTypeGeneric))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(doc.Markdown, "# Useful Resources") {
+		t.Fatalf("listing metadata title was synthesized:\n%s", doc.Markdown)
 	}
 }
 
