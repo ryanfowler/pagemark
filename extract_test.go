@@ -313,6 +313,19 @@ func TestTrailingNewsletterWrapperIsExcluded(t *testing.T) {
 	}
 }
 
+func TestFormlessSubscriptionTutorialSectionIsRetained(t *testing.T) {
+	html := `<html><head><meta property="og:type" content="article"></head><body><main><article><h1>Manual newsletter delivery</h1><p>This guide explains the complete delivery workflow and the constraints an implementation must handle before sending any messages.</p><section class="newsletter-guide"><h2>Subscribe to a newsletter manually</h2><p>A manual subscription workflow first validates the recipient address, records the exact consent language shown to the reader, and stores the time and source of that consent before adding the recipient to a delivery list.</p><p>The implementation should then send a confirmation message and activate the subscription only after the recipient follows its unique link, without requiring an embedded form in this documented workflow.</p></section><p>The final step monitors delivery failures and removes addresses that repeatedly reject confirmed messages.</p></article></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/guides/manual-newsletter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Subscribe to a newsletter manually", "records the exact consent language", "without requiring an embedded form"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("form-free tutorial content %q was removed: %s", want, doc.Text)
+		}
+	}
+}
+
 func TestStructuralArticleTailsAreExcluded(t *testing.T) {
 	html := `<html><head><meta property="og:type" content="article"></head><body><main>
 <div class="topic-tags"><a href="/topics/ai">Artificial Intelligence</a><a href="/topics/software">Software Engineering</a><a href="/topics/ml">Machine Learning</a><a href="/topics/programming">Programming</a></div>
@@ -337,6 +350,46 @@ func TestStructuralArticleTailsAreExcluded(t *testing.T) {
 	for _, unwanted := range []string{"Artificial Intelligence", "Be the first", "validation purposes", "Privacy Policy", "Get a home loan", "Ready for the next step", "Research Briefing Club", "Research Alerts Club", "Life with hazard ratios", "Choosing the right painkiller", "Careers", "Rules"} {
 		if strings.Contains(doc.Text, unwanted) {
 			t.Errorf("included peripheral content %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestArticleTailDoesNotExcludeSharedAncestor(t *testing.T) {
+	for _, class := range []string{"content", "post", "newsletter", "profile", "related"} {
+		t.Run(class, func(t *testing.T) {
+			html := `<html><head><meta property="og:type" content="article"><meta property="og:title" content="Grid transition report"></head><body><main><div class="` + class + `"><h1>Grid transition report</h1><p>The opening analysis explains the proposed transition, the evidence behind it, and the practical effect on residents in enough detail to establish the article body.</p><p>A second selected paragraph records the measured result and the limitations readers need in order to interpret that result correctly.</p><section class="newsletter-panel"><h2>Stay updated with housing news</h2><p>Weekly market updates in your inbox.</p><form action="/newsletter/signup"><label>Email <input type="email"></label><button>Subscribe</button></form><p>By subscribing you agree to our Privacy Policy.</p></section></div></main></body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/news/grid-transition")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"opening analysis", "second selected paragraph"} {
+				if !strings.Contains(doc.Text, want) {
+					t.Errorf("shared %s ancestor hid article prose %q: %s", class, want, doc.Text)
+				}
+			}
+			for _, unwanted := range []string{"Stay updated with housing news", "Weekly market updates"} {
+				if strings.Contains(doc.Text, unwanted) {
+					t.Errorf("included trailing child %q for shared %s ancestor (%s): %s", unwanted, class, doc.PageType, doc.Text)
+				}
+			}
+		})
+	}
+}
+
+func TestTrailingCardsDoNotExcludeSharedArticleWrapper(t *testing.T) {
+	html := `<html><head><meta property="og:type" content="article"></head><body><article><h1>Infrastructure findings</h1><div class="post-content related"><p>The investigation documents the infrastructure proposal and explains the evidence gathered from affected communities in substantial detail.</p><p>The final analysis describes the educational benefit, the remaining uncertainty, and the conclusions supported by the available data.</p><section class="related-posts"><h2>Related posts</h2><article class="story-card"><h3>Mortgage rates today</h3><p>A summary from another page.</p></article><article class="story-card"><h3>Homes for sale</h3><p>Another unrelated summary.</p></article></section></div></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/news/infrastructure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"investigation documents", "final analysis"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("shared card wrapper hid article prose %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"Related posts", "Mortgage rates today", "Homes for sale"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included trailing cards %q: %s", unwanted, doc.Text)
 		}
 	}
 }
