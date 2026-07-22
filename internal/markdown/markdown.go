@@ -69,6 +69,9 @@ type Config struct {
 	// Exclude removes extraction-specific boilerplate subtrees. Hidden DOM
 	// handling remains built in to the converter.
 	Exclude func(*html.Node) bool
+	// TextPreformatted marks a page-wide text interface that should retain inline
+	// links and line breaks instead of being emitted as source code.
+	TextPreformatted func(*html.Node) bool
 	// PruneEmptyHeadings removes headings that do not label any emitted content.
 	// It is intended for extraction, after selection and exclusions are final.
 	PruneEmptyHeadings bool
@@ -93,6 +96,7 @@ type converter struct {
 	rejected              []string
 	cells                 int
 	heading               *html.Node
+	textPreformatted      bool
 }
 
 func Convert(nodes []*html.Node, cfg Config) Result {
@@ -163,6 +167,33 @@ func (c *converter) block(n *html.Node) (result *Node) {
 		// paragraph. Process the element itself as inline content.
 		return &Node{Kind: Paragraph, Children: c.inlineNodes([]*html.Node{n})}
 	case "pre":
+		if c.cfg.TextPreformatted != nil && c.cfg.TextPreformatted(n) {
+			previous := c.textPreformatted
+			c.textPreformatted = true
+			inlines := c.inlines(n)
+			c.textPreformatted = previous
+			// Physical lines are separate blocks. Besides reflecting archive record
+			// structure, this gives the output limiter safe boundaries on very long
+			// indexes instead of making the entire interface one indivisible block.
+			var lines []*Node
+			var line []*Node
+			flush := func() {
+				paragraph := &Node{Kind: Paragraph, Children: line}
+				if strings.TrimSpace(plain(paragraph)) != "" {
+					lines = append(lines, paragraph)
+				}
+				line = nil
+			}
+			for _, child := range inlines {
+				if child.Kind == HardBreak {
+					flush()
+				} else {
+					line = append(line, child)
+				}
+			}
+			flush()
+			return &Node{Kind: Document, Children: lines}
+		}
 		return &Node{Kind: CodeBlock, Value: c.textRaw(n), Info: codeInfo(n)}
 	case "blockquote":
 		return &Node{Kind: Blockquote, Children: c.blocks(n)}
@@ -273,6 +304,19 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 			return
 		}
 		if x.Type == html.TextNode {
+			if c.textPreformatted {
+				value := strings.ReplaceAll(strings.ReplaceAll(x.Data, "\r\n", "\n"), "\r", "\n")
+				parts := strings.Split(value, "\n")
+				for i, part := range parts {
+					if v := inlineText(part); strings.TrimSpace(v) != "" {
+						out = append(out, &Node{Kind: Text, Value: v})
+					}
+					if i < len(parts)-1 {
+						out = append(out, &Node{Kind: HardBreak})
+					}
+				}
+				return
+			}
 			if v := inlineText(x.Data); strings.TrimSpace(v) != "" {
 				out = append(out, &Node{Kind: Text, Value: v})
 			} else if len(out) > 0 && strings.IndexFunc(x.Data, unicode.IsSpace) >= 0 {
@@ -345,7 +389,11 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 			}
 			return
 		case "code":
-			out = append(out, &Node{Kind: InlineCode, Value: c.textRaw(x)})
+			if c.textPreformatted {
+				out = append(out, c.inlines(x)...)
+			} else {
+				out = append(out, &Node{Kind: InlineCode, Value: c.textRaw(x)})
+			}
 			return
 		}
 		var children []*html.Node

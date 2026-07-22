@@ -1,0 +1,20 @@
+<!doctype html>
+<html><head><title>Building a record parser</title><meta property="og:type" content="article"></head><body>
+<article><h1>Building a record parser</h1>
+<p>This article explains how the parser validates each record before making it available to the rest of the application.</p>
+<pre><code class="language-go">package parser
+
+func Parse(input []byte) (Record, error) {
+	if len(input) &lt; headerSize {
+		return Record{}, ErrShortInput
+	}
+	kind := input[0]
+	length := int(input[1])
+	if length &gt; len(input)-headerSize {
+		return Record{}, ErrInvalidLength
+	}
+	return Record{Kind: kind, Data: input[headerSize : headerSize+length]}, nil
+}
+</code></pre>
+<p>The length check is performed before slicing so malformed input cannot cause the parser to access data outside the supplied buffer.</p>
+</article></body></html>
