@@ -880,6 +880,68 @@ func TestArticleDoesNotDuplicateSurvivingTitleEquivalentHeading(t *testing.T) {
 	}
 }
 
+func TestArticlePromotesMetadataEquivalentH2OverSiteH1(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="A Specific Article Title"><meta property="og:type" content="article"></head><body><h1>Blog</h1><main><h2 class="post-title">A Specific Article Title</h2><div class="post-meta">July 21, 2026</div><div class="post-content"><p>A substantial opening paragraph explains the subject with enough detail to identify the primary article prose.</p><p>More article prose remains present after the correct headline has been recovered.</p></div></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/blog/specific-article")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# A Specific Article Title\n") {
+		t.Fatalf("h2 article headline was not promoted:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Text, "Blog") {
+		t.Fatalf("site masthead was retained in article output:\n%s", doc.Markdown)
+	}
+	for _, want := range []string{"substantial opening paragraph", "More article prose"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing body content %q: %s", want, doc.Text)
+		}
+	}
+}
+
+func TestStructurallyMarkedH2OverridesConflictingMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name, marker string
+	}{
+		{"schema headline", `itemprop="headline"`},
+		{"article title class", `class="article-title"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			html := `<html><head><meta property="og:title" content="Incorrect Metadata Title"><meta property="og:type" content="article"></head><body><main><h2 ` + tc.marker + `>Correct Structural Headline</h2><p>This substantial opening paragraph establishes that the marked heading labels the selected primary article prose.</p><p>More article content confirms the source headline through its close structural relationship with the body.</p></main></body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/blog/structural-headline")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(doc.Markdown, "# Correct Structural Headline\n") {
+				t.Fatalf("structurally marked h2 did not override metadata:\n%s", doc.Markdown)
+			}
+			if strings.Contains(doc.Text, "Incorrect Metadata Title") {
+				t.Fatalf("conflicting metadata title was emitted: %q", doc.Text)
+			}
+			if strings.Count(doc.Text, "Correct Structural Headline") != 1 {
+				t.Fatalf("source headline was duplicated: %q", doc.Text)
+			}
+		})
+	}
+}
+
+func TestArticleDoesNotPromoteUnrelatedDistantH2(t *testing.T) {
+	html := `<html><head><meta property="og:title" content="Actual Article Title"><meta property="og:type" content="article"></head><body><main><header><h2>Unrelated Feature</h2></header><div>Short layout label one</div><div>Short layout label two</div><div>Short layout label three</div><article><p>The actual article opens with substantial prose that clearly establishes the primary content region for extraction.</p><p>Its second paragraph remains available and provides more relevant details for the reader.</p></article></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/blog/actual-article")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Actual Article Title\n") {
+		t.Fatalf("distant unrelated h2 replaced metadata title:\n%s", doc.Markdown)
+	}
+	if strings.Contains(strings.SplitN(doc.Markdown, "\n\n", 2)[0], "Unrelated Feature") {
+		t.Fatalf("unrelated h2 was used as title:\n%s", doc.Markdown)
+	}
+	if !strings.Contains(doc.Text, "actual article opens") {
+		t.Fatalf("article body was lost: %s", doc.Text)
+	}
+}
+
 func TestNestedAuxiliaryRegionDoesNotExcludeSharedLayout(t *testing.T) {
 	html := `<main><div class="layout"><aside><h2>On this page</h2><ul><li>Overview</li></ul></aside><article><h1>Actual article</h1><p>The article contains the relevant details that readers need.</p></article></div></main>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))

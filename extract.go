@@ -706,57 +706,66 @@ func (a *analysis) score(pt PageType) {
 	}
 }
 
-// ensureArticleTitle restores a source h1 next to selected article content.
-// Headings in a page-level header often score below the normal threshold even
-// when the adjacent article body scores well. If the source does not provide a
-// surviving title, metadata supplies one so article output does not begin in
-// the middle of the story.
+// ensureArticleTitle restores a source headline next to selected article
+// content. Publishers sometimes use h2 for the article headline because a
+// page-level h1 is reserved for the site or section name. Metadata remains the
+// fallback when no nearby, well-supported source heading exists.
 func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) []*html.Node {
-	if a.hasTitleEquivalentHeading(nodes) {
-		return nodes
-	}
-
 	// Prefer the source heading over metadata. Looking only a small number of
-	// segmented blocks away keeps a site masthead elsewhere on the page from
-	// being mistaken for the article title, while allowing a byline or
-	// breadcrumb between the heading and body.
+	// segmented blocks away keeps headings elsewhere on the page from being
+	// mistaken for the article title, while allowing publication metadata or a
+	// byline between the heading and body.
 	bestIndex, bestDistance := -1, 3
 	bestEquivalent, bestCredible := false, false
 	for i := range a.blocks {
 		b := &a.blocks[i]
-		if b.kind != "h1" || hardHidden(b.node) || a.hasIrrelevantAncestor(b.node) {
+		if (b.kind != "h1" && b.kind != "h2") || hardHidden(b.node) || a.hasIrrelevantAncestor(b.node) {
 			continue
 		}
 		distance := adjacentSelectedBlockDistance(a.blocks, i, nodes, 2)
 		if distance == 0 {
-			// No selected article block is close enough to make this h1 part of
-			// the extracted region.
+			// Proximity is required even when the text matches metadata. Otherwise
+			// a headline from a recommendation or another article could win.
 			continue
 		}
-		equivalent := titleEquivalent(b.text, a.meta.title, a.meta.site)
+		equivalent := a.meta.title != "" && titleEquivalent(b.text, a.meta.title, a.meta.site)
 		credible := a.isCredibleArticleHeading(i, nodes)
-		// Metadata is only a fallback. A conflicting h1 is still authoritative
-		// when it is explicitly marked as a headline, belongs to the selected
-		// article region, and is next to selected prose. The stronger checks are
-		// required only for a mismatch so an adjacent site masthead cannot replace
-		// the metadata fallback.
-		if a.meta.title != "" && !equivalent && !credible {
+		// A conflicting heading is authoritative only with independent structural
+		// evidence. This prevents an adjacent site masthead from replacing the
+		// metadata fallback. H2 also requires such evidence when metadata is absent;
+		// proximity alone must not turn an ordinary section heading into a title.
+		if (a.meta.title != "" && !equivalent && !credible) || (b.kind == "h2" && !equivalent && !credible) {
 			continue
 		}
-		// Structural article evidence is stronger than text agreement with
-		// metadata: the latter may merely identify a nearby site masthead.
 		if bestIndex < 0 || (credible && !bestCredible) || (credible == bestCredible && equivalent && !bestEquivalent) || (credible == bestCredible && equivalent == bestEquivalent && distance < bestDistance) {
 			bestIndex, bestDistance, bestEquivalent, bestCredible = i, distance, equivalent, credible
 		}
 	}
 	if bestIndex >= 0 {
-		// A heading inside an article is normally selected on its own. Do not add
-		// the same source node a second time merely because its text conflicts
-		// with metadata.
-		if representedBySelection(a.blocks[bestIndex].node, nodes) {
+		candidate := &a.blocks[bestIndex]
+		if candidate.kind == "h1" && representedBySelection(candidate.node, nodes) {
 			return nodes
 		}
-		withTitle := append([]*html.Node{a.blocks[bestIndex].node}, nodes...)
+
+		// Render an h2 article headline as the document's h1. Use a detached node
+		// rather than mutating the caller's DOM, and remove the original selected
+		// h2 so the title is not duplicated.
+		title := candidate.node
+		content := nodes
+		if candidate.kind == "h2" {
+			title = articleTitleNode(candidate.text)
+			a.irrelevant[title] = false
+			content = removeSelectedNode(content, candidate.node)
+			// A selected h1 before an h2 headline is usually the page masthead. Drop
+			// only unsupported, metadata-conflicting h1 blocks before the candidate.
+			for i := 0; i < bestIndex; i++ {
+				b := &a.blocks[i]
+				if b.kind == "h1" && !titleEquivalent(b.text, a.meta.title, a.meta.site) && !a.isCredibleArticleHeading(i, nodes) {
+					content = removeSelectedNode(content, b.node)
+				}
+			}
+		}
+		withTitle := append([]*html.Node{title}, content...)
 		if titleLeavesOutputForContent(withTitle, cfg) {
 			return withTitle
 		}
@@ -764,17 +773,35 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 		// would consume budget intended for the article body.
 		return nodes
 	}
-	if a.meta.title == "" {
+	if a.hasTitleEquivalentHeading(nodes) || a.meta.title == "" {
 		return nodes
 	}
 
-	title := &html.Node{Type: html.ElementNode, Data: "h1"}
-	title.AppendChild(&html.Node{Type: html.TextNode, Data: a.meta.title})
+	title := articleTitleNode(a.meta.title)
+	// Synthetic nodes are not part of the indexed DOM. Explicitly mark this one
+	// as relevant so article auxiliary heuristics cannot classify it by itself.
+	a.irrelevant[title] = false
 	withTitle := append([]*html.Node{title}, nodes...)
 	if !titleLeavesOutputForContent(withTitle, cfg) {
 		return nodes
 	}
 	return withTitle
+}
+
+func articleTitleNode(text string) *html.Node {
+	title := &html.Node{Type: html.ElementNode, Data: "h1"}
+	title.AppendChild(&html.Node{Type: html.TextNode, Data: text})
+	return title
+}
+
+func removeSelectedNode(nodes []*html.Node, remove *html.Node) []*html.Node {
+	out := make([]*html.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if n != remove {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func titleLeavesOutputForContent(nodes []*html.Node, cfg markdown.Config) bool {
@@ -816,11 +843,11 @@ func (a *analysis) isCredibleArticleHeading(headingIndex int, selected []*html.N
 	if region == nil {
 		return false
 	}
-	// An h1 inside the selected article is structural headline evidence even
+	// A heading inside the selected article is structural headline evidence even
 	// when the publisher did not add schema attributes. Outside an article,
-	// retain the explicit-headline requirement so a page masthead in <main>
-	// cannot override metadata.
-	if !strings.EqualFold(region.Data, "article") && !hasHeadlineAttribute(heading) {
+	// require an explicit schema or conventional article-headline marker so a
+	// page masthead in <main> cannot override metadata.
+	if !strings.EqualFold(region.Data, "article") && !hasArticleHeadlineMarker(heading) {
 		return false
 	}
 	// A page header inside <main> is still commonly a site masthead. An article
@@ -829,7 +856,10 @@ func (a *analysis) isCredibleArticleHeading(headingIndex int, selected []*html.N
 		if p.Type != html.ElementNode {
 			continue
 		}
-		if strings.EqualFold(p.Data, "nav") || (strings.EqualFold(p.Data, "header") && !strings.EqualFold(region.Data, "article")) {
+		if strings.EqualFold(p.Data, "nav") {
+			return false
+		}
+		if strings.EqualFold(p.Data, "header") && !strings.EqualFold(region.Data, "article") && !containsAny(elementTokens(p), "article", "post", "entry", "story") {
 			return false
 		}
 	}
@@ -843,6 +873,31 @@ func (a *analysis) isCredibleArticleHeading(headingIndex int, selected []*html.N
 			if !isSubstantiveProseBlock(b) || !nodeWithin(b.node, region) || !representedBySelection(b.node, selected) {
 				continue
 			}
+			return true
+		}
+	}
+	return false
+}
+
+func hasArticleHeadlineMarker(n *html.Node) bool {
+	if hasHeadlineAttribute(n) {
+		return true
+	}
+	tokens := elementTokens(n)
+	if containsAny(tokens, "headline") || (containsAny(tokens, "title") && containsAny(tokens, "article", "post", "entry", "story")) {
+		return true
+	}
+	// Some templates put the marker on an enclosing article header instead of
+	// the heading itself.
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		if strings.EqualFold(p.Data, "article") || strings.EqualFold(p.Data, "main") || strings.EqualFold(attrValue(p, "role"), "main") {
+			break
+		}
+		pt := elementTokens(p)
+		if strings.EqualFold(p.Data, "header") && containsAny(pt, "article", "post", "entry", "story") {
 			return true
 		}
 	}
