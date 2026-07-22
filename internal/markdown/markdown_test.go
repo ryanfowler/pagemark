@@ -342,6 +342,169 @@ func TestTableHeaderCaptionAlignmentAndBreak(t *testing.T) {
 	}
 }
 
+func TestPublishingTablePreservesColumnsAndEmptyCells(t *testing.T) {
+	source := `<table><tbody>` +
+		`<tr><td colspan="5"><b>Impact of AI Data Centers on Education Spending</b></p><p><i>Select Northern Virginia counties</i></p></td></tr>` +
+		`<tr><td></td><td><b>Loudoun County, VA</b></td><td><b>Prince William County, VA</b></td><td><b>Fairfax County, VA</b></td><td><b>Stafford County, VA</b></td></tr>` +
+		`<tr><td><b>Number of data centers</b></td><td><span>176</span></p><p>(most in the U.S.)</p></td><td>77</td><td>45</td><td>1</td></tr>` +
+		`<tr><td><b>Increase in personal property tax revenue</b></td><td>639%</td><td>349%</td><td>91%</td><td></td></tr>` +
+		`</tbody></table>`
+	r := convertHTML(t, source)
+	want := "**Impact of AI Data Centers on Education Spending** *Select Northern Virginia counties*\n\n" +
+		"|  | **Loudoun County, VA** | **Prince William County, VA** | **Fairfax County, VA** | **Stafford County, VA** |\n" +
+		"| --- | --- | --- | --- | --- |\n" +
+		"| **Number of data centers** | 176 (most in the U.S.) | 77 | 45 | 1 |\n" +
+		"| **Increase in personal property tax revenue** | 639% | 349% | 91% |  |"
+	if r.Markdown != want {
+		t.Fatalf("want:\n%s\ngot:\n%s", want, r.Markdown)
+	}
+}
+
+func TestNativeCaptionAndPromotedTitleHaveBoundary(t *testing.T) {
+	source := `<table><caption>Official caption</caption>` +
+		`<tr><td colspan="2"><strong>Report title</strong></td></tr>` +
+		`<tr><td></td><td><strong>Value</strong></td></tr>` +
+		`<tr><td>Count</td><td>10</td></tr></table>`
+	r := convertHTML(t, source)
+	want := "Official caption **Report title**\n\n|  | **Value** |\n| --- | --- |\n| Count | 10 |"
+	if r.Markdown != want || !strings.Contains(r.Text, "Official caption Report title") {
+		t.Fatalf("want %q, got markdown=%q text=%q", want, r.Markdown, r.Text)
+	}
+}
+
+func TestARIATableAndGridPreserveCells(t *testing.T) {
+	t.Run("table with headers row headers multiline and link", func(t *testing.T) {
+		source := `<div role="table">` +
+			`<div role="row"><span role="columnheader">County</span><span role="columnheader" style="text-align:right">Value</span></div>` +
+			`<div role="row"><span role="rowheader"><strong>Loudoun</strong></span><span role="cell"><span>176</span><p><a href="/note">most in U.S.</a></p></span></div>` +
+			`<div role="row"><span role="rowheader">Stafford</span><span role="cell"></span></div>` +
+			`</div>`
+		want := "| County | Value |\n| --- | ---: |\n| **Loudoun** | 176 [most in U.S.](https://example.com/note) |\n| Stafford |  |"
+		if got := convertHTML(t, source).Markdown; got != want {
+			t.Fatalf("want:\n%s\ngot:\n%s", want, got)
+		}
+	})
+
+	t.Run("gridcell", func(t *testing.T) {
+		want := "| Name | Score |\n| --- | --- |\n| A | 10 |"
+		for _, source := range []string{
+			`<div role="grid"><div role="row"><span role="gridcell">Name</span><span role="gridcell">Score</span></div><div role="row"><span role="gridcell">A</span><span role="gridcell">10</span></div></div>`,
+			`<table role="grid"><tr><td role="gridcell">Name</td><td role="gridcell">Score</td></tr><tr><td role="gridcell">A</td><td role="gridcell">10</td></tr></table>`,
+		} {
+			if got := convertHTML(t, source).Markdown; got != want {
+				t.Fatalf("source %q: want %q, got %q", source, want, got)
+			}
+		}
+	})
+}
+
+func TestNestedTableCannotExceedCellBudget(t *testing.T) {
+	source := `<table><tr><th>A</th><th>B</th></tr><tr><td>outer<table><tr><th>X</th><th>Y</th></tr><tr><td>1</td><td>2</td></tr></table></td><td>end</td></tr></table>`
+	root, err := html.Parse(strings.NewReader(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outer *html.Node
+	var find func(*html.Node)
+	find = func(n *html.Node) {
+		if outer == nil && n.Type == html.ElementNode && n.Data == "table" {
+			outer = n
+			return
+		}
+		for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+			find(ch)
+		}
+	}
+	find(root)
+	c := &converter{cfg: Config{Tables: true, MaxTableCells: 6}}
+	if got := c.table(outer); got == nil {
+		t.Fatal("outer table was not converted")
+	}
+	if c.cells != 4 || c.cells > c.cfg.MaxTableCells {
+		t.Fatalf("nested table bypassed cell budget: cells=%d limit=%d", c.cells, c.cfg.MaxTableCells)
+	}
+}
+
+func TestTableMetadataConsumesMediaLimitsBeforeBody(t *testing.T) {
+	base, _ := url.Parse("https://example.com/")
+	cfg := Config{
+		Base: base, Links: true, Images: true, Tables: true,
+		MaxLinks: 1, MaxImages: 1, MaxTableCells: 100,
+		Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096},
+	}
+
+	t.Run("caption before body and fallback", func(t *testing.T) {
+		for _, source := range []string{
+			`<table><caption><a href="/caption">Caption</a></caption><tr><th>Head</th></tr><tr><td><a href="/body">Body</a></td></tr></table>`,
+			`<table><caption><a href="/caption">Caption</a></caption><tr><td><a href="/body">Body</a></td></tr></table>`,
+		} {
+			got := convertHTMLConfig(t, source, cfg).Markdown
+			if !strings.Contains(got, `[Caption](https://example.com/caption)`) || strings.Contains(got, `[Body](`) {
+				t.Fatalf("caption did not receive the first link budget slot: %q", got)
+			}
+		}
+	})
+
+	t.Run("promoted title before body", func(t *testing.T) {
+		source := `<table><tr><td colspan="2"><a href="/title">Title</a> <img src="/title.png" alt="Title image"></td></tr>` +
+			`<tr><td></td><td><b>Value</b></td></tr><tr><td>Row</td><td><a href="/body">Body</a><img src="/body.png" alt="Body image"></td></tr></table>`
+		got := convertHTMLConfig(t, source, cfg).Markdown
+		if !strings.Contains(got, `[Title](https://example.com/title)`) || !strings.Contains(got, `![Title image](https://example.com/title.png)`) ||
+			strings.Contains(got, `[Body](`) || strings.Contains(got, `![Body image](`) {
+			t.Fatalf("title did not receive the first media budget slots: %q", got)
+		}
+	})
+}
+
+func TestUnsafeTableShapesFallBackWithoutBecomingTables(t *testing.T) {
+	t.Run("unequal native rows", func(t *testing.T) {
+		got := convertHTML(t, `<table><tr><th>A</th><th>B</th></tr><tr><td>only A</td></tr></table>`)
+		if strings.Contains(got.Markdown, "| ---") || !strings.Contains(got.Text, "only A") {
+			t.Fatalf("unexpected conversion: %q", got.Markdown)
+		}
+	})
+
+	t.Run("unequal ARIA rows", func(t *testing.T) {
+		got := convertHTML(t, `<div role="table"><div role="row"><span role="columnheader">A</span><span role="columnheader">B</span></div><div role="row"><span role="cell">only A</span></div></div>`)
+		if strings.Contains(got.Markdown, "| ---") || !strings.Contains(got.Text, "only A") {
+			t.Fatalf("unexpected conversion: %q", got.Markdown)
+		}
+	})
+
+	t.Run("oversized", func(t *testing.T) {
+		base, _ := url.Parse("https://example.com/")
+		cfg := Config{Base: base, Tables: true, MaxTableCells: 3}
+		got := convertHTMLConfig(t, `<div role="table"><div role="row"><span role="columnheader">A</span><span role="columnheader">B</span></div><div role="row"><span role="cell">1</span><span role="cell">2</span></div></div>`, cfg)
+		if strings.Contains(got.Markdown, "| ---") || !strings.Contains(got.Text, "1") {
+			t.Fatalf("table limit was not respected: %q", got.Markdown)
+		}
+	})
+
+	t.Run("ordinary card grid", func(t *testing.T) {
+		got := convertHTML(t, `<div class="grid"><div class="card"><h3>Alpha</h3><p>First</p></div><div class="card"><h3>Beta</h3><p>Second</p></div></div>`)
+		if strings.Contains(got.Markdown, "| ---") || !strings.Contains(got.Markdown, "### Alpha") || !strings.Contains(got.Markdown, "### Beta") {
+			t.Fatalf("card grid became a table: %q", got.Markdown)
+		}
+	})
+}
+
+func TestHiddenResponsiveTableDuplicateIsIgnored(t *testing.T) {
+	table := `<div role="table"><div role="row"><span role="columnheader">Name</span><span role="columnheader">Value</span></div><div role="row"><span role="cell">A</span><span role="cell">1</span></div></div>`
+	r := convertHTML(t, table+`<div aria-hidden="true">`+table+`</div>`)
+	if strings.Count(r.Markdown, "| --- | --- |") != 1 {
+		t.Fatalf("responsive duplicate was emitted: %q", r.Markdown)
+	}
+}
+
+func TestBlockCodeInTableCellBecomesInlineCode(t *testing.T) {
+	r := convertHTML(t, `<table><tr><th>Expression</th></tr><tr><td><pre><code>x &lt; y
+and y &gt; 0</code></pre></td></tr></table>`)
+	want := "| Expression |\n| --- |\n| `x < y and y > 0` |"
+	if r.Markdown != want || !strings.Contains(r.Text, "x < y and y > 0") {
+		t.Fatalf("want %q, got markdown=%q text=%q", want, r.Markdown, r.Text)
+	}
+}
+
 func TestTableWithoutHeaderOrWithSpansFallsBack(t *testing.T) {
 	for _, source := range []string{
 		`<table><tr><td>A</td><td>B</td></tr></table>`,
