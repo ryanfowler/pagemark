@@ -329,9 +329,67 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 			}
 		}
 	}
+	// Invalid but widespread publisher HTML puts a block advertisement inside an
+	// open paragraph. The HTML parser closes that paragraph before the ad, leaving
+	// the continuation as direct text and inline children of the content div.
+	// Normal block segmentation would silently lose that text. Recover each such
+	// inline run as a synthetic paragraph while retaining the source container as
+	// its ancestry for scoring and auxiliary checks.
+	if n.Type == html.ElementNode && isGenericContainer(strings.ToLower(n.Data)) && hasBlockDescendant(n) &&
+		(strings.EqualFold(n.Data, "article") || strings.EqualFold(n.Data, "main") ||
+			containsAny(elementTokens(n), "article", "content", "entry", "post", "story", "body")) {
+		a.segmentDirectFlow(n, excluded)
+		return
+	}
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
 		a.segment(ch, excluded)
 	}
+}
+
+func (a *analysis) segmentDirectFlow(parent *html.Node, excluded bool) {
+	var run []*html.Node
+	flush := func() {
+		if len(run) == 0 {
+			return
+		}
+		p := &html.Node{Type: html.ElementNode, Data: "p"}
+		for _, source := range run {
+			p.AppendChild(cloneHTMLNode(source))
+		}
+		run = nil
+		text := normalizeText(nodeText(p))
+		if utf8.RuneCountInString(text) < 12 {
+			return
+		}
+		// Synthetic nodes are intentionally not inserted into the caller's DOM,
+		// but this ancestry lets the scorer see the original prose region.
+		p.Parent = parent
+		a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: p, kind: "p", text: text})
+	}
+	for ch := parent.FirstChild; ch != nil; ch = ch.NextSibling {
+		boundary := hardHidden(ch)
+		if ch.Type == html.ElementNode {
+			tag := strings.ToLower(ch.Data)
+			boundary = boundary || isBlockTag(tag) || isGenericContainer(tag) || hasBlockDescendant(ch) ||
+				tag == "aside" || tag == "header" || tag == "footer" || tag == "nav" || isVisualElement(ch)
+		}
+		if boundary {
+			flush()
+			a.segment(ch, excluded)
+			continue
+		}
+		run = append(run, ch)
+	}
+	flush()
+}
+
+func cloneHTMLNode(n *html.Node) *html.Node {
+	clone := &html.Node{Type: n.Type, DataAtom: n.DataAtom, Data: n.Data, Namespace: n.Namespace,
+		Attr: append([]html.Attribute(nil), n.Attr...)}
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		clone.AppendChild(cloneHTMLNode(ch))
+	}
+	return clone
 }
 
 // detectTextListingPre identifies old text-mode interfaces whose primary UI is
@@ -699,13 +757,63 @@ func (a *analysis) score(pt PageType) {
 		}
 		b.score = score
 		b.selected = score >= 1.0
-		if a.diag != nil {
+	}
+
+	// Independent scores are deliberately conservative, but article prose is a
+	// region rather than a sequence that ends at the first rejected sibling.
+	// Once a container has established itself with multiple strong paragraphs,
+	// retain its other substantive paragraphs across isolated auxiliary nodes.
+	// Hard auxiliary classification still wins, so the interruption itself is
+	// not pulled into the output.
+	a.strengthenArticleContinuity(pt)
+
+	if a.diag != nil {
+		for i := range a.blocks {
+			b := &a.blocks[i]
 			text := b.text
 			if len(text) > 160 {
 				text = text[:160]
 			}
-			a.diag.Blocks = append(a.diag.Blocks, BlockDiagnostic{ID: b.id, Kind: b.kind, Text: text, Score: score, Selected: b.selected, Reasons: append([]string(nil), b.reasons...)})
+			a.diag.Blocks = append(a.diag.Blocks, BlockDiagnostic{ID: b.id, Kind: b.kind, Text: text, Score: b.score, Selected: b.selected, Reasons: append([]string(nil), b.reasons...)})
 		}
+	}
+}
+
+func (a *analysis) strengthenArticleContinuity(pt PageType) {
+	if pt != PageTypeArticle && pt != PageTypeGeneric {
+		return
+	}
+	strong := make(map[*html.Node]int)
+	regionFor := func(n *html.Node) *html.Node {
+		if article := a.primaryArticleAncestor(n); article != nil {
+			return article
+		}
+		// Generic publishers commonly put sibling paragraphs in an entry/content
+		// div without semantic article markup. Keep this local; using main or body
+		// would let unrelated trailing regions inherit article confidence.
+		for p := n.Parent; p != nil; p = p.Parent {
+			if p.Type == html.ElementNode && containsAny(elementTokens(p), "article", "content", "entry", "post-body", "story-body") {
+				return p
+			}
+		}
+		return n.Parent
+	}
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		length := utf8.RuneCountInString(b.text)
+		if b.kind == "p" && b.selected && length >= 60 && linkTextLength(b.node)*2 < max(1, length) {
+			strong[regionFor(b.node)]++
+		}
+	}
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		if b.selected || b.kind != "p" || utf8.RuneCountInString(b.text) < 40 ||
+			strong[regionFor(b.node)] < 2 || a.hasIrrelevantAncestor(b.node) {
+			continue
+		}
+		b.score = math.Max(b.score, 1)
+		b.selected = true
+		b.reasons = append(b.reasons, "article region continuity")
 	}
 }
 
@@ -2227,6 +2335,72 @@ func irrelevantNode(n *html.Node) bool {
 	return false
 }
 
+func isAdvertisementRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	tag := strings.ToLower(n.Data)
+	if tag != "aside" && tag != "div" && tag != "section" {
+		return false
+	}
+	// Restrict the direct marker to class names. An id such as
+	// "advertisement" can legitimately name a documentation section.
+	for _, class := range strings.Fields(strings.ToLower(attrValue(n, "class"))) {
+		class = strings.Trim(class, "_- ")
+		if class == "ad" || class == "ads" || class == "advert" || class == "advertisement" ||
+			class == "advertising" || class == "sponsor" || class == "sponsored" ||
+			strings.HasPrefix(class, "ad-") || strings.HasPrefix(class, "advert-") {
+			return true
+		}
+	}
+	if normalizedLabel(firstNonempty(attrValue(n, "aria-label"), attrValue(n, "title"))) == "advertisement" {
+		return true
+	}
+
+	// Affiliate product widgets are often unlabeled ads. Require the product
+	// marker on this candidate itself: borrowing shape from one child and a
+	// sponsored link elsewhere in the subtree can otherwise classify the entire
+	// editorial content container as an advertisement. Child widgets are visited
+	// and classified independently by the normal ancestry checks.
+	if !containsAny(elementTokens(n), "product", "price", "buy-button", "affiliate") {
+		return false
+	}
+	sponsored := false
+	walk(n, func(x *html.Node) bool {
+		if hardHidden(x) {
+			return false
+		}
+		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "a") &&
+			containsAny(strings.ToLower(attrValue(x, "rel")), "sponsored") {
+			sponsored = true
+		}
+		return !sponsored
+	})
+	return sponsored
+}
+
+func hasAuthorProfileClass(n *html.Node) bool {
+	for _, class := range strings.Fields(strings.ToLower(attrValue(n, "class"))) {
+		class = strings.Trim(class, "_- ")
+		if class == "author-profile" || class == "author-box" || class == "author-bio" || class == "author-biography" ||
+			class == "about-author" || class == "about-the-author" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTrailingArticleRegionClass(n *html.Node) bool {
+	for _, class := range strings.Fields(strings.ToLower(attrValue(n, "class"))) {
+		class = strings.Trim(class, "_- ")
+		if class == "post-nav" || class == "article-nav" || class == "related-stories" ||
+			class == "related-posts" || class == "recommended-stories" || class == "recommendations" {
+			return true
+		}
+	}
+	return false
+}
+
 func headingDocumentsStructure(n *html.Node, tokens string) bool {
 	if n == nil || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "section") {
 		return false
@@ -2255,7 +2429,7 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 	if irrelevant, ok := a.irrelevant[n]; ok {
 		return irrelevant
 	}
-	irrelevant := irrelevantNode(n)
+	irrelevant := irrelevantNode(n) || isAdvertisementRegion(n)
 	// An empty comments header is auxiliary regardless of the selected profile.
 	// This also covers generic pages, where article-only filtering would otherwise
 	// allow labels such as “thread” and “discussion” into Markdown.
@@ -2283,7 +2457,7 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 // place.
 func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 	for p := n; p != nil; p = p.Parent {
-		if irrelevantNode(p) {
+		if irrelevantNode(p) || isAdvertisementRegion(p) {
 			return true
 		}
 		if p.Type == html.ElementNode && (strings.EqualFold(p.Data, "aside") ||
@@ -2463,6 +2637,14 @@ func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 		return false
 	}
 	if isSubscriptionRegion(n) || a.isArticleCommentRegion(n) {
+		return true
+	}
+	// A separately marked author profile is publication furniture, even when it
+	// uses section/div rather than aside or schema.org Person markup.
+	if hasAuthorProfileClass(n) {
+		return true
+	}
+	if hasTrailingArticleRegionClass(n) && a.hasSemanticArticleBefore(n) {
 		return true
 	}
 	tag := strings.ToLower(n.Data)
