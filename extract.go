@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -50,7 +51,7 @@ type analysis struct {
 	semanticArticleBefore                           map[*html.Node]bool
 	selfReferences                                  map[*html.Node]uint8
 	microdataArticleRecords                         map[*html.Node]bool
-	dominantMicrodataArticle                        *html.Node
+	dominantMicrodataArticle, textListingPre        *html.Node
 }
 
 type metadata struct {
@@ -139,6 +140,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	a.findBase()
 	a.extractMetadata()
 	a.segment(root, false)
+	a.detectTextListingPre()
 	pageType, confidence, candidates := a.inferType()
 	if o.pageType != "" {
 		pageType = o.pageType
@@ -195,6 +197,9 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		return a.isIrrelevantNode(n) || repeatedExcluded[n] || discussionAuxiliary || visualAuxiliary
 	}
 	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: append([]string(nil), o.urlPolicy.Schemes...), AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude, PruneEmptyHeadings: true}
+	if a.textListingPre != nil {
+		cfg.TextPreformatted = func(n *html.Node) bool { return n == a.textListingPre }
+	}
 	if pageType == PageTypeArticle {
 		selected = a.ensureArticleTitle(selected, cfg)
 	}
@@ -324,6 +329,114 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
 		a.segment(ch, excluded)
 	}
+}
+
+// detectTextListingPre identifies old text-mode interfaces whose primary UI is
+// a preformatted archive. A large pre alone is intentionally insufficient:
+// links, repeated lines, archive metadata, dominance, and little outside prose
+// must agree before code rendering is disabled.
+func (a *analysis) detectTextListingPre() {
+	total := 0
+	for _, b := range a.blocks {
+		total += utf8.RuneCountInString(b.text)
+	}
+	if total == 0 {
+		return
+	}
+	hints := strings.ToLower(strings.Join([]string{a.meta.title, a.meta.description, a.meta.schemaType, a.meta.canonical}, " "))
+	if a.pageURL != nil {
+		hints += " " + strings.ToLower(a.pageURL.Path)
+	}
+	archiveHint := containsAny(hints, "archive", "inbox", "mailing list", "message list")
+
+	for _, b := range a.blocks {
+		if b.kind != "pre" {
+			continue
+		}
+		chars := utf8.RuneCountInString(b.text)
+		if chars < 120 || float64(chars)/float64(total) < .65 || total-chars > max(200, chars/3) {
+			continue
+		}
+		anchors, linkedLines := linkedPreLineEvidence(b.node)
+		lines, dated := listingLineEvidence(nodeText(b.node))
+		explicitArticle := a.o.pageType == PageTypeArticle
+		articleContext := explicitArticle || a.meta.articleType || a.meta.articlePublished
+		for p := b.node.Parent; p != nil; p = p.Parent {
+			articleContext = articleContext || (p.Type == html.ElementNode && strings.EqualFold(p.Data, "article"))
+		}
+		// An explicit article override is authoritative for ambiguous pre content.
+		// Inferred article semantics merely make the bar higher because an archive
+		// can carry inaccurate article metadata while still having repeated dates.
+		if explicitArticle || (articleContext && dated < 3) {
+			continue
+		}
+		if anchors >= 4 && linkedLines >= 4 && lines >= 4 && (archiveHint || dated >= 3) {
+			a.textListingPre = b.node
+			return
+		}
+	}
+}
+
+const archiveMonthPattern = `(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)`
+
+var archiveDatePattern = regexp.MustCompile(`(?i)(?:` +
+	`\b(?:19|20)\d{2}[-/](?:0[1-9]|1[0-2])[-/](?:0[1-9]|[12]\d|3[01])\b|` +
+	`\b` + archiveMonthPattern + `(?:\s+\d{1,2},?)?\s+(?:19|20)\d{2}\b|` +
+	`\b(?:0?[1-9]|[12]\d|3[01])\s+` + archiveMonthPattern + `\s+(?:19|20)\d{2}\b|` +
+	`\b(?:19|20)\d{2}\s+` + archiveMonthPattern + `\b)`)
+
+func listingLineEvidence(text string) (nonempty, dated int) {
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		nonempty++
+		if archiveDatePattern.MatchString(line) {
+			dated++
+		}
+	}
+	return nonempty, dated
+}
+
+// linkedPreLineEvidence counts links and the physical lines on which linked
+// text occurs. Requiring distribution across lines prevents a navigation row
+// or one linked source-code line from masquerading as repeated records.
+func linkedPreLineEvidence(root *html.Node) (anchors, linkedLines int) {
+	lineLinked := false
+	var visit func(*html.Node, bool)
+	visit = func(n *html.Node, inLink bool) {
+		if hardHidden(n) {
+			return
+		}
+		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "a") && attrValue(n, "href") != "" && normalizeText(nodeText(n)) != "" {
+			anchors++
+			inLink = true
+		}
+		if n.Type == html.TextNode {
+			parts := strings.Split(strings.ReplaceAll(strings.ReplaceAll(n.Data, "\r\n", "\n"), "\r", "\n"), "\n")
+			for i, part := range parts {
+				if inLink && strings.TrimSpace(part) != "" {
+					lineLinked = true
+				}
+				if i < len(parts)-1 {
+					if lineLinked {
+						linkedLines++
+					}
+					lineLinked = false
+				}
+			}
+			return
+		}
+		for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+			visit(ch, inLink)
+		}
+	}
+	visit(root, false)
+	if lineLinked {
+		linkedLines++
+	}
+	return anchors, linkedLines
 }
 
 func isGenericContainer(tag string) bool {
@@ -1227,6 +1340,11 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	}
 	if strings.Contains(schema, "itemlist") || a.meta.microdataListing {
 		scores[PageTypeListing] += 5
+	}
+	if a.textListingPre != nil {
+		// Text-mode archives have few of the card/list elements used by modern
+		// listings, so their combined pre/link/record evidence is page-level.
+		scores[PageTypeListing] += 10
 	}
 	// Prefer a canonical path when present: the supplied URL may be an archive,
 	// redirect, or tracking URL that says little about the page itself.

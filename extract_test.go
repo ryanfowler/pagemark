@@ -34,6 +34,94 @@ func TestExtractStructuresAndSafety(t *testing.T) {
 	}
 }
 
+func TestPageWidePreformattedArchiveRetainsLinks(t *testing.T) {
+	source, err := os.ReadFile("testdata/preformatted-archive.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://example.com/security/archive/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeListing && doc.PageType != PageTypeGeneric {
+		t.Fatalf("page type = %q, want listing or generic", doc.PageType)
+	}
+	for _, want := range []string{"[CVE-2025-1001: Correct bounds validation in parser](https://example.com/records/CVE-2025-1001)", "2025-04-03", "[next page](https://example.com/security/archive/?page=2)"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("missing archive content %q:\n%s", want, doc.Markdown)
+		}
+	}
+	if strings.Contains(doc.Markdown, "```") || strings.Contains(doc.Markdown, "javascript:") {
+		t.Fatalf("archive was fenced or retained an unsafe URL:\n%s", doc.Markdown)
+	}
+}
+
+func TestLargeArticlePreCodeRemainsFenced(t *testing.T) {
+	source, err := os.ReadFile("testdata/article-large-code.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://example.com/articles/record-parser")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("page type = %q, want article", doc.PageType)
+	}
+	wantCode := "```go\npackage parser\n\nfunc Parse(input []byte) (Record, error) {"
+	if !strings.Contains(doc.Markdown, wantCode) || !strings.Contains(doc.Markdown, "\treturn Record{}, ErrShortInput") {
+		t.Fatalf("large code sample was changed or unfenced:\n%s", doc.Markdown)
+	}
+}
+
+func TestListingLineEvidenceRequiresActualDates(t *testing.T) {
+	text := "release-2025-alpha\nCVE-2025-1001\nsource-2024-main\n2025-04-03 record\n3 Apr 2025 record\nApril 2025 archive"
+	nonempty, dated := listingLineEvidence(text)
+	if nonempty != 6 || dated != 3 {
+		t.Fatalf("nonempty=%d dated=%d, want 6 and 3", nonempty, dated)
+	}
+}
+
+func TestLinkedYearIdentifiersInArticleRemainCode(t *testing.T) {
+	html := `<html><head><title>Indexing release-2025 identifiers</title><meta property="og:type" content="article"></head><body><article><h1>Indexing release identifiers</h1><pre><code>` +
+		"lookup(<a href=\"/symbols/release-2025-alpha\">release-2025-alpha</a>)\n" +
+		"lookup(<a href=\"/symbols/CVE-2025-1001\">CVE-2025-1001</a>)\n" +
+		"lookup(<a href=\"/symbols/source-2024-main\">source-2024-main</a>)\n" +
+		"lookup(<a href=\"/symbols/version-2023-next\">version-2023-next</a>)\n" +
+		`lookup(<a href="/symbols/build-2022-debug">build-2022-debug</a>)` +
+		`</code></pre></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("page type = %q, want article", doc.PageType)
+	}
+	if !strings.Contains(doc.Markdown, "```\nlookup(release-2025-alpha)\nlookup(CVE-2025-1001)") || strings.Contains(doc.Markdown, "](") {
+		t.Fatalf("linked identifier sample was reinterpreted as an archive:\n%s", doc.Markdown)
+	}
+}
+
+func TestExplicitArticleKeepsLinkedDateLiteralsAsCode(t *testing.T) {
+	html := `<html><head><title>Release lookup example</title></head><body><main><pre><code>` +
+		"releases[\"2025-04-04\"] = <a href=\"/symbols/alpha\">alphaHandler</a>\n" +
+		"releases[\"2025-04-03\"] = <a href=\"/symbols/beta\">betaHandler</a>\n" +
+		"releases[\"2025-04-02\"] = <a href=\"/symbols/gamma\">gammaHandler</a>\n" +
+		"releases[\"2025-04-01\"] = <a href=\"/symbols/delta\">deltaHandler</a>" +
+		`</code></pre></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/examples/releases", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("page type = %q, want article", doc.PageType)
+	}
+	want := "```\nreleases[\"2025-04-04\"] = alphaHandler\nreleases[\"2025-04-03\"] = betaHandler"
+	if !strings.Contains(doc.Markdown, want) || strings.Contains(doc.Markdown, "](") {
+		t.Fatalf("explicit article code was reinterpreted as an archive:\n%s", doc.Markdown)
+	}
+}
+
 func TestExtractTreatsInputAsUTF8(t *testing.T) {
 	tests := []struct {
 		name   string
