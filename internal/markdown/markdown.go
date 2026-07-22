@@ -198,7 +198,7 @@ func (c *converter) block(n *html.Node) (result *Node) {
 			flush()
 			return &Node{Kind: Document, Children: lines}
 		}
-		return &Node{Kind: CodeBlock, Value: c.textRaw(n), Info: codeInfo(n)}
+		return &Node{Kind: CodeBlock, Value: c.textRawPreformatted(n), Info: codeInfo(n)}
 	case "blockquote":
 		return &Node{Kind: Blockquote, Children: c.blocks(n)}
 	case "ul":
@@ -1147,6 +1147,135 @@ func (c *converter) textRaw(n *html.Node) string {
 	}
 	walk(n)
 	return b.String()
+}
+
+// textRawPreformatted preserves layout-derived lines in addition to literal
+// newlines. Syntax highlighters often represent every source line as a div,
+// ARIA row, or span.line, leaving no newline text for textRaw to collect.
+// Keeping this separate from textRaw ensures nested spans in inline code do not
+// unexpectedly acquire line breaks.
+func (c *converter) textRawPreformatted(n *html.Node) string {
+	type extracted struct {
+		value                                                               string
+		present, firstLine, lastLine, firstEmptyLine, lastEmptyLine, brOnly bool
+	}
+	var extract func(*html.Node) extracted
+	extract = func(x *html.Node) extracted {
+		if c.skip(x) {
+			return extracted{}
+		}
+		if x.Type == html.TextNode {
+			return extracted{value: x.Data, present: true}
+		}
+		if x.Type != html.ElementNode {
+			return extracted{}
+		}
+		tag := strings.ToLower(x.Data)
+		if tag == "script" || tag == "style" {
+			return extracted{}
+		}
+		if tag == "br" {
+			return extracted{value: "\n", present: true, brOnly: true}
+		}
+
+		var b strings.Builder
+		havePrevious := false
+		allBROnly := true
+		firstLine := false
+		firstEmptyLine := false
+		previousLastLine := false
+		previousEmptyLine := false
+		for child := x.FirstChild; child != nil; child = child.NextSibling {
+			current := extract(child)
+			if !current.present {
+				continue
+			}
+			if havePrevious && (previousLastLine || current.firstLine) {
+				// Newlines inside leading/trailing empty descendants separate those
+				// descendants from their siblings; they cannot also supply the
+				// boundary outside the neutral container.
+				switch {
+				case previousEmptyLine && current.firstEmptyLine:
+					b.WriteByte('\n')
+				case previousEmptyLine:
+					if !startsLineBreak(current.value) {
+						b.WriteByte('\n')
+					}
+				case current.firstEmptyLine:
+					if !endsLineBreak(b.String()) {
+						b.WriteByte('\n')
+					}
+				case !endsLineBreak(b.String()) && !startsLineBreak(current.value):
+					b.WriteByte('\n')
+				}
+			}
+			if !havePrevious {
+				firstLine = current.firstLine
+				firstEmptyLine = current.firstEmptyLine
+			}
+			b.WriteString(current.value)
+			havePrevious = true
+			allBROnly = allBROnly && current.brOnly
+			previousLastLine = current.lastLine
+			previousEmptyLine = current.lastEmptyLine
+		}
+
+		// Propagate line semantics through neutral containers. Highlighters may,
+		// for example, wrap every span.line in an anchor or styling span.
+		lineWrapper := x != n && preformattedLineWrapper(x)
+		value := b.String()
+		brPlaceholder := lineWrapper && havePrevious && allBROnly && value == "\n"
+		if brPlaceholder {
+			// A break is often used only to give an otherwise empty visual line
+			// height. The wrapper supplies the line semantics in that case.
+			value = ""
+		}
+		emptyLine := lineWrapper && (!havePrevious || brPlaceholder)
+		return extracted{
+			value:          value,
+			present:        havePrevious || lineWrapper,
+			firstLine:      lineWrapper || firstLine,
+			lastLine:       lineWrapper || (havePrevious && previousLastLine),
+			firstEmptyLine: emptyLine || (havePrevious && firstEmptyLine),
+			lastEmptyLine:  emptyLine || (havePrevious && previousEmptyLine),
+			brOnly:         havePrevious && allBROnly,
+		}
+	}
+
+	return extract(n).value
+}
+
+func preformattedLineWrapper(n *html.Node) bool {
+	if n.Type != html.ElementNode {
+		return false
+	}
+	tag := strings.ToLower(n.Data)
+	if isBlockElement(tag) {
+		return true
+	}
+	switch tag {
+	case "li", "dt", "dd", "tr":
+		return true
+	}
+	switch strings.ToLower(attr(n, "role")) {
+	case "listitem", "row":
+		return true
+	}
+	for _, class := range strings.Fields(strings.ToLower(attr(n, "class"))) {
+		switch class {
+		case "line", "code-line", "line-content", "highlight-line":
+			return true
+		}
+	}
+	return false
+}
+
+func startsLineBreak(value string) bool {
+	return strings.HasPrefix(value, "\n") || strings.HasPrefix(value, "\r")
+}
+
+func endsLineBreak(value string) bool {
+	return strings.HasSuffix(value, "\n") || strings.HasSuffix(value, "\r")
 }
 
 func codeInfo(n *html.Node) string {

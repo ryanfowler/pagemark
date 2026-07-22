@@ -521,6 +521,43 @@ func TestCodeFenceInfoAndInlineCodePadding(t *testing.T) {
 	}
 }
 
+func TestPreformattedStructuralLines(t *testing.T) {
+	tests := []struct {
+		name, source, code string
+	}{
+		{"literal newlines", "<pre><code>first\n  second</code></pre>", "first\n  second"},
+		{"highlighting spans remain inline", `<pre><code><span>con</span><span>cat</span></code></pre>`, "concat"},
+		{"div line wrappers", `<pre><code><div>first</div><div>second</div></code></pre>`, "first\nsecond"},
+		{"break elements", `<pre>first<br>second<br><span>third</span></pre>`, "first\nsecond\nthird"},
+		{"nested spans in lines", `<pre><code><div><span>  indented</span></div><div><span>next</span></div></code></pre>`, "  indented\nnext"},
+		{"empty line wrapper", `<pre><code><div>first</div><div></div><div>third</div></code></pre>`, "first\n\nthird"},
+		{"existing wrapper newline", "<pre><code><div>first\n</div><div>second</div></code></pre>", "first\nsecond"},
+		{"aria rows", `<pre><span role="row">first</span><span role="row">second</span></pre>`, "first\nsecond"},
+		{"syntax line classes", `<pre><code><span class="line">first</span><span class="line">second</span></code></pre>`, "first\nsecond"},
+		{"line classes inside neutral wrappers", `<pre><code><span><span class="line">first</span></span><span><span class="line">second</span></span></code></pre>`, "first\nsecond"},
+		{"nested trailing empty line", `<pre><code><div><div>first</div><div></div></div><div>third</div></code></pre>`, "first\n\nthird"},
+		{"nested leading empty line", `<pre><code><div>first</div><div><div></div><div>third</div></div></code></pre>`, "first\n\nthird"},
+		{"break-only empty line", `<pre><code><div>first</div><div><br></div><div>third</div></code></pre>`, "first\n\nthird"},
+		{"multiple breaks remain distinct", `<pre><code><div>first</div><div><br><br><br></div><div>third</div></code></pre>`, "first\n\n\nthird"},
+		{"hidden highlighter copy", `<pre><div>shown</div><div aria-hidden="true">duplicate</div><div>next</div></pre>`, "shown\nnext"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			want := "```\n" + tc.code + "\n```"
+			if got := convertHTML(t, tc.source).Markdown; got != want {
+				t.Fatalf("want %q, got %q", want, got)
+			}
+		})
+	}
+}
+
+func TestNestedSpansInInlineCodeRemainInline(t *testing.T) {
+	got := convertHTML(t, `<p>Use <code><span>foo</span><span>bar</span></code> here.</p>`).Markdown
+	if want := "Use `foobar` here."; got != want {
+		t.Fatalf("want %q, got %q", want, got)
+	}
+}
+
 func TestOutputLimitFlattensContainerAtBlockBoundaries(t *testing.T) {
 	root := `<main><p>first</p><p>` + strings.Repeat("long ", 20) + `</p></main>`
 	r := convertHTML(t, root)
