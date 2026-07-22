@@ -3,6 +3,7 @@ package markdown
 
 import (
 	"fmt"
+	"io"
 	"math/big"
 	"net/url"
 	"regexp"
@@ -146,6 +147,9 @@ func (c *converter) block(n *html.Node) (result *Node) {
 		return nil
 	}
 	if n.Type == html.TextNode {
+		if suppressSerializedMediaText(n) {
+			return nil
+		}
 		v := clean(n.Data)
 		if v != "" {
 			return &Node{Kind: Paragraph, Children: []*Node{{Kind: Text, Value: v}}}
@@ -315,6 +319,9 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 						out = append(out, &Node{Kind: HardBreak})
 					}
 				}
+				return
+			}
+			if suppressSerializedMediaText(x) {
 				return
 			}
 			if v := inlineText(x.Data); strings.TrimSpace(v) != "" {
@@ -903,6 +910,165 @@ func (c *converter) safeURL(raw string) (string, bool) {
 }
 
 var spaces = regexp.MustCompile(`\s+`)
+
+type serializedMedia struct {
+	imageSources map[string]bool
+	frameSources map[string]bool
+}
+
+// suppressSerializedMediaText recognizes CMS fallbacks which contain HTML
+// markup as a text node. A fragment is suppressed only in a noscript context
+// or when matching real media is present nearby; an otherwise ambiguous
+// fragment may be a literal example and is retained.
+func suppressSerializedMediaText(n *html.Node) bool {
+	media, ok := parseSerializedMedia(n.Data)
+	if !ok {
+		return false
+	}
+	for ancestor := n.Parent; ancestor != nil; ancestor = ancestor.Parent {
+		if ancestor.Type == html.ElementNode && strings.EqualFold(ancestor.Data, "noscript") {
+			return true
+		}
+	}
+	return matchingNearbyMedia(n, media)
+}
+
+// matchingNearbyMedia deliberately uses only adjacent siblings and a small
+// immediate container. It must not search an entire article or body, where an
+// unrelated tutorial example could happen to mention an image used elsewhere.
+func matchingNearbyMedia(n *html.Node, media serializedMedia) bool {
+	matches := func(current *html.Node, limit int) (bool, bool) {
+		count := 0
+		matched := false
+		var walk func(*html.Node)
+		walk = func(x *html.Node) {
+			if count > limit {
+				return
+			}
+			count++
+			if x.Type == html.ElementNode {
+				src := strings.TrimSpace(attr(x, "src"))
+				switch strings.ToLower(x.Data) {
+				case "img":
+					matched = matched || media.imageSources[src]
+				case "iframe", "embed":
+					matched = matched || media.frameSources[src]
+				}
+			}
+			for child := x.FirstChild; child != nil; child = child.NextSibling {
+				walk(child)
+			}
+		}
+		walk(current)
+		return matched, count <= limit
+	}
+	meaningfulSibling := func(sibling *html.Node, step func(*html.Node) *html.Node) *html.Node {
+		for sibling != nil && sibling.Type == html.TextNode && strings.TrimSpace(sibling.Data) == "" {
+			sibling = step(sibling)
+		}
+		return sibling
+	}
+	previous := meaningfulSibling(n.PrevSibling, func(x *html.Node) *html.Node { return x.PrevSibling })
+	next := meaningfulSibling(n.NextSibling, func(x *html.Node) *html.Node { return x.NextSibling })
+	for _, sibling := range []*html.Node{previous, next} {
+		if sibling != nil {
+			if matched, bounded := matches(sibling, 32); matched && bounded {
+				return true
+			}
+		}
+	}
+	if n.Parent != nil && n.Parent.Type == html.ElementNode {
+		switch strings.ToLower(n.Parent.Data) {
+		case "p", "figure", "picture", "div", "span", "a", "li":
+			if matched, bounded := matches(n.Parent, 32); matched && bounded {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// parseSerializedMedia deliberately accepts only a complete fragment made
+// from media elements and simple wrappers. In particular, prose which merely
+// mentions an HTML tag is not classified as a fallback.
+func parseSerializedMedia(value string) (serializedMedia, bool) {
+	result := serializedMedia{
+		imageSources: make(map[string]bool),
+		frameSources: make(map[string]bool),
+	}
+	value = strings.TrimSpace(value)
+	for i := 0; i < 3; i++ {
+		decoded := html.UnescapeString(value)
+		if decoded == value {
+			break
+		}
+		value = strings.TrimSpace(decoded)
+	}
+	if !strings.HasPrefix(value, "<") || !strings.HasSuffix(value, ">") {
+		return result, false
+	}
+
+	allowed := func(tag string) bool {
+		switch tag {
+		case "img", "picture", "source", "iframe", "div", "span", "figure", "a", "noscript":
+			return true
+		}
+		return false
+	}
+	void := func(tag string) bool { return tag == "img" || tag == "source" }
+	media := func(tag string) bool {
+		return tag == "img" || tag == "picture" || tag == "source" || tag == "iframe"
+	}
+
+	z := html.NewTokenizer(strings.NewReader(value))
+	var stack []string
+	foundMedia := false
+	for {
+		tokenType := z.Next()
+		switch tokenType {
+		case html.ErrorToken:
+			return result, z.Err() == io.EOF && len(stack) == 0 && foundMedia
+		case html.TextToken:
+			// iframe fallback contents are not article prose. Other wrappers must
+			// be structurally empty apart from their media descendants.
+			if strings.TrimSpace(string(z.Text())) != "" && (len(stack) == 0 || stack[len(stack)-1] != "iframe") {
+				return result, false
+			}
+		case html.StartTagToken, html.SelfClosingTagToken:
+			token := z.Token()
+			tag := strings.ToLower(token.Data)
+			if !allowed(tag) {
+				return result, false
+			}
+			foundMedia = foundMedia || media(tag)
+			if src := strings.TrimSpace(attr(tokenToNode(token), "src")); src != "" {
+				switch tag {
+				case "img":
+					result.imageSources[src] = true
+				case "iframe":
+					result.frameSources[src] = true
+				}
+			}
+			if tokenType == html.StartTagToken && !void(tag) {
+				stack = append(stack, tag)
+			}
+		case html.EndTagToken:
+			tag := strings.ToLower(z.Token().Data)
+			if !allowed(tag) || void(tag) || len(stack) == 0 || stack[len(stack)-1] != tag {
+				return result, false
+			}
+			stack = stack[:len(stack)-1]
+		case html.CommentToken:
+			// Comments in an otherwise media-only fallback carry no prose.
+		default:
+			return result, false
+		}
+	}
+}
+
+func tokenToNode(token html.Token) *html.Node {
+	return &html.Node{Type: html.ElementNode, Data: token.Data, Attr: token.Attr}
+}
 
 func clean(s string) string { return strings.TrimSpace(spaces.ReplaceAllString(s, " ")) }
 func inlineText(s string) string {
