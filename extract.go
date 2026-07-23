@@ -39,8 +39,10 @@ type block struct {
 // Keeping one map avoids paying for several independent hash tables containing
 // the same DOM pointers on large pages.
 type nodeState struct {
-	irrelevant, articleAuxiliary, inferenceAuxiliary uint8
-	discussionBody, articleComment, commentCount     uint8
+	irrelevant, irrelevantAncestor, articleAuxiliary uint8
+	inferenceAuxiliary, discussionBody               uint8
+	subscriptionEvidence                             uint8
+	articleComment, commentCount                     uint8
 	articleDescendant, semanticBefore, semanticAfter uint8
 	articleProseBefore, selfReference                uint8
 }
@@ -161,8 +163,11 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		return nil, err
 	}
 	a.findBase()
+	// Index subtree evidence before metadata extraction: microdata filtering uses
+	// auxiliary-region detection, and subscription checks otherwise rescan large
+	// wrappers once for every descendant.
+	a.indexSubtreeEvidence(root)
 	a.extractMetadata()
-	a.indexDiscussionBodies(root)
 	a.segment(root, false)
 	a.detectTextListingPre()
 	pageType, confidence, candidates := a.inferType()
@@ -627,28 +632,51 @@ func (a *analysis) hasDiscussionBodyDescendant(n *html.Node) bool {
 	return a.nodeStates[n].discussionBody == 2
 }
 
-// indexDiscussionBodies performs one post-order pass and records only positive
-// results. The segmenter asks this question for many nested containers; caching
-// a negative result for every element used a large hash-map entry per DOM node
-// even though almost all pages contain no discussion-body marker at all.
-func (a *analysis) indexDiscussionBodies(n *html.Node) bool {
+const (
+	subtreeHasForm uint8 = 1 << iota
+	subtreeHasEmail
+	subtreeHasSubscriptionForm
+)
+
+// indexSubtreeEvidence performs one post-order pass for properties queried on
+// many nested containers. Only positive results are recorded, avoiding a large
+// hash-map entry for every element on pages without these features.
+func (a *analysis) indexSubtreeEvidence(n *html.Node) (bool, uint8) {
 	if n == nil || n.Type == html.ElementNode && hardHidden(n) {
-		return false
+		return false, 0
 	}
 	bodyBelow := false
+	var subscription uint8
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-		// Text and comment nodes cannot contain a marked body. Avoid dispatching a
-		// recursive call for every leaf in prose-heavy documents.
-		if ch.Type == html.ElementNode && a.indexDiscussionBodies(ch) {
-			bodyBelow = true
+		// Text and comment nodes cannot contribute structural evidence.
+		if ch.Type == html.ElementNode {
+			body, evidence := a.indexSubtreeEvidence(ch)
+			bodyBelow = bodyBelow || body
+			subscription |= evidence
 		}
 	}
-	if bodyBelow {
+	if n.Type == html.ElementNode {
+		switch strings.ToLower(n.Data) {
+		case "form":
+			subscription |= subtreeHasForm
+			if subscriptionAttributeMarker(n) || containsSubscriptionWord(attrValue(n, "action")) {
+				subscription |= subtreeHasSubscriptionForm
+			}
+		case "input":
+			if strings.EqualFold(strings.TrimSpace(attrValue(n, "type")), "email") {
+				subscription |= subtreeHasEmail
+			}
+		}
+	}
+	if bodyBelow || subscription != 0 {
 		state := a.nodeStates[n]
-		state.discussionBody = 2
+		if bodyBelow {
+			state.discussionBody = 2
+		}
+		state.subscriptionEvidence = subscription
 		a.nodeStates[n] = state
 	}
-	return bodyBelow || isDiscussionBodyContainer(n)
+	return bodyBelow || isDiscussionBodyContainer(n), subscription
 }
 
 func hasBlockDescendant(n *html.Node) bool {
@@ -1047,7 +1075,7 @@ func (a *analysis) ensureDocumentTitle(nodes []*html.Node, cfg markdown.Config, 
 		return nodes
 	}
 	titleNode := articleTitleNode(title)
-	a.setIrrelevant(titleNode, false)
+	a.overrideIrrelevant(titleNode, false)
 	withTitle := append([]*html.Node{titleNode}, nodes...)
 	if !a.titleLeavesOutputForArticleProse(withTitle, cfg) {
 		return nodes
@@ -1156,14 +1184,14 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 					// Exclude the nested masthead when removing its block root cannot
 					// affect that selected ancestor.
 					if !directlySelected {
-						a.setIrrelevant(b.node, true)
+						a.overrideIrrelevant(b.node, true)
 					}
 				}
 			}
 			if !directlySelected {
-				a.setIrrelevant(candidate.node, true)
+				a.overrideIrrelevant(candidate.node, true)
 				title := articleTitleNode(articleHeadingText(candidate.node))
-				a.setIrrelevant(title, false)
+				a.overrideIrrelevant(title, false)
 				withTitle := append([]*html.Node{title}, content...)
 				if a.titleLeavesOutputForArticleProse(withTitle, cfg) {
 					return withTitle
@@ -1188,10 +1216,10 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 		content := nodes
 		if candidate.kind == "h2" || !directlySelected {
 			title = articleTitleNode(articleHeadingText(candidate.node))
-			a.setIrrelevant(title, false)
+			a.overrideIrrelevant(title, false)
 			content = removeSelectedNode(content, candidate.node)
 			if !directlySelected {
-				a.setIrrelevant(candidate.node, true)
+				a.overrideIrrelevant(candidate.node, true)
 			}
 		}
 		if candidate.kind == "h2" {
@@ -1237,7 +1265,7 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 	title := articleTitleNode(restorationTitle)
 	// Synthetic nodes are not part of the indexed DOM. Explicitly mark this one
 	// as relevant so article auxiliary heuristics cannot classify it by itself.
-	a.setIrrelevant(title, false)
+	a.overrideIrrelevant(title, false)
 	withTitle := append([]*html.Node{title}, content...)
 	if !a.titleLeavesOutputForArticleProse(withTitle, cfg) {
 		return nodes
@@ -3407,6 +3435,21 @@ func (a *analysis) setIrrelevant(n *html.Node, irrelevant bool) {
 	a.nodeStates[n] = state
 }
 
+// overrideIrrelevant is for late classification changes after ancestor results
+// may already have been memoized. Normal first-time classification uses
+// setIrrelevant directly and does not pay for a descendant walk.
+func (a *analysis) overrideIrrelevant(n *html.Node, irrelevant bool) {
+	a.setIrrelevant(n, irrelevant)
+	walk(n, func(descendant *html.Node) bool {
+		state, cached := a.nodeStates[descendant]
+		if cached {
+			state.irrelevantAncestor = 0
+			a.nodeStates[descendant] = state
+		}
+		return true
+	})
+}
+
 func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 	if state := a.nodeStates[n].irrelevant; state != 0 {
 		return state == 2
@@ -3917,7 +3960,7 @@ func (a *analysis) articleAuxiliaryNodeUncached(n *html.Node) bool {
 		isArticleTaxonomySeparator(n) || isTrailingArticleSeparator(n) || isArticleTaxonomyRegion(n) {
 		return true
 	}
-	if isSubscriptionRegion(n) {
+	if a.isSubscriptionRegion(n) {
 		// Subscription evidence may live in a trailing child of a page-wide or
 		// article-wide wrapper. Exclude that child when it is visited, rather
 		// than hiding substantive prose that precedes it in the shared wrapper.
@@ -4444,19 +4487,33 @@ func regionHasLongProse(n *html.Node, limit int) bool {
 // merely the controls that Markdown conversion already omits. It requires a
 // promotional heading, or form controls corroborated by consent/honeypot copy:
 // class names such as newsletter-example occur in substantive tutorials.
-func isSubscriptionRegion(n *html.Node) bool {
-	if n == nil || n.Type != html.ElementNode {
+func (a *analysis) isSubscriptionRegion(n *html.Node) bool {
+	if !subscriptionContainer(n) {
 		return false
 	}
-	switch strings.ToLower(n.Data) {
-	case "div", "section", "aside", "fieldset":
-	default:
-		return false
+	// Nodes in the caller's tree were indexed once in a post-order pass. Reuse
+	// those aggregate bits instead of walking the same subtree for every wrapper.
+	inRoot := false
+	for p := n; p != nil; p = p.Parent {
+		if p == a.root {
+			inRoot = true
+			break
+		}
 	}
+	if !inRoot {
+		// Readability may supply a cloned tree during fallback.
+		return isSubscriptionRegion(n)
+	}
+	evidence := a.nodeStates[n].subscriptionEvidence
+	return evaluateSubscriptionRegion(n, evidence&subtreeHasForm != 0,
+		evidence&subtreeHasEmail != 0, evidence&subtreeHasSubscriptionForm != 0)
+}
 
-	heading := firstRegionHeading(n)
-	attributeMarker := subscriptionAttributeMarker(n)
-	hasForm, hasEmail, subscriptionForm, joinCTA := false, false, false, false
+func isSubscriptionRegion(n *html.Node) bool {
+	if !subscriptionContainer(n) {
+		return false
+	}
+	hasForm, hasEmail, subscriptionForm := false, false, false
 	walk(n, func(x *html.Node) bool {
 		if hardHidden(x) {
 			return false
@@ -4466,59 +4523,82 @@ func isSubscriptionRegion(n *html.Node) bool {
 		}
 		switch strings.ToLower(x.Data) {
 		case "input":
-			inputType := strings.ToLower(strings.TrimSpace(attrValue(x, "type")))
-			if inputType == "email" {
-				hasEmail = true
-			}
-			if (inputType == "submit" || inputType == "button") && isJoinCTA(attrValue(x, "value")) {
-				joinCTA = true
-			}
-		case "button", "a":
-			if isJoinCTA(nodeText(x)) {
-				joinCTA = true
-			}
+			hasEmail = hasEmail || strings.EqualFold(strings.TrimSpace(attrValue(x, "type")), "email")
 		case "form":
 			hasForm = true
-			if subscriptionAttributeMarker(x) || containsSubscriptionWord(attrValue(x, "action")) {
-				subscriptionForm = true
-			}
+			subscriptionForm = subscriptionForm || subscriptionAttributeMarker(x) ||
+				containsSubscriptionWord(attrValue(x, "action"))
 		}
 		return true
 	})
+	return evaluateSubscriptionRegion(n, hasForm, hasEmail, subscriptionForm)
+}
 
-	// Text collection and word-boundary matching are comparatively expensive on
-	// large wrappers. Neither can affect the result without a form or an explicit
-	// subscription marker, so defer them until the structural scan finds one.
+func subscriptionContainer(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	switch strings.ToLower(n.Data) {
+	case "div", "section", "aside", "fieldset":
+		return true
+	default:
+		return false
+	}
+}
+
+func evaluateSubscriptionRegion(n *html.Node, hasForm, hasEmail, subscriptionForm bool) bool {
+	attributeMarker := subscriptionAttributeMarker(n)
+	// Text collection and heading discovery are comparatively expensive on large
+	// wrappers. Neither matters without a form or an explicit marker.
 	if !hasForm && !attributeMarker {
 		return false
 	}
+	heading := firstRegionHeading(n)
 	text := strings.ToLower(normalizeText(nodeText(n)))
 	cta := strings.Contains(text, "subscribe") || strings.Contains(text, "sign up") ||
 		strings.Contains(text, "mailing list") || strings.Contains(text, "get updates")
 
-	// Readability may remove form controls from a cloned article while leaving
-	// the marked signup wrapper and its prompt. Keep that narrower tail
-	// excludable, but preserve marked form-free sections with enough explanatory
-	// prose to be authored discussion of subscription workflows.
 	if !hasForm && attributeMarker && cta && isSubscriptionPromptHeading(heading) &&
 		!substantialArticleScope(n) {
 		return true
 	}
-
 	formEvidence := hasEmail || subscriptionForm || (hasForm && cta)
 	if isSubscriptionPromptHeading(heading) {
 		return formEvidence && cta
 	}
 
-	// Consent and honeypot copy corroborate a structurally identified signup;
-	// they are not sufficient alone because contact and application forms use
-	// the same language. This still catches neutral or branded join prompts.
-	if !hasForm || (!hasEmail && controls(n) < 2) || (!cta && !subscriptionForm && !joinCTA) {
+	if !hasForm || (!hasEmail && controls(n) < 2) {
+		return false
+	}
+	// CTA labels are needed only when the surrounding text and form action did
+	// not already provide equivalent evidence.
+	if !cta && !subscriptionForm && !hasJoinCTA(n) {
 		return false
 	}
 	consent := containsAnyWordSequence(text, "privacy policy", "terms of use", "terms and conditions")
 	honeypot := containsAnyWordSequence(text, "field is for validation", "leave this field unchanged", "do not fill")
 	return consent || honeypot
+}
+
+func hasJoinCTA(n *html.Node) bool {
+	found := false
+	walk(n, func(x *html.Node) bool {
+		if found || hardHidden(x) {
+			return false
+		}
+		if x.Type != html.ElementNode {
+			return true
+		}
+		switch strings.ToLower(x.Data) {
+		case "input":
+			t := strings.ToLower(strings.TrimSpace(attrValue(x, "type")))
+			found = (t == "submit" || t == "button") && isJoinCTA(attrValue(x, "value"))
+		case "button", "a":
+			found = isJoinCTA(nodeText(x))
+		}
+		return !found
+	})
+	return found
 }
 
 func isJoinCTA(value string) bool {
@@ -5038,12 +5118,25 @@ func (a *analysis) hasMicrodataArticleRecordAncestor(n *html.Node) bool {
 }
 
 func (a *analysis) hasIrrelevantAncestor(n *html.Node) bool {
-	for p := n; p != nil; p = p.Parent {
-		if a.isIrrelevantNode(p) {
-			return true
-		}
+	if n == nil {
+		return false
 	}
-	return false
+	// Classification rules apply only to elements. Avoid growing the shared
+	// memoization map with every text and comment node during conversion.
+	if n.Type != html.ElementNode {
+		return a.hasIrrelevantAncestor(n.Parent)
+	}
+	if cached := a.nodeStates[n].irrelevantAncestor; cached != 0 {
+		return cached == 2
+	}
+	irrelevant := a.isIrrelevantNode(n) || a.hasIrrelevantAncestor(n.Parent)
+	state := a.nodeStates[n] // isIrrelevantNode may have updated the entry.
+	state.irrelevantAncestor = 1
+	if irrelevant {
+		state.irrelevantAncestor = 2
+	}
+	a.nodeStates[n] = state
+	return irrelevant
 }
 
 func firstRegionHeading(n *html.Node) string {
