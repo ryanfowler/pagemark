@@ -46,6 +46,7 @@ type analysis struct {
 	pageTypeExplicit                                bool
 	diag                                            *Diagnostics
 	irrelevant, articleAuxiliary                    map[*html.Node]bool
+	inferenceAuxiliary                              map[*html.Node]uint8
 	discussionBodyDescendants                       map[*html.Node]uint8
 	articleCommentRegions, commentRecordCounts      map[*html.Node]uint8
 	semanticArticleDescendants                      map[*html.Node]uint8
@@ -2429,10 +2430,20 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 		case "pre":
 			codeChars += utf8.RuneCountInString(b.text)
 		}
-		tok := elementTokens(b.node)
-		for p := b.node.Parent; p != nil; p = p.Parent {
-			if p.Type == html.ElementNode {
-				tok += " " + elementTokens(p)
+		// Attribute vocabulary is only consumed as boolean evidence below. Scan
+		// each ancestor in place instead of repeatedly concatenating and
+		// lowercasing a growing token string for every block.
+		productVocabulary, documentationVocabulary := false, false
+		for p := b.node; p != nil && (!productVocabulary || !documentationVocabulary); p = p.Parent {
+			if p.Type != html.ElementNode {
+				continue
+			}
+			if !productVocabulary {
+				productVocabulary = elementContainsAny(p, "product", "price", "sku")
+			}
+			if !documentationVocabulary {
+				documentationVocabulary = elementContainsAny(p, "docs", "documentation", "api", "reference") ||
+					(documentationPath && elementContainsAny(p, "doc"))
 			}
 		}
 		// Count substantive records independently, but do not promote vocabulary
@@ -2452,7 +2463,7 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 			// separate so one neutral article cannot turn an ordinary page into a
 			// discussion merely because an ancestor happens to say “thread”.
 		}
-		if containsAny(tok, "product", "price", "sku") {
+		if productVocabulary {
 			if region := nearestTokenAncestor(b.node, "product", "price", "sku"); region != nil {
 				productRegionChars[region] += blockChars
 			}
@@ -2460,8 +2471,7 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 				productRecords[record] = true
 			}
 		}
-		if containsAny(tok, "docs", "documentation", "api", "reference") ||
-			(documentationPath && containsAny(tok, "doc")) {
+		if documentationVocabulary {
 			documentationContext = true
 		}
 	}
@@ -3390,35 +3400,60 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 // recommendation cards cannot cause that type to become a listing in the first
 // place.
 func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
+	if a.inferenceAuxiliary == nil {
+		a.inferenceAuxiliary = make(map[*html.Node]uint8)
+	}
 	for p := n; p != nil; p = p.Parent {
-		if irrelevantNode(p) || isAdvertisementRegion(p) {
+		switch a.inferenceAuxiliary[p] {
+		case 1:
+			a.cacheInferenceAuxiliaryPath(n, p, 1)
 			return true
+		case 2:
+			a.cacheInferenceAuxiliaryPath(n, p, 2)
+			return false
 		}
-		if p.Type == html.ElementNode && (strings.EqualFold(p.Data, "aside") ||
+		auxiliary := irrelevantNode(p) || isAdvertisementRegion(p)
+		if !auxiliary && p.Type == html.ElementNode && (strings.EqualFold(p.Data, "aside") ||
 			elementContainsAny(p, "sidebar")) {
 			// Asides and explicitly named sidebars may contain complete-looking
 			// comments or message previews, but they are not candidates for the
 			// page's primary shape.
-			return true
+			auxiliary = true
 		}
 		// Comment regions with substantive records remain page-type evidence;
 		// empty/collapsed widgets are only page furniture. In particular, their
 		// thread and reply vocabulary must not classify an article as a forum.
-		if a.isEmptyCommentControlRegion(p) {
-			return true
+		if !auxiliary && a.isEmptyCommentControlRegion(p) {
+			auxiliary = true
 		}
-		if a.articleAuxiliaryNode(p) && !a.isArticleCommentRegion(p) &&
+		if !auxiliary && a.articleAuxiliaryNode(p) && !a.isArticleCommentRegion(p) &&
 			(!isRelatedCardRegion(p) || hasSemanticArticleBeforeOrAround(p)) {
-			return true
+			auxiliary = true
 		}
-		if a.isTrailingSocialCardRegion(p) || a.isPeripheralLinkRegion(p) || a.isTrailingMarketingRegion(p) {
-			return true
+		if !auxiliary && (a.isTrailingSocialCardRegion(p) || a.isPeripheralLinkRegion(p) || a.isTrailingMarketingRegion(p)) {
+			auxiliary = true
 		}
-		if isPromotionalCardRegion(p) && isTrailingArticleCardRegion(p) {
+		if !auxiliary && isPromotionalCardRegion(p) && isTrailingArticleCardRegion(p) {
+			auxiliary = true
+		}
+		if auxiliary {
+			a.cacheInferenceAuxiliaryPath(n, p, 1)
 			return true
 		}
 	}
+	a.cacheInferenceAuxiliaryPath(n, nil, 2)
 	return false
+}
+
+// cacheInferenceAuxiliaryPath avoids allocating a temporary ancestor slice on
+// every query. The second parent walk is cheap and only occurs on cache misses.
+func (a *analysis) cacheInferenceAuxiliaryPath(n, end *html.Node, value uint8) {
+	for p := n; p != nil; p = p.Parent {
+		a.inferenceAuxiliary[p] = value
+		if p == end {
+			return
+		}
+	}
 }
 
 func (a *analysis) primaryArticleAncestor(n *html.Node) *html.Node {
