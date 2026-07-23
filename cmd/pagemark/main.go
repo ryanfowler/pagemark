@@ -4,6 +4,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -101,10 +102,34 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, client *h
 	if err != nil {
 		return err
 	}
-	if _, err := io.WriteString(stdout, doc.Markdown+"\n"); err != nil {
+	if _, err := io.WriteString(stdout, markdownDocument(doc)); err != nil {
 		return fmt.Errorf("pagemark: write output: %w", err)
 	}
 	return nil
+}
+
+func markdownDocument(doc *pagemark.Document) string {
+	var output strings.Builder
+	output.WriteString("---\n")
+	writeMetadata := func(key, value string) {
+		if value == "" {
+			return
+		}
+		encoded, _ := json.Marshal(value) // Encoding a string cannot fail.
+		fmt.Fprintf(&output, "%s: %s\n", key, encoded)
+	}
+	writeMetadata("url", doc.URL)
+	writeMetadata("canonical_url", doc.CanonicalURL)
+	writeMetadata("title", doc.Title)
+	writeMetadata("description", doc.Description)
+	writeMetadata("author", doc.Author)
+	writeMetadata("site_name", doc.SiteName)
+	writeMetadata("language", doc.Language)
+	writeMetadata("published_time", doc.PublishedTime)
+	output.WriteString("---\n\n")
+	output.WriteString(doc.Markdown)
+	output.WriteByte('\n')
+	return output.String()
 }
 
 func decodeHTML(body []byte, contentType string) (io.Reader, error) {

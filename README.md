@@ -60,7 +60,7 @@ Pagemark detects article, documentation, discussion, product, listing, collectio
 
 ## Command-line tool
 
-The repository has one optional command. It fetches a page and writes Markdown to standard output. Fetching remains outside the library API.
+The repository has one optional command. It fetches a page and writes Markdown to standard output. Page metadata is included as YAML frontmatter, followed by an empty line and the extracted content. Fetching remains outside the library API.
 
 ```sh
 go install github.com/ryanfowler/pagemark/cmd/pagemark@latest

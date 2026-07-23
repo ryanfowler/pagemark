@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ryanfowler/pagemark"
 )
 
 func TestRunFetchesAndWritesMarkdown(t *testing.T) {
@@ -27,9 +29,7 @@ func TestRunFetchesAndWritesMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stdout.String(), "# Guide\n\nInstall the tool.\n"; got != want {
-		t.Fatalf("output:\n%q\nwant:\n%q", got, want)
-	}
+	assertMarkdownOutput(t, stdout.String(), "# Guide\n\nInstall the tool.\n")
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr: %s", &stderr)
 	}
@@ -46,9 +46,7 @@ func TestRunDoesNotDecodeUTF8ResponseTwice(t *testing.T) {
 	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stdout.String(), "# The Psychology of Software Teams\n\nYou’ll read “the team’s guide” ↩\n"; got != want {
-		t.Fatalf("output:\n%q\nwant:\n%q", got, want)
-	}
+	assertMarkdownOutput(t, stdout.String(), "# The Psychology of Software Teams\n\nYou’ll read “the team’s guide” ↩\n")
 }
 
 func TestRunPreservesUTF8WhenCharsetDeclarationIsLate(t *testing.T) {
@@ -85,9 +83,7 @@ func TestRunHonorsUTF8BOMOverHTTPCharset(t *testing.T) {
 	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stdout.String(), "It’s UTF-8.\n"; got != want {
-		t.Fatalf("output = %q, want %q", got, want)
-	}
+	assertMarkdownOutput(t, stdout.String(), "It’s UTF-8.\n")
 }
 
 func TestRunDecodesISO2022JPFromMetaCharset(t *testing.T) {
@@ -102,9 +98,7 @@ func TestRunDecodesISO2022JPFromMetaCharset(t *testing.T) {
 	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stdout.String(), "日本語です。\n"; got != want {
-		t.Fatalf("output = %q, want %q", got, want)
-	}
+	assertMarkdownOutput(t, stdout.String(), "日本語です。\n")
 }
 
 func TestRunHonorsPermissiveMetaCharset(t *testing.T) {
@@ -118,9 +112,7 @@ func TestRunHonorsPermissiveMetaCharset(t *testing.T) {
 	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stdout.String(), "Itâ€™s labeled Windows-1252.\n"; got != want {
-		t.Fatalf("output = %q, want %q", got, want)
-	}
+	assertMarkdownOutput(t, stdout.String(), "Itâ€™s labeled Windows-1252.\n")
 }
 
 func TestRunIgnoresUnknownHTTPCharset(t *testing.T) {
@@ -134,9 +126,7 @@ func TestRunIgnoresUnknownHTTPCharset(t *testing.T) {
 	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stdout.String(), "It’s valid UTF-8.\n"; got != want {
-		t.Fatalf("output = %q, want %q", got, want)
-	}
+	assertMarkdownOutput(t, stdout.String(), "It’s valid UTF-8.\n")
 }
 
 func TestRunDecodesResponseToUTF8(t *testing.T) {
@@ -150,8 +140,48 @@ func TestRunDecodesResponseToUTF8(t *testing.T) {
 	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stdout.String(), "# Café\n\nCrème brûlée.\n"; got != want {
+	assertMarkdownOutput(t, stdout.String(), "# Café\n\nCrème brûlée.\n")
+}
+
+func TestMarkdownDocumentIncludesMetadataAsYAMLFrontmatter(t *testing.T) {
+	doc := &pagemark.Document{
+		URL:           "https://example.com/article",
+		CanonicalURL:  "https://example.com/canonical",
+		Title:         `A: "quoted" title`,
+		Description:   "First line\nsecond line",
+		Author:        "Ada Lovelace",
+		SiteName:      "Example",
+		Language:      "en",
+		PublishedTime: "2025-01-02T03:04:05Z",
+		Markdown:      "# Article\n\nContent.",
+	}
+	want := "---\n" +
+		`url: "https://example.com/article"` + "\n" +
+		`canonical_url: "https://example.com/canonical"` + "\n" +
+		`title: "A: \"quoted\" title"` + "\n" +
+		`description: "First line\nsecond line"` + "\n" +
+		`author: "Ada Lovelace"` + "\n" +
+		`site_name: "Example"` + "\n" +
+		`language: "en"` + "\n" +
+		`published_time: "2025-01-02T03:04:05Z"` + "\n" +
+		"---\n\n# Article\n\nContent.\n"
+	if got := markdownDocument(doc); got != want {
 		t.Fatalf("output:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func assertMarkdownOutput(t *testing.T, output, wantMarkdown string) {
+	t.Helper()
+	if !strings.HasPrefix(output, "---\nurl: ") {
+		t.Fatalf("output does not begin with YAML frontmatter containing the URL: %q", output)
+	}
+	const separator = "\n---\n\n"
+	at := strings.Index(output, separator)
+	if at < 0 {
+		t.Fatalf("output does not separate YAML frontmatter from Markdown with an empty line: %q", output)
+	}
+	if got := output[at+len(separator):]; got != wantMarkdown {
+		t.Fatalf("Markdown output:\n%q\nwant:\n%q", got, wantMarkdown)
 	}
 }
 
