@@ -212,6 +212,84 @@ func TestRealColeFixtureRestoresHeadlineBeforeBodySections(t *testing.T) {
 	}
 }
 
+func TestRealAlexYangFixturePromotesArticleH2OverSiteMasthead(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-alexyang-vim-ascii-art.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://alexyang.dev/vim-ascii-art/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Making ASCII art in Vim\n") {
+		t.Fatalf("site masthead replaced the article headline:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Markdown, "# Alex Yang") || strings.Count(doc.Text, "Making ASCII art in Vim") != 1 {
+		t.Fatalf("masthead survived or promoted headline was repeated:\n%s", doc.Markdown)
+	}
+	for _, want := range []string{"I like using Vim", ":set virtualedit=all", "Parting words"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing real Alex Yang-derived content %q:\n%s", want, doc.Markdown)
+		}
+	}
+}
+
+func TestRealGitHubBlogFixtureDropsShareControlsAndTrailingTaxonomy(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-github-blog-bug-bounty.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://github.blog/security/next-chapter-restructuring-githubs-bug-bounty-program/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# Next chapter: Restructuring GitHub's bug bounty program", "## What's changed and why", "We'll see you out there"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("missing real GitHub Blog-derived content %q:\n%s", want, doc.Markdown)
+		}
+	}
+	for _, unwanted := range []string{"Share:", "Share on X", "## Tags:", "[security research]", "\n---"} {
+		if strings.Contains(doc.Markdown, unwanted) {
+			t.Errorf("article furniture survived as %q:\n%s", unwanted, doc.Markdown)
+		}
+	}
+}
+
+func TestEditorialTaxonomySectionWithProseIsPreserved(t *testing.T) {
+	html := `<html><head><title>Organizing a Knowledge Base</title><meta property="og:type" content="article"></head><body><article>
+<h1>Organizing a Knowledge Base</h1>
+<p>This guide explains how a growing knowledge base can remain useful when its documents cover many overlapping subjects and audiences.</p>
+<p>A consistent organization scheme helps readers discover related material without forcing every document into one rigid hierarchy.</p>
+<section><h2>Categories</h2><p>Categories provide broad navigation, while tags capture details that cross category boundaries.</p><p>For example, the <a href="/tags/reliability" rel="tag">reliability tag</a> can connect operations and architecture articles.</p></section>
+</article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/guides/organizing-a-knowledge-base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## Categories", "Categories provide broad navigation", "[reliability tag](https://example.com/tags/reliability)"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("editorial taxonomy content was removed as article furniture %q:\n%s", want, doc.Markdown)
+		}
+	}
+}
+
+func TestRealIshmaelFixtureDropsBackToIndexControl(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-ishmael-ghost-cut.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://ishmael.textualize.io/blog/ghost-cut/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Markdown, "## Introducing Ghost Cut") || !strings.Contains(doc.Markdown, "single atomic move operation") {
+		t.Fatalf("real Ishmael-derived article content was lost:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Markdown, "All posts") {
+		t.Fatalf("back-to-index control survived article extraction:\n%s", doc.Markdown)
+	}
+}
+
 func TestRealEbellaniFixtureDoesNotRepeatNestedH2Headline(t *testing.T) {
 	source, err := os.ReadFile("testdata/real-ebellani-programming-languages.html")
 	if err != nil {

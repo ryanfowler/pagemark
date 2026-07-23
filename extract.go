@@ -1038,11 +1038,20 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 		marked := hasArticleHeadlineMarker(b.node)
 		equivalent := restorationTitle != "" && (titleEquivalent(headingText, restorationTitle, a.meta.site) ||
 			marked && articleTitleVariantEquivalent(headingText, restorationTitle))
+		composedBrowserTitle := a.meta.socialTitle == "" && a.headingComposesBrowserTitle(i, headingText)
+		// Minimal publishing templates sometimes reserve h1 for the site name and
+		// use an unmarked h2 for the story. A plain browser title then joins those
+		// two visible headings ("Site - Story"). Treat that exact composition as
+		// metadata agreement so intervening dates/bylines do not make the site
+		// masthead win.
+		if composedBrowserTitle {
+			equivalent = true
+		}
 		// Article headers are often scored as page chrome because they contain a
 		// byline and publication controls. An explicitly marked headline that
 		// agrees with document metadata remains usable across a short run of that
 		// furniture; weaker headings still obey the irrelevant-region score.
-		strongDetachedHeadline := equivalent && marked
+		strongDetachedHeadline := equivalent && (marked || composedBrowserTitle)
 		if a.hasIrrelevantAncestor(b.node) && !strongDetachedHeadline {
 			continue
 		}
@@ -1192,6 +1201,39 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 		return nodes
 	}
 	return withTitle
+}
+
+func (a *analysis) headingComposesBrowserTitle(index int, heading string) bool {
+	browser := normalizeText(a.meta.browserTitle)
+	if browser == "" || normalizedLabel(heading) == "" {
+		return false
+	}
+	runes := []rune(browser)
+	for split, r := range runes {
+		if !isTitleSeparator(r) {
+			continue
+		}
+		left := normalizeText(string(runes[:split]))
+		right := normalizeText(string(runes[split+1:]))
+		var masthead string
+		switch {
+		case normalizedLabel(left) == normalizedLabel(heading):
+			masthead = right
+		case normalizedLabel(right) == normalizedLabel(heading):
+			masthead = left
+		default:
+			continue
+		}
+		if masthead == "" {
+			continue
+		}
+		for i := max(0, index-8); i < index; i++ {
+			if a.blocks[i].kind == "h1" && titleEquivalent(a.blocks[i].text, masthead, a.meta.site) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func articleTitleNode(text string) *html.Node {
@@ -3538,9 +3580,90 @@ func countLinkedRecords(root *html.Node, limit int) int {
 	return count
 }
 
+func isArticleSharingControls(n *html.Node) bool {
+	if n == nil || !strings.EqualFold(n.Data, "ul") || !strings.HasPrefix(normalizedLabel(nodeText(n)), "share") {
+		return false
+	}
+	shareLinks := 0
+	walk(n, func(x *html.Node) bool {
+		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "a") {
+			label := normalizedLabel(attrValue(x, "aria-label"))
+			href := strings.ToLower(attrValue(x, "href"))
+			if strings.HasPrefix(label, "share on ") || containsAny(href, "/share?", "/sharer/", "sharearticle?") {
+				shareLinks++
+			}
+			return false
+		}
+		return true
+	})
+	return shareLinks > 0
+}
+
+func isArticleBackControl(n *html.Node) bool {
+	if n == nil || !containsToken(elementTokens(n), []string{"back"}) {
+		return false
+	}
+	text := normalizedLabel(nodeText(n))
+	links := 0
+	walk(n, func(x *html.Node) bool {
+		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "a") {
+			links++
+			return false
+		}
+		return true
+	})
+	return links == 1 && utf8.RuneCountInString(text) <= 40 && strings.HasSuffix(text, "all posts")
+}
+
+func isArticleTaxonomySeparator(n *html.Node) bool {
+	if n == nil || !strings.EqualFold(n.Data, "hr") {
+		return false
+	}
+	tokens := elementTokens(n)
+	return containsAny(tokens, "tag", "tags", "topic", "topics", "taxonomy", "category", "categories") &&
+		containsAny(tokens, "separator", "divider")
+}
+
+func isArticleTaxonomyRegion(n *html.Node) bool {
+	if n == nil {
+		return false
+	}
+	tag := strings.ToLower(n.Data)
+	if tag != "section" && tag != "div" && tag != "aside" {
+		return false
+	}
+	heading := firstRegionHeading(n)
+	if heading != "tags" && heading != "topics" && heading != "categories" {
+		return false
+	}
+	tagLinks, proseParagraphs := 0, 0
+	walk(n, func(x *html.Node) bool {
+		if x.Type != html.ElementNode {
+			return true
+		}
+		if strings.EqualFold(x.Data, "a") && containsAny(strings.ToLower(attrValue(x, "rel")), "tag") {
+			tagLinks++
+			return false
+		}
+		if strings.EqualFold(x.Data, "p") && normalizeText(nodeText(x)) != "" {
+			proseParagraphs++
+			return false
+		}
+		return true
+	})
+	// A taxonomy heading and rel=tag link are not sufficient by themselves:
+	// articles can discuss categories or topics and link to a live example.
+	// Publication taxonomy furniture is list-like, so retain any region that
+	// contains prose rather than trying to classify it by paragraph length.
+	return tagLinks > 0 && proseParagraphs == 0
+}
+
 func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
+	}
+	if isArticleSharingControls(n) || isArticleBackControl(n) || isArticleTaxonomySeparator(n) || isArticleTaxonomyRegion(n) {
+		return true
 	}
 	if isSubscriptionRegion(n) {
 		// Subscription evidence may live in a trailing child of a page-wide or
