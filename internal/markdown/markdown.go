@@ -6,7 +6,6 @@ import (
 	"io"
 	"math/big"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -1550,8 +1549,6 @@ func (c *converter) safeURL(raw string) (string, bool) {
 	return u.String(), true
 }
 
-var spaces = regexp.MustCompile(`\s+`)
-
 type serializedMedia struct {
 	imageSources map[string]bool
 	frameSources map[string]bool
@@ -1688,10 +1685,7 @@ func matchingNearbyMedia(n *html.Node, media serializedMedia) bool {
 // from media elements and simple wrappers. In particular, prose which merely
 // mentions an HTML tag is not classified as a fallback.
 func parseSerializedMedia(value string) (serializedMedia, bool) {
-	result := serializedMedia{
-		imageSources: make(map[string]bool),
-		frameSources: make(map[string]bool),
-	}
+	var result serializedMedia
 	value = strings.TrimSpace(value)
 	for i := 0; i < 3; i++ {
 		decoded := html.UnescapeString(value)
@@ -1703,6 +1697,10 @@ func parseSerializedMedia(value string) (serializedMedia, bool) {
 	if !strings.HasPrefix(value, "<") || !strings.HasSuffix(value, ">") {
 		return result, false
 	}
+	// Ordinary text nodes are overwhelmingly more common than serialized media.
+	// Allocate the source sets only after the cheap fragment check succeeds.
+	result.imageSources = make(map[string]bool)
+	result.frameSources = make(map[string]bool)
 
 	allowed := func(tag string) bool {
 		switch tag {
@@ -1766,7 +1764,59 @@ func tokenToNode(token html.Token) *html.Node {
 	return &html.Node{Type: html.ElementNode, Data: token.Data, Attr: token.Attr}
 }
 
-func clean(s string) string { return strings.TrimSpace(spaces.ReplaceAllString(s, " ")) }
+// clean trims Unicode whitespace and collapses the ASCII whitespace recognized
+// by the previous regexp. It returns a slice of s without allocating when the
+// input is already normalized, which is the common case for HTML text nodes.
+func clean(s string) string {
+	start := 0
+	for start < len(s) {
+		r, size := utf8.DecodeRuneInString(s[start:])
+		if !unicode.IsSpace(r) {
+			break
+		}
+		start += size
+	}
+	end := len(s)
+	for end > start {
+		r, size := utf8.DecodeLastRuneInString(s[:end])
+		if !unicode.IsSpace(r) {
+			break
+		}
+		end -= size
+	}
+	if start == end {
+		return ""
+	}
+	firstSpace := -1
+	for i := start; i < end; i++ {
+		if asciiSpace(s[i]) {
+			firstSpace = i
+			break
+		}
+	}
+	if firstSpace < 0 {
+		return s[start:end]
+	}
+	var b strings.Builder
+	b.Grow(end - start)
+	b.WriteString(s[start:firstSpace])
+	for i := firstSpace; i < end; {
+		for i < end && asciiSpace(s[i]) {
+			i++
+		}
+		b.WriteByte(' ')
+		run := i
+		for i < end && !asciiSpace(s[i]) {
+			i++
+		}
+		b.WriteString(s[run:i])
+	}
+	return b.String()
+}
+
+func asciiSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r'
+}
 func inlineText(s string) string {
 	first, _ := utf8.DecodeRuneInString(s)
 	last, _ := utf8.DecodeLastRuneInString(s)
