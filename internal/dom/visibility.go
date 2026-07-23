@@ -52,34 +52,54 @@ func AccessibleSVGLabel(n *html.Node) string {
 // hiddenByAttributes is shared by ordinary visibility checks and opaque SVG
 // handling so the latter cannot bypass part of the visibility policy.
 func hiddenByAttributes(n *html.Node) bool {
-	if n == nil || n.Type != html.ElementNode {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(attr(n, "aria-hidden")), "true") ||
-		hiddenByNonARIAAttributes(n)
+	return hiddenByAttributesMode(n, true)
 }
 
 func hiddenByNonARIAAttributes(n *html.Node) bool {
+	return hiddenByAttributesMode(n, false)
+}
+
+// hiddenByAttributesMode scans attributes once. Visibility checks are among
+// the hottest DOM operations, and repeatedly looking up each relevant
+// attribute made nodes with large attribute lists disproportionately costly.
+func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	if hasAttr(n, "hidden") || hasAttr(n, "inert") ||
-		strings.EqualFold(strings.TrimSpace(attr(n, "aria-modal")), "true") {
-		return true
+	open := false
+	style := ""
+	for _, a := range n.Attr {
+		switch {
+		case strings.EqualFold(a.Key, "hidden"), strings.EqualFold(a.Key, "inert"):
+			return true
+		case strings.EqualFold(a.Key, "open"):
+			open = true
+		case strings.EqualFold(a.Key, "aria-hidden"):
+			if includeARIAHidden && strings.EqualFold(strings.TrimSpace(a.Val), "true") {
+				return true
+			}
+		case strings.EqualFold(a.Key, "aria-modal"):
+			if strings.EqualFold(strings.TrimSpace(a.Val), "true") {
+				return true
+			}
+		case strings.EqualFold(a.Key, "style"):
+			style = a.Val
+		}
 	}
 	// A dialog is not rendered until its boolean open attribute is present.
-	// Treating a closed dialog as content leaks modal forms, profiles, and
-	// menus that are only templates for later interaction.
-	if strings.EqualFold(n.Data, "dialog") && !hasAttr(n, "open") {
+	if strings.EqualFold(n.Data, "dialog") && !open {
 		return true
 	}
-	style := strings.Map(func(r rune) rune {
+	if style == "" {
+		return false
+	}
+	normalized := strings.Map(func(r rune) rune {
 		if unicode.IsSpace(r) {
 			return -1
 		}
 		return unicode.ToLower(r)
-	}, attr(n, "style"))
-	return strings.Contains(style, "display:none") || strings.Contains(style, "visibility:hidden")
+	}, style)
+	return strings.Contains(normalized, "display:none") || strings.Contains(normalized, "visibility:hidden")
 }
 
 func attr(n *html.Node, key string) string {
