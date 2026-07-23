@@ -1967,24 +1967,42 @@ func endsLineBreak(value string) bool {
 }
 
 func codeInfo(n *html.Node) string {
-	code := n.FirstChild
-	for code != nil && code.Type != html.ElementNode {
-		code = code.NextSibling
-	}
-	if code == nil || !strings.EqualFold(code.Data, "code") {
-		return ""
-	}
-	for _, class := range strings.Fields(attr(code, "class")) {
-		info := ""
-		if strings.HasPrefix(strings.ToLower(class), "language-") {
-			info = class[len("language-"):]
-		} else if strings.HasPrefix(strings.ToLower(class), "lang-") {
-			info = class[len("lang-"):]
-		}
+	valid := func(info string) string {
 		if info != "" && strings.IndexFunc(info, func(r rune) bool {
 			return !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("_+-#.", r)
 		}) < 0 {
 			return info
+		}
+		return ""
+	}
+	code := n.FirstChild
+	for code != nil && code.Type != html.ElementNode {
+		code = code.NextSibling
+	}
+	if code != nil && strings.EqualFold(code.Data, "code") {
+		for _, class := range strings.Fields(attr(code, "class")) {
+			lower := strings.ToLower(class)
+			if strings.HasPrefix(lower, "language-") {
+				if info := valid(class[len("language-"):]); info != "" {
+					return info
+				}
+			} else if strings.HasPrefix(lower, "lang-") {
+				if info := valid(class[len("lang-"):]); info != "" {
+					return info
+				}
+			}
+		}
+	}
+	// GitHub and compatible renderers put the language marker on the wrapper
+	// around a bare pre rather than on a nested code element.
+	if parent := n.Parent; parent != nil && parent.Type == html.ElementNode {
+		for _, class := range strings.Fields(attr(parent, "class")) {
+			const prefix = "highlight-source-"
+			if strings.HasPrefix(strings.ToLower(class), prefix) {
+				if info := valid(class[len(prefix):]); info != "" {
+					return info
+				}
+			}
 		}
 	}
 	return ""

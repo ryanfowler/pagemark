@@ -158,6 +158,25 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	a.pageType = pageType
 	a.score(pageType)
 	selected, repeatedExcluded, repeatedDropped := a.selectedNodes(pageType)
+	// Rendered Markdown documents are already an explicit primary-content
+	// boundary. Selecting their complete root both removes surrounding project
+	// chrome (file browsers, repository controls, and sidebars) and preserves
+	// direct text inside structures such as disclosure details, which is not a
+	// standalone scoring block.
+	authored := renderedMarkdownDocument(root)
+	if authored != nil {
+		selected = []*html.Node{authored}
+		repeatedExcluded = nil
+		repeatedDropped = 0
+		for i := range a.blocks {
+			inside := nodeWithin(a.blocks[i].node, authored)
+			a.blocks[i].selected = inside
+			if inside {
+				a.blocks[i].reasons = append(a.blocks[i].reasons, "inside rendered Markdown document")
+			}
+		}
+	}
+	a.populateBlockDiagnostics()
 	fallback := "primary"
 	if len(selected) == 0 {
 		selected = a.semanticFallback()
@@ -166,7 +185,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		fallback = "semantic-main"
 	}
 	quality := a.quality(selected)
-	if (pageType == PageTypeArticle || pageType == PageTypeGeneric) && quality < .42 {
+	if authored == nil && (pageType == PageTypeArticle || pageType == PageTypeGeneric) && quality < .42 {
 		// Preserve classes in readability's cloned result so the normal auxiliary
 		// exclusion can still recognize empty comments and other marked regions.
 		// Classes are not emitted to Markdown.
@@ -516,6 +535,43 @@ func linkedPreLineEvidence(root *html.Node) (anchors, linkedLines int) {
 	return anchors, linkedLines
 }
 
+// renderedMarkdownDocument identifies a complete authored document embedded
+// in an application shell. The conjunction is intentionally strict: broad
+// names such as "content" or itemprop=text alone occur on ordinary articles
+// and product descriptions, while markdown-body is a convention used by
+// rendered repository READMEs and similar Markdown viewers.
+func renderedMarkdownDocument(root *html.Node) *html.Node {
+	var best *html.Node
+	bestLength := 0
+	walk(root, func(n *html.Node) bool {
+		if n.Type == html.ElementNode && hardHidden(n) {
+			return false
+		}
+		if n.Type != html.ElementNode {
+			return true
+		}
+		if best != nil && nodeWithin(n, best) {
+			return false
+		}
+		markdownBody := false
+		for _, class := range strings.Fields(attrValue(n, "class")) {
+			if strings.EqualFold(class, "markdown-body") {
+				markdownBody = true
+				break
+			}
+		}
+		if !markdownBody || !strings.EqualFold(attrValue(n, "itemprop"), "text") {
+			return true
+		}
+		length := utf8.RuneCountInString(normalizeText(nodeText(n)))
+		if length > bestLength {
+			best, bestLength = n, length
+		}
+		return false
+	})
+	return best
+}
+
 func isGenericContainer(tag string) bool {
 	switch tag {
 	case "div", "section", "article", "main", "address":
@@ -783,15 +839,19 @@ func (a *analysis) score(pt PageType) {
 	// not pulled into the output.
 	a.strengthenArticleContinuity(pt)
 
-	if a.diag != nil {
-		for i := range a.blocks {
-			b := &a.blocks[i]
-			text := b.text
-			if len(text) > 160 {
-				text = text[:160]
-			}
-			a.diag.Blocks = append(a.diag.Blocks, BlockDiagnostic{ID: b.id, Kind: b.kind, Text: text, Score: b.score, Selected: b.selected, Reasons: append([]string(nil), b.reasons...)})
+}
+
+func (a *analysis) populateBlockDiagnostics() {
+	if a.diag == nil {
+		return
+	}
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		text := b.text
+		if len(text) > 160 {
+			text = text[:160]
 		}
+		a.diag.Blocks = append(a.diag.Blocks, BlockDiagnostic{ID: b.id, Kind: b.kind, Text: text, Score: b.score, Selected: b.selected, Reasons: append([]string(nil), b.reasons...)})
 	}
 }
 
