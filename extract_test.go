@@ -1809,6 +1809,27 @@ func TestArticleSiteSuffixRestoresNormalizedTitle(t *testing.T) {
 	}
 }
 
+func TestTitleRestorationUsesRegistrableDomainBelowMultiLabelSuffix(t *testing.T) {
+	body := `<body><article><p>This article has substantial opening prose but deliberately omits a visible source headline from the selected body.</p><p>A second paragraph ensures there is enough article content for metadata title restoration.</p></article></body>`
+	for _, tc := range []struct {
+		name, title, want string
+	}{
+		{name: "public suffix label is not site", title: "COM | Introduction", want: "# COM | Introduction\n"},
+		{name: "registrable label is site", title: "Example | Introduction", want: "# Introduction\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			html := `<html><head><title>` + tc.title + `</title></head>` + body + `</html>`
+			doc, err := ExtractBytes([]byte(html), "https://docs.example.com.au/essays/introduction", WithPageType(PageTypeArticle))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(doc.Markdown, tc.want) {
+				t.Fatalf("restored title does not start with %q:\n%s", tc.want, doc.Markdown)
+			}
+		})
+	}
+}
+
 func TestAlreadySelectedArticleTitleRemainsOnce(t *testing.T) {
 	html := `<html><head><meta property="og:title" content="Already Selected Title"></head><body><article><h1>Already Selected Title</h1><p>This article contains enough explanatory prose to retain its already selected source title in the output.</p><p>More substantive prose ensures title recovery does not need to synthesize another heading.</p></article></body></html>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
@@ -2772,6 +2793,25 @@ func TestProseHeavyDocumentationContainerIsInferredAsDocumentation(t *testing.T)
 	}
 	if doc.PageType != PageTypeDocumentation {
 		t.Fatalf("page type = %q, want documentation", doc.PageType)
+	}
+}
+
+func TestGenericDocIDDoesNotReclassifyNarrativeArticle(t *testing.T) {
+	paragraphs := []string{
+		"The first observation explains how the neighborhood changed over several decades and why those gradual changes mattered to the families who continued living there.",
+		"A second account follows the people who maintained the shared garden, describing the practical decisions and personal relationships that kept the project alive.",
+		"The history then turns to a difficult winter when damaged buildings and interrupted transit forced residents to organize new ways of supporting one another.",
+		"Several participants remember that period differently, but their stories agree that informal gathering places became essential sources of news, supplies, and reassurance.",
+		"Later improvements brought safer streets and more reliable services while also raising concerns that longtime tenants would no longer be able to afford their homes.",
+		"The concluding reflection connects these experiences and argues that successful planning must preserve both physical places and the communities that give them meaning.",
+	}
+	html := `<html><head><title>A neighborhood in transition</title></head><body><main id="doc"><h1>A neighborhood in transition</h1><p>` + strings.Join(paragraphs, `</p><p>`) + `</p></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/essays/neighborhood-transition")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeArticle {
+		t.Fatalf("page type = %q, want article", doc.PageType)
 	}
 }
 
