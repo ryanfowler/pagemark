@@ -162,6 +162,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	}
 	a.findBase()
 	a.extractMetadata()
+	a.indexDiscussionBodies(root)
 	a.segment(root, false)
 	a.detectTextListingPre()
 	pageType, confidence, candidates := a.inferType()
@@ -243,7 +244,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		visualAuxiliary := o.includeImages && isVisualElement(n) && !meaningfulVisual(n)
 		return a.hasIrrelevantAncestor(n) || repeatedExcluded[n] || discussionAuxiliary || visualAuxiliary
 	}
-	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: append([]string(nil), o.urlPolicy.Schemes...), AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude, PruneEmptyHeadings: true}
+	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: o.urlPolicy.Schemes, AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude, PruneEmptyHeadings: true}
 	if a.textListingPre != nil {
 		cfg.TextPreformatted = func(n *html.Node) bool { return n == a.textListingPre }
 	}
@@ -253,11 +254,17 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		return nil, ErrNoContent
 	}
 	doc := &Document{URL: rawURL, CanonicalURL: a.meta.canonical, Title: a.meta.title, Description: a.meta.description, Author: a.meta.author, SiteName: a.meta.site, Language: a.meta.language, PublishedTime: a.meta.published, PageType: pageType, PageTypeScore: confidence, Markdown: mr.Markdown, Text: mr.Text, Quality: clamp(quality), Diagnostics: a.diag, Stats: Stats{Elements: a.elements, TextBytes: a.textBytes, Blocks: len(a.blocks), OutputBytes: len(mr.Markdown)}}
-	for _, l := range mr.Links {
-		doc.Links = append(doc.Links, Link{Text: l.Text, URL: l.URL})
+	if len(mr.Links) > 0 {
+		doc.Links = make([]Link, len(mr.Links))
+		for i, l := range mr.Links {
+			doc.Links[i] = Link{Text: l.Text, URL: l.URL}
+		}
 	}
-	for _, im := range mr.Images {
-		doc.Images = append(doc.Images, Image{Alt: im.Alt, URL: im.URL})
+	if len(mr.Images) > 0 {
+		doc.Images = make([]Image, len(mr.Images))
+		for i, im := range mr.Images {
+			doc.Images[i] = Image{Alt: im.Alt, URL: im.URL}
+		}
 	}
 	doc.Stats.SelectedBlocks = mr.EmittedBlocks
 	if repeatedDropped > 0 {
@@ -273,8 +280,11 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		a.diag.Fallback = fallback
 		a.diag.RejectedLinks = mr.Rejected
 	}
-	for _, section := range mr.Sections {
-		doc.Sections = append(doc.Sections, Section{Heading: section.Heading, Text: section.Text})
+	if len(mr.Sections) > 0 {
+		doc.Sections = make([]Section, len(mr.Sections))
+		for i, section := range mr.Sections {
+			doc.Sections[i] = Section{Heading: section.Heading, Text: section.Text}
+		}
 	}
 	if !o.includeMetadata {
 		doc.Title = ""
@@ -614,28 +624,31 @@ func (a *analysis) hasDiscussionBodyDescendant(n *html.Node) bool {
 	if n == nil {
 		return false
 	}
-	state := a.nodeStates[n]
-	if state.discussionBody != 0 {
-		return state.discussionBody == 2
+	return a.nodeStates[n].discussionBody == 2
+}
+
+// indexDiscussionBodies performs one post-order pass and records only positive
+// results. The segmenter asks this question for many nested containers; caching
+// a negative result for every element used a large hash-map entry per DOM node
+// even though almost all pages contain no discussion-body marker at all.
+func (a *analysis) indexDiscussionBodies(n *html.Node) bool {
+	if n == nil || n.Type == html.ElementNode && hardHidden(n) {
+		return false
 	}
-	// Mark false before descending. HTML trees cannot normally cycle, but doing
-	// so also prevents malformed caller-built trees from recursing forever.
-	state.discussionBody = 1
-	a.nodeStates[n] = state
+	bodyBelow := false
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-		// Only elements can be marked discussion bodies. Avoid populating the
-		// memoization map with every text and comment node in the document.
-		if ch.Type != html.ElementNode || hardHidden(ch) {
-			continue
-		}
-		if isDiscussionBodyContainer(ch) || a.hasDiscussionBodyDescendant(ch) {
-			state = a.nodeStates[n]
-			state.discussionBody = 2
-			a.nodeStates[n] = state
-			return true
+		// Text and comment nodes cannot contain a marked body. Avoid dispatching a
+		// recursive call for every leaf in prose-heavy documents.
+		if ch.Type == html.ElementNode && a.indexDiscussionBodies(ch) {
+			bodyBelow = true
 		}
 	}
-	return false
+	if bodyBelow {
+		state := a.nodeStates[n]
+		state.discussionBody = 2
+		a.nodeStates[n] = state
+	}
+	return bodyBelow || isDiscussionBodyContainer(n)
 }
 
 func hasBlockDescendant(n *html.Node) bool {
