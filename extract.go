@@ -619,7 +619,9 @@ func (a *analysis) hasDiscussionBodyDescendant(n *html.Node) bool {
 	// so also prevents malformed caller-built trees from recursing forever.
 	a.discussionBodyDescendants[n] = 1
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-		if hardHidden(ch) {
+		// Only elements can be marked discussion bodies. Avoid populating the
+		// memoization map with every text and comment node in the document.
+		if ch.Type != html.ElementNode || hardHidden(ch) {
 			continue
 		}
 		if isDiscussionBodyContainer(ch) || a.hasDiscussionBodyDescendant(ch) {
@@ -3516,9 +3518,13 @@ func (a *analysis) hasSemanticArticleBefore(n *html.Node) bool {
 			if hardHidden(x) {
 				return false
 			}
+			// All callers query regions (elements), so indexing text nodes only
+			// inflated this document-wide map.
+			if x.Type != html.ElementNode {
+				return true
+			}
 			a.semanticArticleBefore[x] = seen
-			if x.Type == html.ElementNode && strings.EqualFold(x.Data, "article") &&
-				!elementContainsAny(x, "card") {
+			if strings.EqualFold(x.Data, "article") && !elementContainsAny(x, "card") {
 				seen = true
 			}
 			return true
@@ -3535,7 +3541,9 @@ func (a *analysis) hasSemanticArticleAfter(n *html.Node) bool {
 			if hardHidden(x) {
 				return false
 			}
-			nodes = append(nodes, x)
+			if x.Type == html.ElementNode {
+				nodes = append(nodes, x)
+			}
 			return true
 		})
 		seen := false
@@ -5236,7 +5244,49 @@ func nearestNeutralDiscussionRecord(n *html.Node) *html.Node {
 	return nil
 }
 func elementTokens(n *html.Node) string {
-	return strings.ToLower(attrValue(n, "id") + " " + attrValue(n, "class") + " " + attrValue(n, "role"))
+	if n == nil || n.Type != html.ElementNode {
+		return ""
+	}
+	// HTML parsing already normalizes attribute keys, but retain EqualFold for
+	// caller-built trees. Collect in one pass instead of doing three scans and
+	// allocating both a concatenation and its lower-case copy.
+	var id, class, role string
+	for _, attr := range n.Attr {
+		switch {
+		case id == "" && strings.EqualFold(attr.Key, "id"):
+			id = attr.Val
+		case class == "" && strings.EqualFold(attr.Key, "class"):
+			class = attr.Val
+		case role == "" && strings.EqualFold(attr.Key, "role"):
+			role = attr.Val
+		}
+	}
+	length := len(id) + len(class) + len(role)
+	if length == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(length + 2)
+	for i, value := range [...]string{id, class, role} {
+		if i != 0 {
+			b.WriteByte(' ')
+		}
+		for j := 0; j < len(value); {
+			if value[j] < utf8.RuneSelf {
+				c := value[j]
+				if c >= 'A' && c <= 'Z' {
+					c += 'a' - 'A'
+				}
+				b.WriteByte(c)
+				j++
+				continue
+			}
+			r, size := utf8.DecodeRuneInString(value[j:])
+			b.WriteRune(unicode.ToLower(r))
+			j += size
+		}
+	}
+	return b.String()
 }
 
 // elementContainsAny tests the token-bearing attributes without concatenating
