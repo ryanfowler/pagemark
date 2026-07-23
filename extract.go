@@ -4723,6 +4723,7 @@ func commentRecordTextLength(n *html.Node) int {
 
 func commentRecordText(n *html.Node) string {
 	var text strings.Builder
+	wrote := false
 	walk(n, func(x *html.Node) bool {
 		if hardHidden(x) {
 			return false
@@ -4734,8 +4735,11 @@ func commentRecordText(n *html.Node) string {
 			}
 		}
 		if x.Type == html.TextNode {
+			if wrote {
+				text.WriteByte(' ')
+			}
 			text.WriteString(x.Data)
-			text.WriteByte(' ')
+			wrote = true
 		}
 		return true
 	})
@@ -5464,6 +5468,7 @@ func rawNodeText(n *html.Node) string {
 }
 func nodeText(n *html.Node) string {
 	var b strings.Builder
+	wrote := false
 	walk(n, func(x *html.Node) bool {
 		if dom.Hidden(x) {
 			return false
@@ -5475,8 +5480,14 @@ func nodeText(n *html.Node) string {
 			}
 		}
 		if x.Type == html.TextNode {
+			// Separate adjacent nodes without appending a trailing byte. A builder
+			// containing one exact-sized text node otherwise grows just for that
+			// byte, doubling allocation for the common paragraph case.
+			if wrote {
+				b.WriteByte(' ')
+			}
 			b.WriteString(x.Data)
-			b.WriteByte(' ')
+			wrote = true
 		}
 		return true
 	})
