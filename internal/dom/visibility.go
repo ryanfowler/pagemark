@@ -70,20 +70,40 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 	open := false
 	style := ""
 	for _, a := range n.Attr {
-		switch {
-		case strings.EqualFold(a.Key, "hidden"), strings.EqualFold(a.Key, "inert"):
+		key := a.Key
+		// The parser canonicalizes attribute names to lowercase. Only caller-built
+		// ExtractNode trees need the case-insensitive fallback.
+		if key != "hidden" && key != "inert" && key != "open" && key != "aria-hidden" &&
+			key != "aria-modal" && key != "style" {
+			switch {
+			case strings.EqualFold(key, "hidden"):
+				key = "hidden"
+			case strings.EqualFold(key, "inert"):
+				key = "inert"
+			case strings.EqualFold(key, "open"):
+				key = "open"
+			case strings.EqualFold(key, "aria-hidden"):
+				key = "aria-hidden"
+			case strings.EqualFold(key, "aria-modal"):
+				key = "aria-modal"
+			case strings.EqualFold(key, "style"):
+				key = "style"
+			}
+		}
+		switch key {
+		case "hidden", "inert":
 			return true
-		case strings.EqualFold(a.Key, "open"):
+		case "open":
 			open = true
-		case strings.EqualFold(a.Key, "aria-hidden"):
-			if includeARIAHidden && strings.EqualFold(strings.TrimSpace(a.Val), "true") {
+		case "aria-hidden":
+			if includeARIAHidden && equalFoldTrimmedTrue(a.Val) {
 				return true
 			}
-		case strings.EqualFold(a.Key, "aria-modal"):
-			if strings.EqualFold(strings.TrimSpace(a.Val), "true") {
+		case "aria-modal":
+			if equalFoldTrimmedTrue(a.Val) {
 				return true
 			}
-		case strings.EqualFold(a.Key, "style"):
+		case "style":
 			style = a.Val
 		}
 	}
@@ -100,6 +120,11 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 // hiddenStyle recognizes the two relevant declarations in one pass, without
 // allocating a normalized copy of every style attribute. The common ASCII
 // path avoids Unicode tables and decoding.
+func equalFoldTrimmedTrue(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "true" || strings.EqualFold(value, "true")
+}
+
 func hiddenStyle(s string) bool {
 	const display = "display:none"
 	const visibility = "visibility:hidden"

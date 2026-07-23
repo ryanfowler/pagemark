@@ -35,6 +35,16 @@ type block struct {
 	reasons    []string
 }
 
+// nodeState combines the per-node memoization used by classification passes.
+// Keeping one map avoids paying for several independent hash tables containing
+// the same DOM pointers on large pages.
+type nodeState struct {
+	irrelevant, articleAuxiliary, inferenceAuxiliary uint8
+	discussionBody, articleComment, commentCount     uint8
+	articleDescendant, semanticBefore, semanticAfter uint8
+	articleProseBefore, selfReference                uint8
+}
+
 type analysis struct {
 	o                                               options
 	root                                            *html.Node
@@ -45,14 +55,9 @@ type analysis struct {
 	pageType                                        PageType
 	pageTypeExplicit                                bool
 	diag                                            *Diagnostics
-	irrelevant, articleAuxiliary                    map[*html.Node]bool
-	inferenceAuxiliary                              map[*html.Node]uint8
-	discussionBodyDescendants                       map[*html.Node]uint8
-	articleCommentRegions, commentRecordCounts      map[*html.Node]uint8
-	semanticArticleDescendants                      map[*html.Node]uint8
-	semanticArticleBefore, semanticArticleAfter     map[*html.Node]bool
-	articleProseBefore                              map[*html.Node]bool
-	selfReferences                                  map[*html.Node]uint8
+	nodeStates                                      map[*html.Node]nodeState
+	semanticBeforeIndexed, semanticAfterIndexed     bool
+	articleProseBeforeIndexed                       bool
 	microdataArticleRecords                         map[*html.Node]bool
 	listingWrapperRecords                           map[*html.Node]map[*html.Node]bool
 	dominantMicrodataArticle, textListingPre        *html.Node
@@ -148,7 +153,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		}
 		page = u
 	}
-	a := &analysis{o: o, root: root, pageURL: page, base: page, irrelevant: make(map[*html.Node]bool), articleAuxiliary: make(map[*html.Node]bool)}
+	a := &analysis{o: o, root: root, pageURL: page, base: page, nodeStates: make(map[*html.Node]nodeState)}
 	if o.diagnostics {
 		a.diag = &Diagnostics{ProfileVersion: "1", Fallback: "primary"}
 	}
@@ -609,15 +614,14 @@ func (a *analysis) hasDiscussionBodyDescendant(n *html.Node) bool {
 	if n == nil {
 		return false
 	}
-	if state := a.discussionBodyDescendants[n]; state != 0 {
-		return state == 2
-	}
-	if a.discussionBodyDescendants == nil {
-		a.discussionBodyDescendants = make(map[*html.Node]uint8)
+	state := a.nodeStates[n]
+	if state.discussionBody != 0 {
+		return state.discussionBody == 2
 	}
 	// Mark false before descending. HTML trees cannot normally cycle, but doing
 	// so also prevents malformed caller-built trees from recursing forever.
-	a.discussionBodyDescendants[n] = 1
+	state.discussionBody = 1
+	a.nodeStates[n] = state
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
 		// Only elements can be marked discussion bodies. Avoid populating the
 		// memoization map with every text and comment node in the document.
@@ -625,7 +629,9 @@ func (a *analysis) hasDiscussionBodyDescendant(n *html.Node) bool {
 			continue
 		}
 		if isDiscussionBodyContainer(ch) || a.hasDiscussionBodyDescendant(ch) {
-			a.discussionBodyDescendants[n] = 2
+			state = a.nodeStates[n]
+			state.discussionBody = 2
+			a.nodeStates[n] = state
 			return true
 		}
 	}
@@ -1023,7 +1029,7 @@ func (a *analysis) ensureDocumentTitle(nodes []*html.Node, cfg markdown.Config, 
 		return nodes
 	}
 	titleNode := articleTitleNode(title)
-	a.irrelevant[titleNode] = false
+	a.setIrrelevant(titleNode, false)
 	withTitle := append([]*html.Node{titleNode}, nodes...)
 	if !a.titleLeavesOutputForArticleProse(withTitle, cfg) {
 		return nodes
@@ -1132,14 +1138,14 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 					// Exclude the nested masthead when removing its block root cannot
 					// affect that selected ancestor.
 					if !directlySelected {
-						a.irrelevant[b.node] = true
+						a.setIrrelevant(b.node, true)
 					}
 				}
 			}
 			if !directlySelected {
-				a.irrelevant[candidate.node] = true
+				a.setIrrelevant(candidate.node, true)
 				title := articleTitleNode(articleHeadingText(candidate.node))
-				a.irrelevant[title] = false
+				a.setIrrelevant(title, false)
 				withTitle := append([]*html.Node{title}, content...)
 				if a.titleLeavesOutputForArticleProse(withTitle, cfg) {
 					return withTitle
@@ -1164,10 +1170,10 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 		content := nodes
 		if candidate.kind == "h2" || !directlySelected {
 			title = articleTitleNode(articleHeadingText(candidate.node))
-			a.irrelevant[title] = false
+			a.setIrrelevant(title, false)
 			content = removeSelectedNode(content, candidate.node)
 			if !directlySelected {
-				a.irrelevant[candidate.node] = true
+				a.setIrrelevant(candidate.node, true)
 			}
 		}
 		if candidate.kind == "h2" {
@@ -1213,7 +1219,7 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 	title := articleTitleNode(restorationTitle)
 	// Synthetic nodes are not part of the indexed DOM. Explicitly mark this one
 	// as relevant so article auxiliary heuristics cannot classify it by itself.
-	a.irrelevant[title] = false
+	a.setIrrelevant(title, false)
 	withTitle := append([]*html.Node{title}, content...)
 	if !a.titleLeavesOutputForArticleProse(withTitle, cfg) {
 		return nodes
@@ -1297,8 +1303,10 @@ func (a *analysis) cloneWithHeadingDemotions(n *html.Node, demote map[*html.Node
 	if demote[n] {
 		clone.Data = "h2"
 	}
-	if irrelevant, ok := a.irrelevant[n]; ok {
-		a.irrelevant[clone] = irrelevant
+	if state := a.nodeStates[n].irrelevant; state != 0 {
+		cloneState := a.nodeStates[clone]
+		cloneState.irrelevant = state
+		a.nodeStates[clone] = cloneState
 	}
 	for child := n.FirstChild; child != nil; child = child.NextSibling {
 		clone.AppendChild(a.cloneWithHeadingDemotions(child, demote))
@@ -3369,9 +3377,18 @@ func hasNavigationShape(n *html.Node) bool {
 	return controls(n) > 1
 }
 
+func (a *analysis) setIrrelevant(n *html.Node, irrelevant bool) {
+	state := a.nodeStates[n]
+	state.irrelevant = 1
+	if irrelevant {
+		state.irrelevant = 2
+	}
+	a.nodeStates[n] = state
+}
+
 func (a *analysis) isIrrelevantNode(n *html.Node) bool {
-	if irrelevant, ok := a.irrelevant[n]; ok {
-		return irrelevant
+	if state := a.nodeStates[n].irrelevant; state != 0 {
+		return state == 2
 	}
 	irrelevant := irrelevantNode(n) || isAdvertisementRegion(n)
 	// An empty comments header is auxiliary regardless of the selected profile.
@@ -3392,7 +3409,7 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 		irrelevant = a.pageType == PageTypeArticle ||
 			(a.pageType == PageTypeListing && !a.pageTypeExplicit && isPromotionalCardRegion(n))
 	}
-	a.irrelevant[n] = irrelevant
+	a.setIrrelevant(n, irrelevant)
 	return irrelevant
 }
 
@@ -3401,11 +3418,8 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 // recommendation cards cannot cause that type to become a listing in the first
 // place.
 func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
-	if a.inferenceAuxiliary == nil {
-		a.inferenceAuxiliary = make(map[*html.Node]uint8)
-	}
 	for p := n; p != nil; p = p.Parent {
-		switch a.inferenceAuxiliary[p] {
+		switch a.nodeStates[p].inferenceAuxiliary {
 		case 1:
 			a.cacheInferenceAuxiliaryPath(n, p, 1)
 			return true
@@ -3450,7 +3464,9 @@ func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 // every query. The second parent walk is cheap and only occurs on cache misses.
 func (a *analysis) cacheInferenceAuxiliaryPath(n, end *html.Node, value uint8) {
 	for p := n; p != nil; p = p.Parent {
-		a.inferenceAuxiliary[p] = value
+		state := a.nodeStates[p]
+		state.inferenceAuxiliary = value
+		a.nodeStates[p] = state
 		if p == end {
 			return
 		}
@@ -3509,8 +3525,8 @@ func (a *analysis) isTrailingSocialCardRegion(n *html.Node) bool {
 // index. Building the index once avoids repeatedly scanning preceding sibling
 // subtrees for every trailing candidate.
 func (a *analysis) hasSemanticArticleBefore(n *html.Node) bool {
-	if a.semanticArticleBefore == nil {
-		a.semanticArticleBefore = make(map[*html.Node]bool)
+	if !a.semanticBeforeIndexed {
+		a.semanticBeforeIndexed = true
 		seen := false
 		walk(a.root, func(x *html.Node) bool {
 			if hardHidden(x) {
@@ -3521,19 +3537,24 @@ func (a *analysis) hasSemanticArticleBefore(n *html.Node) bool {
 			if x.Type != html.ElementNode {
 				return true
 			}
-			a.semanticArticleBefore[x] = seen
+			state := a.nodeStates[x]
+			state.semanticBefore = 1
+			if seen {
+				state.semanticBefore = 2
+			}
+			a.nodeStates[x] = state
 			if strings.EqualFold(x.Data, "article") && !elementContainsAny(x, "card") {
 				seen = true
 			}
 			return true
 		})
 	}
-	return a.semanticArticleBefore[n]
+	return a.nodeStates[n].semanticBefore == 2
 }
 
 func (a *analysis) hasSemanticArticleAfter(n *html.Node) bool {
-	if a.semanticArticleAfter == nil {
-		a.semanticArticleAfter = make(map[*html.Node]bool)
+	if !a.semanticAfterIndexed {
+		a.semanticAfterIndexed = true
 		var nodes []*html.Node
 		walk(a.root, func(x *html.Node) bool {
 			if hardHidden(x) {
@@ -3547,32 +3568,35 @@ func (a *analysis) hasSemanticArticleAfter(n *html.Node) bool {
 		seen := false
 		for i := len(nodes) - 1; i >= 0; i-- {
 			x := nodes[i]
-			a.semanticArticleAfter[x] = seen
+			state := a.nodeStates[x]
+			state.semanticAfter = 1
+			if seen {
+				state.semanticAfter = 2
+			}
+			a.nodeStates[x] = state
 			if x.Type == html.ElementNode && strings.EqualFold(x.Data, "article") &&
 				!elementContainsAny(x, "card") {
 				seen = true
 			}
 		}
 	}
-	return a.semanticArticleAfter[n]
+	return a.nodeStates[n].semanticAfter == 2
 }
 
 func (a *analysis) hasSelfReference(root *html.Node) (result bool) {
 	if root == nil || hardHidden(root) {
 		return false
 	}
-	if state := a.selfReferences[root]; state != 0 {
+	if state := a.nodeStates[root].selfReference; state != 0 {
 		return state == 2
 	}
-	if a.selfReferences == nil {
-		a.selfReferences = make(map[*html.Node]uint8)
-	}
 	defer func() {
+		state := a.nodeStates[root]
+		state.selfReference = 1
 		if result {
-			a.selfReferences[root] = 2
-		} else {
-			a.selfReferences[root] = 1
+			state.selfReference = 2
 		}
+		a.nodeStates[root] = state
 	}()
 
 	target := a.meta.canonical
@@ -3826,11 +3850,16 @@ func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	if auxiliary, ok := a.articleAuxiliary[n]; ok {
-		return auxiliary
+	if state := a.nodeStates[n].articleAuxiliary; state != 0 {
+		return state == 2
 	}
 	auxiliary := a.articleAuxiliaryNodeUncached(n)
-	a.articleAuxiliary[n] = auxiliary
+	state := a.nodeStates[n]
+	state.articleAuxiliary = 1
+	if auxiliary {
+		state.articleAuxiliary = 2
+	}
+	a.nodeStates[n] = state
 	return auxiliary
 }
 
@@ -4315,8 +4344,8 @@ func marketingInteractions(n *html.Node) (interactions, links int) {
 }
 
 func (a *analysis) hasLongArticleProseBefore(n *html.Node) bool {
-	if a.articleProseBefore == nil {
-		a.articleProseBefore = make(map[*html.Node]bool)
+	if !a.articleProseBeforeIndexed {
+		a.articleProseBeforeIndexed = true
 		seen := false
 		walk(a.root, func(x *html.Node) bool {
 			if hardHidden(x) {
@@ -4329,7 +4358,12 @@ func (a *analysis) hasLongArticleProseBefore(n *html.Node) bool {
 			// retaining an entry for every text and inline node in a large document.
 			switch strings.ToLower(x.Data) {
 			case "div", "section", "aside", "fieldset":
-				a.articleProseBefore[x] = seen
+				state := a.nodeStates[x]
+				state.articleProseBefore = 1
+				if seen {
+					state.articleProseBefore = 2
+				}
+				a.nodeStates[x] = state
 			}
 			if strings.EqualFold(x.Data, "p") &&
 				utf8.RuneCountInString(normalizeText(nodeText(x))) >= 100 {
@@ -4338,7 +4372,7 @@ func (a *analysis) hasLongArticleProseBefore(n *html.Node) bool {
 			return true
 		})
 	}
-	return a.articleProseBefore[n]
+	return a.nodeStates[n].articleProseBefore == 2
 }
 
 func regionHasLongProse(n *html.Node, limit int) bool {
@@ -4476,18 +4510,16 @@ func (a *analysis) isArticleCommentRegion(n *html.Node) (result bool) {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	if state := a.articleCommentRegions[n]; state != 0 {
+	if state := a.nodeStates[n].articleComment; state != 0 {
 		return state == 2
 	}
-	if a.articleCommentRegions == nil {
-		a.articleCommentRegions = make(map[*html.Node]uint8)
-	}
 	defer func() {
+		state := a.nodeStates[n]
+		state.articleComment = 1
 		if result {
-			a.articleCommentRegions[n] = 2
-		} else {
-			a.articleCommentRegions[n] = 1
+			state.articleComment = 2
 		}
+		a.nodeStates[n] = state
 	}()
 
 	tokens := elementTokens(n)
@@ -4600,11 +4632,8 @@ func (a *analysis) commentRecordCount(root *html.Node) int {
 	if root == nil || hardHidden(root) {
 		return 0
 	}
-	if state := a.commentRecordCounts[root]; state != 0 {
+	if state := a.nodeStates[root].commentCount; state != 0 {
 		return int(state - 1)
-	}
-	if a.commentRecordCounts == nil {
-		a.commentRecordCounts = make(map[*html.Node]uint8)
 	}
 	count := 0
 	for ch := root.FirstChild; ch != nil && count < 2; ch = ch.NextSibling {
@@ -4620,7 +4649,9 @@ func (a *analysis) commentRecordCount(root *html.Node) int {
 			count = 2
 		}
 	}
-	a.commentRecordCounts[root] = uint8(count + 1)
+	state := a.nodeStates[root]
+	state.commentCount = uint8(count + 1)
+	a.nodeStates[root] = state
 	return count
 }
 
@@ -4756,11 +4787,8 @@ func (a *analysis) hasArticleBodyDescendant(root *html.Node) bool {
 	if root == nil || hardHidden(root) {
 		return false
 	}
-	if state := a.semanticArticleDescendants[root]; state != 0 {
+	if state := a.nodeStates[root].articleDescendant; state != 0 {
 		return state == 2
-	}
-	if a.semanticArticleDescendants == nil {
-		a.semanticArticleDescendants = make(map[*html.Node]uint8)
 	}
 	found := false
 	for ch := root.FirstChild; ch != nil && !found; ch = ch.NextSibling {
@@ -4783,11 +4811,12 @@ func (a *analysis) hasArticleBodyDescendant(root *html.Node) bool {
 		}
 		found = a.hasArticleBodyDescendant(ch)
 	}
+	state := a.nodeStates[root]
+	state.articleDescendant = 1
 	if found {
-		a.semanticArticleDescendants[root] = 2
-	} else {
-		a.semanticArticleDescendants[root] = 1
+		state.articleDescendant = 2
 	}
+	a.nodeStates[root] = state
 	return found
 }
 
@@ -5303,8 +5332,14 @@ func elementContainsAny(n *html.Node, values ...string) bool {
 		return false
 	}
 	for _, attr := range n.Attr {
-		if (strings.EqualFold(attr.Key, "id") || strings.EqualFold(attr.Key, "class") || strings.EqualFold(attr.Key, "role")) &&
-			containsAnyFold(attr.Val, values...) {
+		// Parsed HTML has canonical lowercase attribute names. Keep EqualFold as
+		// the uncommon fallback for caller-built trees passed to ExtractNode.
+		key := attr.Key
+		tokenAttribute := key == "id" || key == "class" || key == "role"
+		if !tokenAttribute && (strings.EqualFold(key, "id") || strings.EqualFold(key, "class") || strings.EqualFold(key, "role")) {
+			tokenAttribute = true
+		}
+		if tokenAttribute && containsAnyFold(attr.Val, values...) {
 			return true
 		}
 	}
@@ -5312,6 +5347,38 @@ func elementContainsAny(n *html.Node, values ...string) bool {
 }
 
 func containsAnyFold(s string, values ...string) bool {
+	// Class, id, and role values are overwhelmingly ASCII. Avoid rune decoding,
+	// Unicode tables, and EqualFold's general case on this hot path.
+	ascii := true
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		start := -1
+		for end := 0; end <= len(s); end++ {
+			alnum := end < len(s) && (s[end] >= 'a' && s[end] <= 'z' ||
+				s[end] >= 'A' && s[end] <= 'Z' || s[end] >= '0' && s[end] <= '9')
+			if alnum {
+				if start < 0 {
+					start = end
+				}
+				continue
+			}
+			if start >= 0 {
+				for _, value := range values {
+					if equalFoldASCII(s[start:end], value) {
+						return true
+					}
+				}
+				start = -1
+			}
+		}
+		return false
+	}
+
 	start := -1
 	for end, r := range s {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
@@ -5337,6 +5404,25 @@ func containsAnyFold(s string, values ...string) bool {
 		}
 	}
 	return false
+}
+
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		x, y := a[i], b[i]
+		if x >= 'A' && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if y >= 'A' && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
 }
 
 func hasDataMarker(n *html.Node, marker string) bool {
