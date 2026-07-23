@@ -2502,8 +2502,12 @@ func isHorizontalSpace(r rune) bool {
 	return unicode.IsSpace(r) && r != '\n' && r != '\r'
 }
 
+var markdownDestinationReplacer = strings.NewReplacer(
+	"\\", "%5C", "(", "%28", ")", "%29", "<", "%3C", ">", "%3E",
+)
+
 func markdownDestination(value string) string {
-	return strings.NewReplacer("\\", "%5C", "(", "%28", ")", "%29", "<", "%3C", ">", "%3E").Replace(value)
+	return markdownDestinationReplacer.Replace(value)
 }
 func renderTable(n *Node) string {
 	if len(n.Children) == 0 {
