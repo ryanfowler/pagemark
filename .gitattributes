@@ -1,0 +1,2 @@
+# Frozen HTML snapshots preserve source formatting, including whitespace.
+testdata/real-world/*.html -whitespace

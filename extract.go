@@ -2552,8 +2552,17 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 		strings.Contains(schema, "qapage") || strings.Contains(schema, "forumposting") {
 		scores[PageTypeDiscussion] += 5
 	}
-	if strings.Contains(schema, "itemlist") || a.meta.microdataListing {
+	if strings.Contains(schema, "searchresultspage") {
+		// SearchResultsPage is explicit page-level evidence and should outweigh
+		// generic Article metadata added by publishing platforms.
+		scores[PageTypeListing] += 10
+	} else if strings.Contains(schema, "itemlist") || a.meta.microdataListing {
 		scores[PageTypeListing] += 5
+	}
+	if strings.Contains(schema, "governmentservice") || strings.Contains(schema, "service") {
+		// A specialized service entity is more informative than a generic Article
+		// entity when both describe the same page.
+		scores[PageTypeService] += 20
 	}
 	if a.textListingPre != nil {
 		// Text-mode archives have few of the card/list elements used by modern
@@ -2647,6 +2656,22 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	return top.Type, clamp(confidence), cs
 }
 
+func appendSchemaType(existing, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return existing
+	}
+	for _, current := range strings.Split(existing, " | ") {
+		if strings.EqualFold(current, value) {
+			return existing
+		}
+	}
+	if existing == "" {
+		return value
+	}
+	return existing + " | " + value
+}
+
 func (a *analysis) extractMetadata() {
 	m := metadata{}
 	microdataEntities, repeatedMicrodataArticles, microdataRecords, dominantMicrodata := a.pageMicrodataEntities(a.root)
@@ -2675,8 +2700,8 @@ func (a *analysis) extractMetadata() {
 		itemprop := strings.ToLower(attrValue(n, "itemprop"))
 		itemtype := strings.ToLower(attrValue(n, "itemtype"))
 		pageEntity := microdataEntities[n]
-		if itemtype != "" && pageEntity && m.schemaType == "" {
-			m.schemaType = itemtype
+		if itemtype != "" && pageEntity {
+			m.schemaType = appendSchemaType(m.schemaType, itemtype)
 		}
 		if pageEntity && containsAny(itemtype, "article", "newsarticle", "blogposting") {
 			m.articleType = true
@@ -2726,7 +2751,7 @@ func (a *analysis) extractMetadata() {
 					m.title = v
 				}
 			case "og:type":
-				m.schemaType = v
+				m.schemaType = appendSchemaType(m.schemaType, v)
 				if strings.EqualFold(v, "article") || strings.Contains(strings.ToLower(v), "article") {
 					m.articleType = true
 				}
@@ -2806,8 +2831,10 @@ func (a *analysis) readJSONLD(raw string, m *metadata) {
 					articleType = true
 				}
 			}
-			if pageEntity && len(typeNames) > 0 && m.schemaType == "" {
-				m.schemaType = typeNames[0]
+			if pageEntity {
+				for _, typeName := range typeNames {
+					m.schemaType = appendSchemaType(m.schemaType, typeName)
+				}
 			}
 			if pageEntity && articleType {
 				m.articleType = true
@@ -3106,7 +3133,8 @@ func hasBoilerplateToken(n *html.Node) bool {
 // use similar words are retained.
 var auxiliaryLabels = map[string]bool{
 	"on this page": true, "in this article": true, "table of contents": true,
-	"more news": true, "latest news": true, "related news": true,
+	"help us improve gov.uk": true,
+	"more news":              true, "latest news": true, "related news": true,
 	"related articles": true, "related content": true, "related keywords": true,
 	"recommended for you": true,
 	"you may also like":   true, "you may also enjoy": true, "read next": true, "more stories": true,
@@ -3154,7 +3182,10 @@ func irrelevantNode(n *html.Node) bool {
 	if tag == "html" || tag == "body" {
 		return false
 	}
-	if tag == "nav" || tag == "footer" || hasDataMarker(n, "site-footer") || hasExactClass(n, "article-footer") {
+	if tag == "nav" || tag == "footer" || hasDataMarker(n, "site-footer") || hasExactClass(n, "article-footer") ||
+		hasClassConvention(n, "step-nav") || hasExactClass(n, "crawler-linkback-list") || hasExactClass(n, "post-likes") ||
+		strings.EqualFold(attrValue(n, "itemprop"), "interactionStatistic") ||
+		strings.EqualFold(attrValue(n, "id"), "warning_not_complete") {
 		return true
 	}
 	role := strings.ToLower(attrValue(n, "role"))
@@ -3244,6 +3275,17 @@ func isAdvertisementRegion(n *html.Node) bool {
 		return !sponsored
 	})
 	return sponsored
+}
+
+func hasClassConvention(n *html.Node, convention string) bool {
+	for _, class := range strings.Fields(attrValue(n, "class")) {
+		class = strings.ToLower(strings.Trim(class, "_- "))
+		if class == convention || strings.HasPrefix(class, convention+"--") ||
+			strings.HasPrefix(class, convention+"__") || strings.Contains(class, "-"+convention) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasExactClass(n *html.Node, want string) bool {

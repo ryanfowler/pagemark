@@ -84,6 +84,116 @@
         "Folders and files",
         "Latest commit"
       ]
+    },
+    {
+      "name": "Discourse Meta thread",
+      "file": "discourse-new-users.html",
+      "url": "https://meta.discourse.org/t/understanding-discourse-for-new-users/96331",
+      "captured_at": "2026-07-23",
+      "license": "Guide explicitly permits copy/paste reuse; quoted reply excerpts retained for regression context",
+      "sha256": "23990166b3a55cb2d471b3c11c574854b9c343e6f182de304b94b945c719a45e",
+      "page_type": "discussion",
+      "min_quality": 0.7,
+      "required": [
+        "# Understanding Discourse for new users",
+        "## Basic Terms Used by Discourse",
+        "```markdown\nThis is <b>bold</b>.",
+        "The new topic map does no longer highlight the op",
+        "This could do with an update to incorporate the new rich text editor"
+      ],
+      "forbidden": [
+        "196 Likes",
+        "Brand new user. Could use basic guidance",
+        "Sign Up",
+        "crawler-linkback-list"
+      ]
+    },
+    {
+      "name": "Open Food Facts product",
+      "file": "open-food-facts-nutella.html",
+      "url": "https://world.openfoodfacts.org/product/3017620422003/nutella-ferrero",
+      "captured_at": "2026-07-23",
+      "license": "Open Database License 1.0 / Database Contents License (product data; remote images are not bundled)",
+      "sha256": "d9b535adbc51751abdc7db74e2fba5609fe517098732ea480116ec0db2df1e78",
+      "page_type": "product",
+      "min_quality": 0.7,
+      "required": [
+        "## Nutella",
+        "Barcode: \\\n3017620422003",
+        "|  Nutrition facts  |  As sold for 100 g / 100 ml",
+        "### Ingredients",
+        "Conservation conditions: A conserver au sec"
+      ],
+      "forbidden": [
+        "This product page is not complete",
+        "Edit the page",
+        "Open Food Facts is a non-profit association"
+      ]
+    },
+    {
+      "name": "GOV.UK voting search",
+      "file": "govuk-voting-search.html",
+      "url": "https://www.gov.uk/search/all?keywords=register+to+vote",
+      "captured_at": "2026-07-23",
+      "license": "Open Government Licence v3.0 (Crown content)",
+      "sha256": "159680bff5bcb298950cb746f338f9fe596dc51f7dd9f69f3b79c99be8dd8f50",
+      "page_type": "listing",
+      "min_quality": 0.7,
+      "required": [
+        "# Search all content on GOV.UK",
+        "[Register to vote](https://www.gov.uk/register-to-vote)",
+        "[The electoral register and the 'open register']",
+        "[Register to vote if you're living abroad - paper form]"
+      ],
+      "forbidden": [
+        "Help us improve GOV.UK",
+        "Please fill in this survey",
+        "Services and information"
+      ]
+    },
+    {
+      "name": "The Conversation news article",
+      "file": "conversation-creative-commons.html",
+      "url": "https://theconversation.com/how-creative-commons-works-and-why-it-enables-access-to-knowledge-125895",
+      "captured_at": "2026-07-23",
+      "license": "Creative Commons Attribution-NoDerivatives 4.0 (article content)",
+      "sha256": "411b1142fbf4c886a7cb82f9bebf175bd3eeef1b62a9f29ae8dca4e88ae1fb65",
+      "page_type": "article",
+      "min_quality": 0.7,
+      "required": [
+        "# How Creative Commons works, and why it enables access to knowledge",
+        "## A global system",
+        "## The ‘how to’",
+        "### Disclosure statement",
+        "provides support as a hosting partner"
+      ],
+      "forbidden": [
+        "Get newsletter",
+        "Republish this article",
+        "Most popular"
+      ]
+    },
+    {
+      "name": "GOV.UK registration service",
+      "file": "govuk-register-to-vote.html",
+      "url": "https://www.gov.uk/register-to-vote",
+      "captured_at": "2026-07-23",
+      "license": "Open Government Licence v3.0 (Crown content)",
+      "sha256": "bdb0a388555b312ef229d088c22c76682f05cbb13551fd63a8ddb75f09ad7395",
+      "page_type": "service",
+      "min_quality": 0.7,
+      "required": [
+        "# Register to vote",
+        "## Register online",
+        "[Start now](https://www.registertovote.service.gov.uk/register-to-vote/start)",
+        "### If you live abroad",
+        "## After you’ve registered"
+      ],
+      "forbidden": [
+        "Help us improve GOV.UK",
+        "You are currently viewing:",
+        "Services and information"
+      ]
     }
   ]
 }
