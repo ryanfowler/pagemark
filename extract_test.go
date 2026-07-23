@@ -34,6 +34,57 @@ func TestExtractStructuresAndSafety(t *testing.T) {
 	}
 }
 
+func TestDocumentShellFeatureClassesDoNotPenalizePrimaryContent(t *testing.T) {
+	source := `<html class="feature-toc-available"><body><main><h1>Recipe</h1><h2>Ingredients</h2><ul><li>Flour</li><li>Milk</li></ul><h2>Procedure</h2><ol><li>Mix the ingredients.</li><li>Cook on a griddle.</li></ol></main></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/recipe", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"# Recipe", "## Ingredients", "- Flour", "## Procedure", "1. Mix the ingredients."} {
+		if !strings.Contains(doc.Markdown, required) {
+			t.Errorf("missing %q:\n%s", required, doc.Markdown)
+		}
+	}
+}
+
+func TestDiscussionControlLabelsRemainDocumentationSubjects(t *testing.T) {
+	source := `<main><h1>Comment API</h1>
+<section><h2>Add a comment</h2><p>Send a POST request to create a comment.</p></section>
+<section><h2>Explore related questions</h2><p>Use the related endpoint to discover linked questions.</p></section>
+</main>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/docs/comments", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"## Add a comment", "Send a POST request to create a comment.",
+		"## Explore related questions", "Use the related endpoint to discover linked questions.",
+	} {
+		if !strings.Contains(doc.Markdown, required) {
+			t.Errorf("missing documentation subject %q:\n%s", required, doc.Markdown)
+		}
+	}
+}
+
+func TestExtractDropsOversizedContributorRoll(t *testing.T) {
+	var contributors strings.Builder
+	contributors.WriteString("Product page also edited by ")
+	for i := 0; i < 30; i++ {
+		contributors.WriteString(`<a href="/users/editor">editor</a>, `)
+	}
+	source := `<main><h1>Hazelnut spread</h1><p>Ingredients: hazelnuts and cocoa.</p><p>` + contributors.String() + `</p></main>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/product", WithPageType(PageTypeProduct))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Markdown, "Ingredients: hazelnuts and cocoa.") {
+		t.Fatalf("primary product content was dropped:\n%s", doc.Markdown)
+	}
+	if strings.Contains(doc.Markdown, "Product page also edited by") {
+		t.Fatalf("oversized contributor roll survived:\n%s", doc.Markdown)
+	}
+}
+
 func TestRenderedRepositoryMarkdownExcludesProjectChrome(t *testing.T) {
 	html := `<html><head><title>GitHub - acme/fast: Fast tokenization</title></head><body><main>
 <div class="repository-content"><h1>acme / fast</h1><ul><li><a href="/acme/fast/blob/main/main.go">main.go</a></li><li>Latest commit</li></ul></div>

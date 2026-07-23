@@ -803,7 +803,10 @@ func (a *analysis) score(pt PageType) {
 			if tag == "aside" {
 				score -= 1.5
 			}
-			if hasBoilerplateToken(p) {
+			// Feature flags and global UI state are often stored as classes on
+			// the document shell (for example, "toc-available"). They describe
+			// available chrome, not every descendant's content region.
+			if tag != "html" && tag != "body" && hasBoilerplateToken(p) {
 				score -= 3
 				b.reasons = append(b.reasons, "boilerplate label")
 			}
@@ -1025,7 +1028,9 @@ func (a *analysis) ensureDocumentTitle(nodes []*html.Node, cfg markdown.Config, 
 			return content
 		}
 	}
-	if title == "" || a.hasEquivalentHeading(nodes, title, cfg) || a.hasLeadingOutputHeading(nodes, cfg) || !a.hasDominantProseOutput(nodes, cfg) {
+	structuredDocument := pageType == PageTypeDocumentation || pageType == PageTypeDiscussion
+	if title == "" || a.hasEquivalentHeading(nodes, title, cfg) || a.hasLeadingOutputHeading(nodes, cfg) ||
+		(!structuredDocument && !a.hasDominantProseOutput(nodes, cfg)) {
 		return nodes
 	}
 	titleNode := articleTitleNode(title)
@@ -3218,15 +3223,18 @@ func irrelevantNode(n *html.Node) bool {
 	}
 	if tag == "nav" || tag == "footer" || hasDataMarker(n, "site-footer") || hasExactClass(n, "article-footer") ||
 		hasClassConvention(n, "step-nav") || hasExactClass(n, "crawler-linkback-list") || hasExactClass(n, "post-likes") ||
+		hasExactClass(n, "mw-editsection") || hasExactClass(n, "printfooter") || hasExactClass(n, "catlinks") ||
+		strings.EqualFold(attrValue(n, "id"), "siteSub") ||
 		strings.EqualFold(attrValue(n, "itemprop"), "interactionStatistic") ||
 		strings.EqualFold(attrValue(n, "id"), "warning_not_complete") {
 		return true
 	}
 	role := strings.ToLower(attrValue(n, "role"))
-	if containsAny(role, "navigation", "complementary", "contentinfo") {
+	if containsAny(role, "navigation", "complementary", "contentinfo", "menu") {
 		return true
 	}
-	if elementContainsAny(n, structuralBoilerplateTokens...) {
+	if elementContainsAny(n, structuralBoilerplateTokens...) || isOversizedContributorRoll(n) ||
+		elementContainsAny(n, "banner") && controls(n) > 0 {
 		return true
 	}
 	if elementContainsAny(n, navigationStructureTokens...) && !headingDocumentsStructure(n) && hasNavigationShape(n) {
@@ -3395,6 +3403,9 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 	// This also covers generic pages, where article-only filtering would otherwise
 	// allow labels such as “thread” and “discussion” into Markdown.
 	if !irrelevant && a.isEmptyCommentControlRegion(n) {
+		irrelevant = true
+	}
+	if !irrelevant && a.pageType == PageTypeDiscussion && isDiscussionAuxiliaryLabelNode(n) {
 		irrelevant = true
 	}
 	if !irrelevant && a.pageType == PageTypeArticle {
@@ -3731,6 +3742,31 @@ func countLinkedRecords(root *html.Node, limit int) int {
 	}
 	visit(root)
 	return count
+}
+
+// isOversizedContributorRoll removes attribution/history paragraphs that can
+// contain hundreds of linked usernames. A short author or contributor list is
+// useful metadata, but an unbounded roll can dwarf the page's primary content.
+// The high link threshold and explicit attribution language avoid treating
+// ordinary citation-heavy prose as auxiliary.
+func isOversizedContributorRoll(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "p") {
+		return false
+	}
+	links := 0
+	walk(n, func(x *html.Node) bool {
+		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "a") {
+			links++
+		}
+		return links < 25
+	})
+	if links < 25 {
+		return false
+	}
+	text := " " + normalizedLabel(nodeText(n)) + " "
+	return strings.Contains(text, " also edited by ") ||
+		strings.Contains(text, " contributors: ") ||
+		strings.HasPrefix(strings.TrimSpace(text), "contributors ")
 }
 
 func isArticleDiscussionLinks(n *html.Node) bool {
@@ -5476,13 +5512,36 @@ func containsAny(s string, values ...string) bool {
 	}
 	return false
 }
+
+var discussionAuxiliaryLabels = map[string]bool{
+	"start asking to get answers": true, "find the answer to your question by asking": true,
+	"sign up to request clarification or add additional context in comments": true,
+	"add a comment": true, "explore related questions": true, "see similar questions with these tags": true,
+}
+
+// isDiscussionAuxiliaryLabelNode keeps ambiguous UI phrases out of the global
+// boilerplate vocabulary. The same text can be a legitimate documentation
+// heading, while on a discussion page these exact short control labels are
+// auxiliary when rendered as headings, buttons, or standalone prompt text.
+func isDiscussionAuxiliaryLabelNode(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	tag := strings.ToLower(n.Data)
+	if tag != "p" && tag != "button" && !isHeadingTag(tag) {
+		return false
+	}
+	return discussionAuxiliaryLabels[normalizedLabel(nodeText(n))]
+}
+
 func isDiscussionControlNode(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
 	tokens := elementTokens(n)
-	return containsAny(tokens, "rating", "forumjump") ||
-		(containsAny(tokens, "thread") && containsAny(tokens, "tools"))
+	return containsAny(tokens, "rating", "forumjump") || hasExactClass(n, "comments-link") ||
+		(containsAny(tokens, "thread") && containsAny(tokens, "tools")) ||
+		(containsAny(tokens, "post") && containsAny(tokens, "menu"))
 }
 
 func isDiscussionControlBlock(n *html.Node) bool {

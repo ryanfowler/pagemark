@@ -14,7 +14,16 @@ The 2026-07-23 corpus expansion added these anonymous, server-rendered captures:
 
 All had no warnings or fallback. The Discourse session identifier and GOV.UK CSRF/CSP values were redacted; no other snapshot reduction or normalization was performed. The Discourse guide itself explicitly invites readers to copy and paste it to another site, and only the two rendered reply excerpts needed to preserve thread structure are asserted by the fixture.
 
-`fixtures.json` records each source URL, capture date, content license, SHA-256 digest, expected page type, quality floor, and required/forbidden Markdown. The digest prevents an accidental fixture refresh from silently changing the regression corpus.
+The next corpus pass added two more openly licensed page shapes:
+
+| Fixture | Shape and failure mode | Initial extraction |
+|---|---|---|
+| Wikibooks pancake recipe | Structured recipe with an infobox, ingredient list, ordered procedure, images, and MediaWiki chrome | `documentation`, quality 0.65; a document-shell TOC feature class suppressed the ingredients and procedure |
+| Stack Overflow Go question | Question, duplicate notice, comments, answer, code, author cards, and promotional widgets | `discussion`, quality 0.75; the title was lost and post controls and promotional calls to action survived |
+
+The Stack Overflow anonymous form key was replaced with `REDACTED`. Fixes prompted by these captures now ignore boilerplate feature flags on the document shell, restore titles for structured documentation and discussions, recognize common MediaWiki furniture, and remove discussion post menus and calls to action.
+
+`fixtures.json` records each source URL, capture date, content license, SHA-256 digest, expected page type, quality floor, and required/forbidden Markdown. Fixtures may also set `max_output_bytes` when excessive output is a known signal that page furniture overwhelmed the primary content. The digest prevents an accidental fixture refresh from silently changing the regression corpus.
 
 ## Refreshing a fixture
 

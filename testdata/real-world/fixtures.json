@@ -117,6 +117,7 @@
       "sha256": "d9b535adbc51751abdc7db74e2fba5609fe517098732ea480116ec0db2df1e78",
       "page_type": "product",
       "min_quality": 0.7,
+      "max_output_bytes": 20000,
       "required": [
         "## Nutella",
         "Barcode: \\\n3017620422003",
@@ -127,7 +128,8 @@
       "forbidden": [
         "This product page is not complete",
         "Edit the page",
-        "Open Food Facts is a non-profit association"
+        "Open Food Facts is a non-profit association",
+        "Product page also edited by"
       ]
     },
     {
@@ -193,6 +195,56 @@
         "Help us improve GOV.UK",
         "You are currently viewing:",
         "Services and information"
+      ]
+    },
+    {
+      "name": "Wikibooks recipe",
+      "file": "wikibooks-north-american-pancakes.html",
+      "url": "https://en.wikibooks.org/wiki/Cookbook:Pancakes_(North_American)",
+      "captured_at": "2026-07-23",
+      "license": "CC BY-SA 4.0 / GFDL (recipe content)",
+      "sha256": "94d746ac9a455bb41f1fd107e5fe108a151c3eb06ddf014b78e67ff7849bb7b4",
+      "page_type": "documentation",
+      "min_quality": 0.7,
+      "max_output_bytes": 7000,
+      "required": [
+        "# Cookbook:Pancakes (North American)",
+        "## Ingredients",
+        "120 [g](https://en.wikibooks.org/wiki/Cookbook:Gram)",
+        "## Procedure",
+        "1. In a large bowl, mix dry ingredients together",
+        "## Notes, tips, and variations"
+      ],
+      "forbidden": [
+        "From Wikibooks, open books for an open world",
+        "Retrieved from",
+        "edit source",
+        "Easy recipes"
+      ]
+    },
+    {
+      "name": "Stack Overflow question",
+      "file": "stackoverflow-close-response-body.html",
+      "url": "https://stackoverflow.com/questions/70603781/do-i-need-to-close-response-body-of-http-request-even-if-i-dont-read-it",
+      "captured_at": "2026-07-23",
+      "license": "CC BY-SA 4.0 (question, answer, and comments)",
+      "sha256": "a3ef2ce98982793432e0210b7119e843186d2e165139f84df91685a1f7aaac20",
+      "page_type": "discussion",
+      "min_quality": 0.7,
+      "max_output_bytes": 6000,
+      "required": [
+        "# Do I need to close Response body of http request even if I don't read it?",
+        "resp, err = http.Head",
+        "## 1 Answer 1",
+        "the Response will contain a non-nil Body which the user is expected to close",
+        "Even if no body is sent or presented to you, closing it will do no harm."
+      ],
+      "forbidden": [
+        "Collectives™ on Stack Overflow",
+        "Improve this question",
+        "Start asking to get answers",
+        "Sign up to request clarification",
+        "Explore related questions"
       ]
     }
   ]

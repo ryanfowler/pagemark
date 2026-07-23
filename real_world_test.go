@@ -17,16 +17,17 @@ type realWorldManifest struct {
 }
 
 type realWorldFixture struct {
-	Name       string   `json:"name"`
-	File       string   `json:"file"`
-	URL        string   `json:"url"`
-	CapturedAt string   `json:"captured_at"`
-	License    string   `json:"license"`
-	SHA256     string   `json:"sha256"`
-	PageType   PageType `json:"page_type"`
-	MinQuality float64  `json:"min_quality"`
-	Required   []string `json:"required"`
-	Forbidden  []string `json:"forbidden"`
+	Name           string   `json:"name"`
+	File           string   `json:"file"`
+	URL            string   `json:"url"`
+	CapturedAt     string   `json:"captured_at"`
+	License        string   `json:"license"`
+	SHA256         string   `json:"sha256"`
+	PageType       PageType `json:"page_type"`
+	MinQuality     float64  `json:"min_quality"`
+	MaxOutputBytes int      `json:"max_output_bytes,omitempty"`
+	Required       []string `json:"required"`
+	Forbidden      []string `json:"forbidden"`
 }
 
 func TestRealWorldFixtures(t *testing.T) {
@@ -70,6 +71,9 @@ func TestRealWorldFixtures(t *testing.T) {
 			}
 			if doc.Quality < fixture.MinQuality {
 				t.Errorf("quality = %.2f, want at least %.2f", doc.Quality, fixture.MinQuality)
+			}
+			if fixture.MaxOutputBytes > 0 && len(doc.Markdown) > fixture.MaxOutputBytes {
+				t.Errorf("Markdown size = %d bytes, want at most %d; likely retained page furniture", len(doc.Markdown), fixture.MaxOutputBytes)
 			}
 			for _, required := range fixture.Required {
 				if !strings.Contains(doc.Markdown, required) {
