@@ -3536,3 +3536,24 @@ func TestArticleContinuityAcrossStructuralNodes(t *testing.T) {
 		})
 	}
 }
+
+func TestContainsWordSequence(t *testing.T) {
+	tests := []struct {
+		name, text, phrase string
+		want               bool
+	}{
+		{"words", "Read our privacy policy today", "privacy policy", true},
+		{"case and punctuation", "TERMS---And_conditions apply", "terms and conditions", true},
+		{"unicode", "Bienvenue à Café Éclair", "café éclair", true},
+		{"partial word", "subscription preferences", "script", false},
+		{"nonconsecutive", "privacy and cookie policy", "privacy policy", false},
+		{"empty phrase", "some text", "---", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := containsWordSequence(tt.text, tt.phrase); got != tt.want {
+				t.Fatalf("containsWordSequence(%q, %q) = %v, want %v", tt.text, tt.phrase, got, tt.want)
+			}
+		})
+	}
+}

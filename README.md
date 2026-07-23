@@ -94,4 +94,12 @@ go test -race ./...
 staticcheck ./...
 ```
 
+Run the end-to-end benchmarks against the frozen real-world corpus with:
+
+```sh
+go test -run '^$' -bench '^BenchmarkExtractRealWorld$' -benchmem
+```
+
+The benchmark includes HTML parsing and reports time, throughput, bytes, and allocations for representative articles, documentation, discussions, products, listings, services, and generic pages. CPU and allocation profiles can be captured by adding `-cpuprofile cpu.out -memprofile mem.out` and inspected with `go tool pprof`.
+
 The package has no mutable global extraction state. Concurrent calls are safe.

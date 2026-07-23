@@ -45,7 +45,7 @@ type analysis struct {
 	pageType                                        PageType
 	pageTypeExplicit                                bool
 	diag                                            *Diagnostics
-	irrelevant                                      map[*html.Node]bool
+	irrelevant, articleAuxiliary                    map[*html.Node]bool
 	discussionBodyDescendants                       map[*html.Node]uint8
 	articleCommentRegions, commentRecordCounts      map[*html.Node]uint8
 	semanticArticleDescendants                      map[*html.Node]uint8
@@ -133,7 +133,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		}
 		page = u
 	}
-	a := &analysis{o: o, root: root, pageURL: page, base: page, irrelevant: make(map[*html.Node]bool)}
+	a := &analysis{o: o, root: root, pageURL: page, base: page, irrelevant: make(map[*html.Node]bool), articleAuxiliary: make(map[*html.Node]bool)}
 	if o.diagnostics {
 		a.diag = &Diagnostics{ProfileVersion: "1", Fallback: "primary"}
 	}
@@ -3771,6 +3771,15 @@ func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
+	if auxiliary, ok := a.articleAuxiliary[n]; ok {
+		return auxiliary
+	}
+	auxiliary := a.articleAuxiliaryNodeUncached(n)
+	a.articleAuxiliary[n] = auxiliary
+	return auxiliary
+}
+
+func (a *analysis) articleAuxiliaryNodeUncached(n *html.Node) bool {
 	if isArticleDiscussionLinks(n) || isArticleSharingControls(n) || isArticleBackControl(n) ||
 		isArticleTaxonomySeparator(n) || isTrailingArticleSeparator(n) || isArticleTaxonomyRegion(n) {
 		return true
@@ -3948,28 +3957,61 @@ func (a *analysis) mentionsSiteIdentity(text string) bool {
 }
 
 func containsWordSequence(text, phrase string) bool {
-	textWords := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	phraseWords := strings.FieldsFunc(strings.ToLower(phrase), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	if len(phraseWords) == 0 || len(phraseWords) > len(textWords) {
+	phraseOffset := 0
+	firstPhrase, ok := nextWord(phrase, &phraseOffset)
+	if !ok {
 		return false
 	}
-	for i := 0; i+len(phraseWords) <= len(textWords); i++ {
-		matched := true
-		for j := range phraseWords {
-			if textWords[i+j] != phraseWords[j] {
-				matched = false
+	textOffset := 0
+	for {
+		textWord, ok := nextWord(text, &textOffset)
+		if !ok {
+			return false
+		}
+		if !strings.EqualFold(textWord, firstPhrase) {
+			continue
+		}
+
+		// Try the remaining words using local offsets. A failed match leaves the
+		// outer scan at the word after this candidate, so overlapping candidates
+		// are still considered without allocating token slices.
+		t, p := textOffset, phraseOffset
+		for {
+			phraseWord, more := nextWord(phrase, &p)
+			if !more {
+				return true
+			}
+			textWord, more = nextWord(text, &t)
+			if !more || !strings.EqualFold(textWord, phraseWord) {
 				break
 			}
 		}
-		if matched {
-			return true
-		}
 	}
-	return false
+}
+
+func nextWord(s string, offset *int) (string, bool) {
+	start := *offset
+	for start < len(s) {
+		r, size := utf8.DecodeRuneInString(s[start:])
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			break
+		}
+		start += size
+	}
+	if start == len(s) {
+		*offset = start
+		return "", false
+	}
+	end := start
+	for end < len(s) {
+		r, size := utf8.DecodeRuneInString(s[end:])
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			break
+		}
+		end += size
+	}
+	*offset = end
+	return s[start:end], true
 }
 
 func containsAnyWordSequence(text string, phrases ...string) bool {
@@ -4267,10 +4309,7 @@ func isSubscriptionRegion(n *html.Node) bool {
 	}
 
 	heading := firstRegionHeading(n)
-	text := strings.ToLower(normalizeText(nodeText(n)))
-	cta := strings.Contains(text, "subscribe") || strings.Contains(text, "sign up") ||
-		strings.Contains(text, "mailing list") || strings.Contains(text, "get updates")
-
+	attributeMarker := subscriptionAttributeMarker(n)
 	hasForm, hasEmail, subscriptionForm, joinCTA := false, false, false, false
 	walk(n, func(x *html.Node) bool {
 		if hardHidden(x) {
@@ -4301,11 +4340,21 @@ func isSubscriptionRegion(n *html.Node) bool {
 		return true
 	})
 
+	// Text collection and word-boundary matching are comparatively expensive on
+	// large wrappers. Neither can affect the result without a form or an explicit
+	// subscription marker, so defer them until the structural scan finds one.
+	if !hasForm && !attributeMarker {
+		return false
+	}
+	text := strings.ToLower(normalizeText(nodeText(n)))
+	cta := strings.Contains(text, "subscribe") || strings.Contains(text, "sign up") ||
+		strings.Contains(text, "mailing list") || strings.Contains(text, "get updates")
+
 	// Readability may remove form controls from a cloned article while leaving
 	// the marked signup wrapper and its prompt. Keep that narrower tail
 	// excludable, but preserve marked form-free sections with enough explanatory
 	// prose to be authored discussion of subscription workflows.
-	if !hasForm && subscriptionAttributeMarker(n) && cta && isSubscriptionPromptHeading(heading) &&
+	if !hasForm && attributeMarker && cta && isSubscriptionPromptHeading(heading) &&
 		!substantialArticleScope(n) {
 		return true
 	}
@@ -4318,10 +4367,12 @@ func isSubscriptionRegion(n *html.Node) bool {
 	// Consent and honeypot copy corroborate a structurally identified signup;
 	// they are not sufficient alone because contact and application forms use
 	// the same language. This still catches neutral or branded join prompts.
+	if !hasForm || (!hasEmail && controls(n) < 2) || (!cta && !subscriptionForm && !joinCTA) {
+		return false
+	}
 	consent := containsAnyWordSequence(text, "privacy policy", "terms of use", "terms and conditions")
 	honeypot := containsAnyWordSequence(text, "field is for validation", "leave this field unchanged", "do not fill")
-	return hasForm && (hasEmail || controls(n) >= 2) && (consent || honeypot) &&
-		(cta || subscriptionForm || joinCTA)
+	return consent || honeypot
 }
 
 func isJoinCTA(value string) bool {
