@@ -3236,6 +3236,56 @@ func TestJSONLDMetadata(t *testing.T) {
 	}
 }
 
+func TestMultipleJSONLDTypesPreferSpecializedPageShape(t *testing.T) {
+	tests := []struct {
+		name       string
+		schemaType string
+		want       PageType
+	}{
+		{name: "search results", schemaType: "SearchResultsPage", want: PageTypeListing},
+		{name: "government service", schemaType: "GovernmentService", want: PageTypeService},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			html := `<html><head>` +
+				`<script type="application/ld+json">{"@type":"Article"}</script>` +
+				`<meta property="og:type" content="article">` +
+				`<script type="application/ld+json">{"@type":"` + test.schemaType + `"}</script>` +
+				`</head><body><main><h1>Page title</h1>` +
+				`<p>Substantial primary content explains the first part of this page clearly to readers.</p>` +
+				`<p>Additional primary content explains the second part and supplies enough prose for article signals.</p>` +
+				`</main></body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/page")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.PageType != test.want {
+				t.Fatalf("page type = %q, want %q", doc.PageType, test.want)
+			}
+		})
+	}
+}
+
+func TestFeedbackAndCrawlerLinkbacksAreExcluded(t *testing.T) {
+	html := `<main><article><h1>Thread title</h1><p>The primary post contains a useful explanation that readers need.</p>` +
+		`<div itemprop="interactionStatistic"><span class="post-likes">42 Likes</span></div></article>` +
+		`<div class="crawler-linkback-list"><a href="/unrelated">Unrelated linked topic</a></div>` +
+		`<div class="step-nav"><a href="/next">You are currently viewing: this step</a></div>` +
+		`<div class="feedback"><h2>Help us improve GOV.UK</h2><p>Please fill in this survey.</p></div></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/thread/1", WithPageType(PageTypeDiscussion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "useful explanation") {
+		t.Fatalf("primary content was lost: %s", doc.Markdown)
+	}
+	for _, unwanted := range []string{"42 Likes", "Unrelated linked topic", "You are currently viewing", "Please fill in this survey"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("included boilerplate %q: %s", unwanted, doc.Markdown)
+		}
+	}
+}
+
 func TestConcurrentExtraction(t *testing.T) {
 	src := []byte(`<main><h1>Title</h1><p>A useful paragraph has enough content.</p></main>`)
 	var wg sync.WaitGroup
