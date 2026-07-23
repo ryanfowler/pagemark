@@ -860,8 +860,16 @@ func (c *converter) listItems(n *html.Node) []*Node {
 			continue
 		}
 		if ch.Type == html.ElementNode && strings.EqualFold(ch.Data, "li") {
+			children := c.mixedItem(ch)
 			value, hasValue := parseIntegerAttr(ch, "value")
-			out = append(out, &Node{Kind: ListItem, Level: value, HasValue: hasValue, Children: c.mixedItem(ch)})
+			item := &Node{Kind: ListItem, Level: value, HasValue: hasValue, Children: children}
+			// Excluding a control inside a list item (for example, a skip link)
+			// must not leave an empty Markdown bullet behind. Check converted
+			// content because an excluded descendant may leave an empty wrapper.
+			if strings.TrimSpace(renderBlock(item, 0)) == "" {
+				continue
+			}
+			out = append(out, item)
 		}
 	}
 	return out

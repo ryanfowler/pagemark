@@ -77,7 +77,9 @@ The benchmark uses multiset word precision, recall, and F1. It also checks requi
 
 On WCXB v1.0 development data, an implementation run on the initial profile gave 0.760 overall F1. Results vary only when code or profiles change. Use the held-out split only for a release review. Do not compare this number with a benchmark that uses a different normalization method.
 
-The project includes synthetic safety and structure tests. The full WCXB data is not in this repository because it is large. WCXB uses the CC BY 4.0 license.
+The project includes synthetic safety and structure tests. It also keeps a small, checksummed [real-world regression corpus](testdata/real-world/README.md) with declarative page-type and content expectations. Tests use frozen snapshots and never refresh them from the network.
+
+The full WCXB data is not in this repository because it is large. WCXB uses the CC BY 4.0 license.
 
 ## Difference from readability
 

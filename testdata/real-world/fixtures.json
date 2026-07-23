@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "name": "Wikipedia article",
+      "file": "wikipedia-web-page.html",
+      "url": "https://en.wikipedia.org/wiki/Web_page",
+      "captured_at": "2026-07-23",
+      "license": "CC BY-SA 4.0 / GFDL (article content)",
+      "sha256": "74e372f7e90ba47ad12a54494eaeb66f48cbd4788e069dc27eaa4e3e7e1e3bde",
+      "page_type": "article",
+      "min_quality": 0.7,
+      "required": [
+        "# Web page\n",
+        "A **web page**, or **webpage**",
+        "[Hypertext Transfer Protocol]"
+      ],
+      "forbidden": [
+        "Main page",
+        "Random article",
+        "# Web page - Wikipedia"
+      ]
+    },
+    {
+      "name": "Go tutorial",
+      "file": "go-getting-started.html",
+      "url": "https://go.dev/doc/tutorial/getting-started",
+      "captured_at": "2026-07-23",
+      "license": "BSD-3-Clause",
+      "sha256": "a7048d2cce6a94ae835c9503d6af5e96f88954a459d831fe03f9a7d82b60ef2c",
+      "page_type": "documentation",
+      "min_quality": 0.7,
+      "required": [
+        "# Tutorial: Get started with Go",
+        "## Write some code",
+        "go mod init example/hello",
+        "## Call code in an external package"
+      ],
+      "forbidden": [
+        "Skip to Main Content",
+        "Copyright"
+      ]
+    },
+    {
+      "name": "MDN reference",
+      "file": "mdn-http-get.html",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Methods/GET",
+      "captured_at": "2026-07-23",
+      "license": "CC BY-SA 2.5 (documentation content)",
+      "sha256": "2c1492ec0cff4c383d7f62a045efe3326a9c2e71a9eeafa489138d2e44714ed0",
+      "page_type": "documentation",
+      "min_quality": 0.7,
+      "required": [
+        "# GET request method",
+        "GET <request-target>",
+        "## [Specifications]",
+        "HTTP Semantics"
+      ],
+      "forbidden": [
+        "Skip to main content",
+        "Help improve MDN",
+        "View this page on GitHub",
+        "\n- \n"
+      ]
+    },
+    {
+      "name": "GitHub repository README",
+      "file": "github-golang-go.html",
+      "url": "https://github.com/golang/go",
+      "captured_at": "2026-07-23",
+      "license": "BSD-3-Clause (repository content)",
+      "sha256": "a9ee625cca9963ad914aaa0311a334c273e7354470ae48329ff3430146288e01",
+      "page_type": "article",
+      "min_quality": 0.7,
+      "required": [
+        "# The Go Programming Language",
+        "### Download and Install",
+        "### Contributing",
+        "Go is the work of thousands of contributors"
+      ],
+      "forbidden": [
+        "Skip to content",
+        "Sign in",
+        "Folders and files",
+        "Latest commit"
+      ]
+    }
+  ]
+}

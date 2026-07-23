@@ -53,6 +53,26 @@ func TestAdjacentResponsiveControlsAreDeduplicated(t *testing.T) {
 	}
 }
 
+func TestExcludedParagraphWrappedListItemDoesNotEmitEmptyBullet(t *testing.T) {
+	source := `<ul>
+		<li><p><a href="#main">Skip to main content</a></p></li>
+		<li>Keep me</li>
+	</ul>`
+	r := convertHTMLConfig(t, source, Config{Exclude: func(n *html.Node) bool {
+		return n.Type == html.ElementNode && n.Data == "a" && attr(n, "href") == "#main"
+	}})
+	if r.Markdown != "- Keep me" {
+		t.Fatalf("excluded wrapped item left an empty bullet: %q", r.Markdown)
+	}
+}
+
+func TestRenderableNonTextListItemIsPreserved(t *testing.T) {
+	r := convertHTML(t, `<ul><li><hr></li><li>Keep me</li></ul>`)
+	if r.Markdown != "- ---\n- Keep me" {
+		t.Fatalf("renderable non-text item was discarded: %q", r.Markdown)
+	}
+}
+
 func TestAdjacentControlDeduplicationIsNarrow(t *testing.T) {
 	t.Run("ordinary adjacent identical links", func(t *testing.T) {
 		r := convertHTML(t, `<p><a href="/terms">Terms</a></p><p><a href="/terms">Terms</a></p>`)

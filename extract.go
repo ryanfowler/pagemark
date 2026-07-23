@@ -22,6 +22,7 @@ import (
 	"github.com/ryanfowler/pagemark/internal/markdown"
 	"github.com/ryanfowler/readability"
 	"golang.org/x/net/html"
+	"golang.org/x/net/publicsuffix"
 )
 
 type block struct {
@@ -1417,6 +1418,14 @@ func (a *analysis) restorationTitle() string {
 			if dot := strings.IndexByte(host, '.'); dot > 0 {
 				sites = append(sites, host[:dot])
 			}
+			// Subdomains such as en.wikipedia.org use the registrable-domain
+			// label as the visible site name. Consult the public suffix list so
+			// hosts below suffixes such as com.au do not mistake "com" for it.
+			if registrable, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
+				if label, _, ok := strings.Cut(registrable, "."); ok && label != "" {
+					sites = append(sites, label)
+				}
+			}
 		}
 	}
 	for _, site := range sites {
@@ -2348,6 +2357,14 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	if a.pageURL != nil {
 		urlPath = strings.ToLower(a.pageURL.Path)
 	}
+	// Prefer a canonical path when present: the supplied URL may be an archive,
+	// redirect, or tracking URL that says little about the page itself. Resolve
+	// this before block inference so a generic `doc` wrapper is meaningful only
+	// on a documentation route.
+	if canonical, err := url.Parse(a.meta.canonical); err == nil && canonical.Path != "" {
+		urlPath = strings.ToLower(canonical.Path)
+	}
+	documentationPath := strings.Contains(urlPath, "/doc/") || strings.Contains(urlPath, "/docs") || strings.Contains(urlPath, "/api")
 	counts := map[string]int{}
 	productRecords := map[*html.Node]bool{}
 	productRegionChars := map[*html.Node]int{}
@@ -2429,7 +2446,8 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 				productRecords[record] = true
 			}
 		}
-		if containsAny(tok, "docs", "documentation", "api", "reference") {
+		if containsAny(tok, "docs", "documentation", "api", "reference") ||
+			(documentationPath && containsAny(tok, "doc")) {
 			documentationContext = true
 		}
 	}
@@ -2542,11 +2560,6 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 		// listings, so their combined pre/link/record evidence is page-level.
 		scores[PageTypeListing] += 10
 	}
-	// Prefer a canonical path when present: the supplied URL may be an archive,
-	// redirect, or tracking URL that says little about the page itself.
-	if canonical, err := url.Parse(a.meta.canonical); err == nil && canonical.Path != "" {
-		urlPath = strings.ToLower(canonical.Path)
-	}
 	title := strings.ToLower(a.meta.title)
 	if counts["pre"] > 1 {
 		// Code is common in technical articles. It is strong documentation
@@ -2597,7 +2610,7 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 		// publication metadata with article-specific provenance gets this bonus.
 		scores[PageTypeArticle] += 4
 	}
-	if strings.Contains(urlPath, "/docs") || strings.Contains(urlPath, "/api") {
+	if documentationPath {
 		scores[PageTypeDocumentation] += 3
 	}
 	if containsAny(title, "documentation", "reference") || (containsAny(title, "api") && containsAny(title, "guide", "reference")) {
@@ -3135,7 +3148,13 @@ func irrelevantNode(n *html.Node) bool {
 		return false
 	}
 	tag := strings.ToLower(n.Data)
-	if tag == "nav" || tag == "footer" || hasDataMarker(n, "site-footer") {
+	// Document shells may contain a mixture of primary and auxiliary regions.
+	// Never classify the shell itself from descendant link density or trailing
+	// article heuristics; its individual children are still classified normally.
+	if tag == "html" || tag == "body" {
+		return false
+	}
+	if tag == "nav" || tag == "footer" || hasDataMarker(n, "site-footer") || hasExactClass(n, "article-footer") {
 		return true
 	}
 	role := strings.ToLower(attrValue(n, "role"))
@@ -3165,6 +3184,9 @@ func irrelevantNode(n *html.Node) bool {
 	}
 	if tag == "a" || tag == "button" || isHeadingTag(tag) {
 		text := normalizedLabel(nodeText(n))
+		if tag == "a" && strings.HasPrefix(text, "skip to ") {
+			return true
+		}
 		if (tag == "a" || tag == "button") && (callToActionLabels[text] || auxiliaryLabels[text]) {
 			return true
 		}
@@ -3222,6 +3244,15 @@ func isAdvertisementRegion(n *html.Node) bool {
 		return !sponsored
 	})
 	return sponsored
+}
+
+func hasExactClass(n *html.Node, want string) bool {
+	for _, class := range strings.Fields(attrValue(n, "class")) {
+		if strings.EqualFold(class, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasAuthorProfileClass(n *html.Node) bool {
