@@ -1,5 +1,7 @@
 # pagemark
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/ryanfowler/pagemark.svg)](https://pkg.go.dev/github.com/ryanfowler/pagemark)
+
 Pagemark extracts useful web page content as compact, safe Markdown. It supports prose and structured pages. It uses block classification and can keep multiple content regions.
 
 Pagemark does not fetch pages or run JavaScript. Supply rendered HTML when a page needs JavaScript.
