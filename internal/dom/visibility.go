@@ -71,10 +71,23 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 	style := ""
 	for _, a := range n.Attr {
 		key := a.Key
-		// The parser canonicalizes attribute names to lowercase. Only caller-built
-		// ExtractNode trees need the case-insensitive fallback.
+		// The parser canonicalizes attribute names to lowercase. Nearly every
+		// attribute is unrelated to visibility, so do not run six Unicode
+		// EqualFold comparisons for common keys such as class and href. Preserve
+		// case-insensitive handling for caller-built ExtractNode trees only when a
+		// key actually contains an ASCII uppercase byte.
 		if key != "hidden" && key != "inert" && key != "open" && key != "aria-hidden" &&
 			key != "aria-modal" && key != "style" {
+			mixedCase := false
+			for i := 0; i < len(key); i++ {
+				if key[i] >= 'A' && key[i] <= 'Z' {
+					mixedCase = true
+					break
+				}
+			}
+			if !mixedCase {
+				continue
+			}
 			switch {
 			case strings.EqualFold(key, "hidden"):
 				key = "hidden"
@@ -88,6 +101,8 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 				key = "aria-modal"
 			case strings.EqualFold(key, "style"):
 				key = "style"
+			default:
+				continue
 			}
 		}
 		switch key {
