@@ -34,6 +34,122 @@ func TestExtractStructuresAndSafety(t *testing.T) {
 	}
 }
 
+func TestRenderedRepositoryMarkdownExcludesProjectChrome(t *testing.T) {
+	html := `<html><head><title>GitHub - acme/fast: Fast tokenization</title></head><body><main>
+<div class="repository-content"><h1>acme / fast</h1><ul><li><a href="/acme/fast/blob/main/main.go">main.go</a></li><li>Latest commit</li></ul></div>
+<article class="markdown-body entry-content" itemprop="text">
+<div class="markdown-heading"><h1>Fast</h1><a aria-label="Permalink: Fast" href="#fast">#</a></div>
+<p>Fast tokenizes large language-model datasets while preserving exact compatibility with existing tools.</p>
+<div class="markdown-heading"><h2>Install</h2><a aria-label="Permalink: Install" href="#install">#</a></div>
+<div class="highlight highlight-source-shell"><pre>pip install fast</pre></div>
+<details><summary>AI Use Disclosure</summary>
+Most of this project was written by hand. Automation assisted with final compatibility tests.
+<ul><li>Expanding compatibility coverage</li></ul></details>
+</article>
+<aside><h2>About</h2><p>Fast tokenization</p><h2>Languages</h2><p>Rust 90%</p></aside>
+</main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://github.com/acme/fast/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# Fast", "## Install", "```shell\npip install fast\n```", "AI Use Disclosure", "Most of this project was written by hand", "Expanding compatibility coverage"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("missing repository document content %q:\n%s", want, doc.Markdown)
+		}
+	}
+	for _, unwanted := range []string{"acme / fast", "main.go", "Latest commit", "## About", "## Languages", "Rust 90%"} {
+		if strings.Contains(doc.Markdown, unwanted) {
+			t.Errorf("repository chrome survived as %q:\n%s", unwanted, doc.Markdown)
+		}
+	}
+}
+
+func TestShortRenderedRepositoryMarkdownRemainsAuthoritative(t *testing.T) {
+	html := `<html><head><title>Tiny</title></head><body><main>
+<div class="repository-content"><p>Repository activity describes commits, contributors, branches, tags, releases, and other surrounding controls that are not part of the authored README document.</p></div>
+<article class="markdown-body" itemprop="text"><h1>Tiny</h1><p>Small useful tool.</p></article>
+<section><p>Additional project chrome contains enough selectable prose to make a generic article fallback attractive, but it must remain outside the result.</p></section>
+</main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://github.com/acme/tiny/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Markdown != "# Tiny\n\nSmall useful tool." {
+		t.Fatalf("short rendered document was not authoritative:\n%s", doc.Markdown)
+	}
+	if doc.PageType != PageTypeArticle || doc.Quality >= .42 {
+		t.Fatalf("test did not exercise the low-quality article path: type=%q quality=%v", doc.PageType, doc.Quality)
+	}
+	for _, warning := range doc.Warnings {
+		if warning.Code == "fallback" {
+			t.Fatalf("short rendered document triggered fallback: %#v", doc.Warnings)
+		}
+	}
+}
+
+func TestRenderedMarkdownDiagnosticsReflectAuthoritativeSelection(t *testing.T) {
+	html := `<html><head><title>Project docs</title></head><body>
+<main><p>Outside repository chrome has enough ordinary prose to pass block scoring before the authored document boundary is applied.</p></main>
+<article class="markdown-body" itemprop="text"><h1>Project docs</h1><p><a href="/acme/project/wiki">Read the documentation</a></p></article>
+</body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://github.com/acme/project/", WithDiagnostics(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Diagnostics == nil {
+		t.Fatal("missing diagnostics")
+	}
+	var outside, authored *BlockDiagnostic
+	for i := range doc.Diagnostics.Blocks {
+		block := &doc.Diagnostics.Blocks[i]
+		if strings.Contains(block.Text, "Outside repository chrome") {
+			outside = block
+		}
+		if strings.Contains(block.Text, "Read the documentation") {
+			authored = block
+		}
+	}
+	if outside == nil || outside.Selected || outside.Score < 1 {
+		t.Fatalf("outside block has stale diagnostics: %#v", outside)
+	}
+	if authored == nil || !authored.Selected || authored.Score >= 1 {
+		t.Fatalf("authored block has stale diagnostics: %#v", authored)
+	}
+	hasBoundaryReason := false
+	for _, reason := range authored.Reasons {
+		if reason == "inside rendered Markdown document" {
+			hasBoundaryReason = true
+		}
+	}
+	if !hasBoundaryReason {
+		t.Fatalf("authored block is missing boundary reason: %#v", authored)
+	}
+	if strings.Contains(doc.Markdown, "Outside repository chrome") || !strings.Contains(doc.Markdown, "Read the documentation") {
+		t.Fatalf("Markdown and diagnostics disagree:\n%s", doc.Markdown)
+	}
+}
+
+func TestHiddenRenderedMarkdownDoesNotOverrideVisibleContent(t *testing.T) {
+	for _, hiddenAttribute := range []string{"hidden", `aria-hidden="true"`} {
+		t.Run(hiddenAttribute, func(t *testing.T) {
+			html := `<html><head><title>Visible guide</title></head><body>
+<div ` + hiddenAttribute + `><article class="markdown-body" itemprop="text"><h1>Hidden README</h1><p>This hidden document must never become the selected authored content.</p></article></div>
+<main><h1>Visible guide</h1><p>The visible guide explains how to configure and operate the service without selecting content from a hidden application template.</p></main>
+</body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/guide", WithPageType(PageTypeDocumentation))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(doc.Markdown, "# Visible guide") || !strings.Contains(doc.Markdown, "configure and operate") {
+				t.Fatalf("visible content was lost:\n%s", doc.Markdown)
+			}
+			if strings.Contains(doc.Markdown, "Hidden README") || strings.Contains(doc.Markdown, "hidden document") {
+				t.Fatalf("hidden rendered document survived:\n%s", doc.Markdown)
+			}
+		})
+	}
+}
+
 func TestPageWidePreformattedArchiveRetainsLinks(t *testing.T) {
 	source, err := os.ReadFile("testdata/preformatted-archive.html")
 	if err != nil {
