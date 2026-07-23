@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head>
+<title>SIMD for Collision | Box2D</title>
+<meta property="og:title" content="SIMD for Collision">
+<meta property="og:type" content="article">
+<link rel="canonical" href="https://box2d.org/posts/2026/07/simd-for-collision/">
+</head><body>
+<main><article>
+<h1><a href="https://box2d.org/posts/2026/07/simd-for-collision/">SIMD for Collision</a></h1>
+<p>In a previous post I discussed the big wins I got from graph coloring to make the contact solver faster. That same approach exists in Box3D.</p>
+<p>In 3D there is an opportunity for using wide SIMD that does not exist in 2D. This benchmark drops 5120 convex hulls, each with 32 points.</p>
+<table><thead><tr><th>Hull</th><th>Vertices</th><th>Faces</th><th>Edges</th></tr></thead><tbody><tr><td>Box</td><td>8</td><td>6</td><td>12</td></tr><tr><td>Boulder</td><td>32</td><td>59</td><td>89</td></tr></tbody></table>
+<p>Box3D uses the Separating Axis Test for collision detection. Unfortunately, SAT in 3D has quadratic complexity.</p>
+<pre><code class="language-cpp">for (Edge edgeA : hullA.edges) {
+    for (Edge edgeB : hullB.edges) {
+        TestCrossProduct(edgeA, edgeB);
+    }
+}</code></pre>
+<p>SSE2 is over twice as fast as scalar. These timings are for the entire simulation, not just the edge-edge test.</p>
+</article>
+<hr>
+<!-- template boundary between the article and its generated metadata -->
+<div class="post-info">
+<p><span class="tag"><a href="/tags/box3d">box3d</a></span></p>
+<p>996 words</p>
+<p>2026-07-17 17:00 -0700</p>
+</div></main>
+</body></html>

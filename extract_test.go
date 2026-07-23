@@ -312,6 +312,67 @@ func TestRealEbellaniFixtureDoesNotRepeatNestedH2Headline(t *testing.T) {
 	}
 }
 
+func TestRealCitizenDotFixtureDropsLeadingDiscussionLinks(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-citizendot-malware-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://citizendot.github.io/articles/fake-job-interview-git-hook-malware/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# I Inspected My Take-Home Interview Project", "tree -a", "checks the victim's operating system"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("missing real CitizenDot-derived content %q:\n%s", want, doc.Markdown)
+		}
+	}
+	if strings.Contains(doc.Markdown, "Discuss on") || strings.Contains(doc.Markdown, "news.ycombinator.com") {
+		t.Fatalf("leading discussion controls survived article extraction:\n%s", doc.Markdown)
+	}
+}
+
+func TestRealAbhiFixtureDropsClosedDialogAndSiteFooter(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-abhi-calm-technologies.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://abhi.now/blog/calm-technologies/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# Calm Technologies That Excite Me", "## The Daylight Computer", "## Footnotes"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("missing real Abhi-derived content %q:\n%s", want, doc.Markdown)
+		}
+	}
+	for _, unwanted := range []string{"Abhigyan Trips", "distraction-free internet", "contact@abhi.now", "copyright"} {
+		if strings.Contains(doc.Markdown, unwanted) {
+			t.Errorf("closed dialog or site footer survived as %q:\n%s", unwanted, doc.Markdown)
+		}
+	}
+}
+
+func TestRealBox2DFixtureDropsTrailingPostMetadata(t *testing.T) {
+	source, err := os.ReadFile("testdata/real-box2d-simd-collision.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://box2d.org/posts/2026/07/simd-for-collision/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SIMD for Collision", "| Boulder | 32 | 59 | 89 |", "TestCrossProduct(edgeA, edgeB);", "SSE2 is over twice as fast"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("missing real Box2D-derived content %q:\n%s", want, doc.Markdown)
+		}
+	}
+	for _, unwanted := range []string{"[box3d]", "996 words", "2026-07-17 17:00", "\n---"} {
+		if strings.Contains(doc.Markdown, unwanted) {
+			t.Errorf("trailing post metadata survived as %q:\n%s", unwanted, doc.Markdown)
+		}
+	}
+}
+
 func TestArticleHeadlineSmallSubtitleIsPreserved(t *testing.T) {
 	html := `<!doctype html><html><head>
 <meta property="og:title" content="A Main Title: A Practical Guide">

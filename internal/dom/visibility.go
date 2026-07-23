@@ -67,6 +67,12 @@ func hiddenByNonARIAAttributes(n *html.Node) bool {
 		strings.EqualFold(strings.TrimSpace(attr(n, "aria-modal")), "true") {
 		return true
 	}
+	// A dialog is not rendered until its boolean open attribute is present.
+	// Treating a closed dialog as content leaks modal forms, profiles, and
+	// menus that are only templates for later interaction.
+	if strings.EqualFold(n.Data, "dialog") && !hasAttr(n, "open") {
+		return true
+	}
 	style := strings.Map(func(r rune) rune {
 		if unicode.IsSpace(r) {
 			return -1
