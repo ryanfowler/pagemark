@@ -3135,7 +3135,7 @@ func irrelevantNode(n *html.Node) bool {
 		return false
 	}
 	tag := strings.ToLower(n.Data)
-	if tag == "nav" || tag == "footer" {
+	if tag == "nav" || tag == "footer" || hasDataMarker(n, "site-footer") {
 		return true
 	}
 	role := strings.ToLower(attrValue(n, "role"))
@@ -3239,7 +3239,8 @@ func hasTrailingArticleRegionClass(n *html.Node) bool {
 	for _, class := range strings.Fields(strings.ToLower(attrValue(n, "class"))) {
 		class = strings.Trim(class, "_- ")
 		if class == "post-nav" || class == "article-nav" || class == "related-stories" ||
-			class == "related-posts" || class == "recommended-stories" || class == "recommendations" {
+			class == "related-posts" || class == "recommended-stories" || class == "recommendations" ||
+			class == "post-info" || class == "post-meta" || class == "article-meta" || class == "entry-meta" {
 			return true
 		}
 	}
@@ -3580,6 +3581,25 @@ func countLinkedRecords(root *html.Node, limit int) int {
 	return count
 }
 
+func isArticleDiscussionLinks(n *html.Node) bool {
+	if n == nil || !strings.EqualFold(n.Data, "p") {
+		return false
+	}
+	label := normalizedLabel(nodeText(n))
+	if !strings.HasPrefix(label, "discuss on ") || utf8.RuneCountInString(label) > 120 {
+		return false
+	}
+	links := 0
+	walk(n, func(x *html.Node) bool {
+		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "a") {
+			links++
+			return false
+		}
+		return true
+	})
+	return links > 0
+}
+
 func isArticleSharingControls(n *html.Node) bool {
 	if n == nil || !strings.EqualFold(n.Data, "ul") || !strings.HasPrefix(normalizedLabel(nodeText(n)), "share") {
 		return false
@@ -3624,6 +3644,22 @@ func isArticleTaxonomySeparator(n *html.Node) bool {
 		containsAny(tokens, "separator", "divider")
 }
 
+func isTrailingArticleSeparator(n *html.Node) bool {
+	if n == nil || !strings.EqualFold(n.Data, "hr") {
+		return false
+	}
+	for sibling := n.NextSibling; sibling != nil; sibling = sibling.NextSibling {
+		if sibling.Type == html.CommentNode ||
+			(sibling.Type == html.TextNode && normalizeText(sibling.Data) == "") ||
+			hardHidden(sibling) {
+			continue
+		}
+		return sibling.Type == html.ElementNode &&
+			(hasTrailingArticleRegionClass(sibling) || strings.EqualFold(sibling.Data, "footer") || hasDataMarker(sibling, "site-footer"))
+	}
+	return false
+}
+
 func isArticleTaxonomyRegion(n *html.Node) bool {
 	if n == nil {
 		return false
@@ -3662,7 +3698,8 @@ func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	if isArticleSharingControls(n) || isArticleBackControl(n) || isArticleTaxonomySeparator(n) || isArticleTaxonomyRegion(n) {
+	if isArticleDiscussionLinks(n) || isArticleSharingControls(n) || isArticleBackControl(n) ||
+		isArticleTaxonomySeparator(n) || isTrailingArticleSeparator(n) || isArticleTaxonomyRegion(n) {
 		return true
 	}
 	if isSubscriptionRegion(n) {
@@ -5028,6 +5065,20 @@ func nearestNeutralDiscussionRecord(n *html.Node) *html.Node {
 func elementTokens(n *html.Node) string {
 	return strings.ToLower(attrValue(n, "id") + " " + attrValue(n, "class") + " " + attrValue(n, "role"))
 }
+
+func hasDataMarker(n *html.Node, marker string) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	want := "data-" + marker
+	for _, attr := range n.Attr {
+		if strings.EqualFold(attr.Key, want) {
+			return true
+		}
+	}
+	return false
+}
+
 func containsToken(s string, tokens []string) bool {
 	for _, t := range tokens {
 		if containsAny(s, t) {
