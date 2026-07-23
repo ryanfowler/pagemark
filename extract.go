@@ -3136,7 +3136,7 @@ func hasBoilerplateToken(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	if containsToken(elementTokens(n), badTokens) {
+	if elementContainsAny(n, badTokens...) {
 		return true
 	}
 	for _, attr := range []string{"id", "class", "role"} {
@@ -3218,11 +3218,10 @@ func irrelevantNode(n *html.Node) bool {
 	if containsAny(role, "navigation", "complementary", "contentinfo") {
 		return true
 	}
-	tokens := elementTokens(n)
-	if containsToken(tokens, structuralBoilerplateTokens) {
+	if elementContainsAny(n, structuralBoilerplateTokens...) {
 		return true
 	}
-	if containsToken(tokens, navigationStructureTokens) && !headingDocumentsStructure(n, tokens) && hasNavigationShape(n) {
+	if elementContainsAny(n, navigationStructureTokens...) && !headingDocumentsStructure(n) && hasNavigationShape(n) {
 		return true
 	}
 	// Interactive control strips are commonly generic divs rather than nav or
@@ -3230,8 +3229,8 @@ func irrelevantNode(n *html.Node) bool {
 	// single recommendation, so repeated-card detection cannot identify it.
 	// Require both conventional compound naming and navigational shape to avoid
 	// excluding prose merely because one broad word occurs in a class name.
-	controlBar := containsAny(tokens, "action", "control", "follow") && containsAny(tokens, "bar", "toolbar")
-	relatedContent := containsAny(tokens, "related", "recommended") && containsAny(tokens, "content", "story", "article", "card")
+	controlBar := elementContainsAny(n, "action", "control", "follow") && elementContainsAny(n, "bar", "toolbar")
+	relatedContent := elementContainsAny(n, "related", "recommended") && elementContainsAny(n, "content", "story", "article", "card")
 	if (controlBar || relatedContent) && hasNavigationShape(n) {
 		return true
 	}
@@ -3346,7 +3345,7 @@ func hasTrailingArticleRegionClass(n *html.Node) bool {
 	return false
 }
 
-func headingDocumentsStructure(n *html.Node, tokens string) bool {
+func headingDocumentsStructure(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "section") {
 		return false
 	}
@@ -3355,7 +3354,7 @@ func headingDocumentsStructure(n *html.Node, tokens string) bool {
 		return false
 	}
 	for _, token := range navigationStructureTokens {
-		if containsAny(tokens, token) && containsAny(heading, token) {
+		if elementContainsAny(n, token) && containsAny(heading, token) {
 			return true
 		}
 	}
@@ -3484,16 +3483,15 @@ func (a *analysis) isTrailingSocialCardRegion(n *html.Node) bool {
 	default:
 		return false
 	}
-	tokens := elementTokens(n)
-	cardShape := tag == "aside" || containsAny(tokens, "card", "embed", "post")
-	platformMarker := containsAny(tokens,
+	cardShape := tag == "aside" || elementContainsAny(n, "card", "embed", "post")
+	platformMarker := elementContainsAny(n,
 		"bsky", "bluesky", "mastodon", "twitter", "tweet", "instagram",
 		"facebook", "linkedin", "fediverse")
 	// “Social” and “threads” can describe substantive article subjects. They
 	// only become auxiliary evidence when paired with recognizable card shape.
-	genericSocialMarker := containsAny(tokens, "social", "threads") && cardShape
-	profileMarker := containsAny(tokens, "share", "profile", "subscribe") && cardShape
-	selfPreviewCandidate := cardShape && (tag == "aside" || containsAny(tokens, "card", "preview"))
+	genericSocialMarker := elementContainsAny(n, "social", "threads") && cardShape
+	profileMarker := elementContainsAny(n, "share", "profile", "subscribe") && cardShape
+	selfPreviewCandidate := cardShape && (tag == "aside" || elementContainsAny(n, "card", "preview"))
 	if !platformMarker && !genericSocialMarker && !profileMarker && !selfPreviewCandidate {
 		return false
 	}
@@ -4324,8 +4322,16 @@ func (a *analysis) hasLongArticleProseBefore(n *html.Node) bool {
 			if hardHidden(x) {
 				return false
 			}
-			a.articleProseBefore[x] = seen
-			if x.Type == html.ElementNode && strings.EqualFold(x.Data, "p") &&
+			if x.Type != html.ElementNode {
+				return true
+			}
+			// This cache is only queried for possible marketing-region roots. Avoid
+			// retaining an entry for every text and inline node in a large document.
+			switch strings.ToLower(x.Data) {
+			case "div", "section", "aside", "fieldset":
+				a.articleProseBefore[x] = seen
+			}
+			if strings.EqualFold(x.Data, "p") &&
 				utf8.RuneCountInString(normalizeText(nodeText(x))) >= 100 {
 				seen = true
 			}
@@ -4833,8 +4839,7 @@ func isMarkedArticleCard(n *html.Node) bool {
 	if !isMarkedCard(n) {
 		return false
 	}
-	tokens := elementTokens(n)
-	return strings.EqualFold(n.Data, "article") || containsAny(tokens, "article", "post", "story", "newsletter")
+	return strings.EqualFold(n.Data, "article") || elementContainsAny(n, "article", "post", "story", "newsletter")
 }
 
 // hasSubstantiveContentBeforeDescendant protects a shared ancestor from tail
@@ -4870,8 +4875,7 @@ func hasSubstantiveContentBeforeDescendant(root *html.Node, target func(*html.No
 }
 
 func isPromotionalCardRegion(n *html.Node) bool {
-	tokens := elementTokens(n)
-	if containsAny(tokens, "promo", "promotion", "promotions", "promotional", "related", "recommended", "recommendations") {
+	if elementContainsAny(n, "promo", "promotion", "promotions", "promotional", "related", "recommended", "recommendations") {
 		return true
 	}
 	return isArticleAuxiliaryLabel(firstRegionHeading(n))
@@ -4904,9 +4908,8 @@ func countArticleCards(root *html.Node, limit int) int {
 			if hardHidden(ch) || ch.Type != html.ElementNode {
 				continue
 			}
-			tokens := elementTokens(ch)
-			isCard := containsAny(tokens, "card") &&
-				(strings.EqualFold(ch.Data, "article") || containsAny(tokens, "article", "post", "story", "newsletter"))
+			isCard := elementContainsAny(ch, "card") &&
+				(strings.EqualFold(ch.Data, "article") || elementContainsAny(ch, "article", "post", "story", "newsletter"))
 			if isCard {
 				count++
 				continue // Do not count nested wrappers belonging to the same card.
