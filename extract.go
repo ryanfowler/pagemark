@@ -96,7 +96,21 @@ func Extract(input io.Reader, pageURL string, opts ...Option) (*Document, error)
 
 // ExtractBytes extracts useful content from UTF-8 HTML bytes.
 func ExtractBytes(input []byte, pageURL string, opts ...Option) (*Document, error) {
-	return Extract(bytes.NewReader(input), pageURL, opts...)
+	o := applyOptions(opts)
+	if o.maxInput > 0 && int64(len(input)) > o.maxInput {
+		return nil, &LimitError{"input bytes", int64(len(input)), o.maxInput}
+	}
+	// Parse the caller's byte slice directly. Routing through Extract would make
+	// io.ReadAll copy the complete input before parsing it.
+	root, err := html.Parse(bytes.NewReader(input))
+	if err != nil {
+		return nil, fmt.Errorf("pagemark: parse HTML: %w", err)
+	}
+	doc, err := extractNode(root, pageURL, o)
+	if doc != nil {
+		doc.Stats.InputBytes = len(input)
+	}
+	return doc, err
 }
 
 // ExtractNode extracts useful content from a parsed HTML tree. It does not change root.
@@ -367,7 +381,7 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 	// its ancestry for scoring and auxiliary checks.
 	if n.Type == html.ElementNode && isGenericContainer(strings.ToLower(n.Data)) && hasBlockDescendant(n) &&
 		(strings.EqualFold(n.Data, "article") || strings.EqualFold(n.Data, "main") ||
-			containsAny(elementTokens(n), "article", "content", "entry", "post", "story", "body")) {
+			elementContainsAny(n, "article", "content", "entry", "post", "story", "body")) {
 		a.segmentDirectFlow(n, excluded)
 		return
 	}
@@ -696,7 +710,7 @@ func meaningfulVisual(n *html.Node) bool {
 		if tag == "nav" || tag == "footer" || tag == "aside" {
 			return false
 		}
-		if containsAny(elementTokens(p), "author", "profile", "avatar", "logo", "icon", "social", "share", "sidebar", "tracking", "pixel", "related", "recommended") {
+		if elementContainsAny(p, "author", "profile", "avatar", "logo", "icon", "social", "share", "sidebar", "tracking", "pixel", "related", "recommended") {
 			return false
 		}
 	}
@@ -868,7 +882,7 @@ func (a *analysis) strengthenArticleContinuity(pt PageType) {
 		// div without semantic article markup. Keep this local; using main or body
 		// would let unrelated trailing regions inherit article confidence.
 		for p := n.Parent; p != nil; p = p.Parent {
-			if p.Type == html.ElementNode && containsAny(elementTokens(p), "article", "content", "entry", "post-body", "story-body") {
+			if p.Type == html.ElementNode && elementContainsAny(p, "article", "content", "entry", "post-body", "story-body") {
 				return p
 			}
 		}
@@ -1604,7 +1618,7 @@ func (a *analysis) isCredibleArticleHeading(headingIndex int, selected []*html.N
 		if strings.EqualFold(p.Data, "nav") {
 			return false
 		}
-		if strings.EqualFold(p.Data, "header") && !strings.EqualFold(region.Data, "article") && !containsAny(elementTokens(p), "article", "post", "entry", "story") {
+		if strings.EqualFold(p.Data, "header") && !strings.EqualFold(region.Data, "article") && !elementContainsAny(p, "article", "post", "entry", "story") {
 			return false
 		}
 	}
@@ -2156,7 +2170,7 @@ func (a *analysis) listingRecord(n *html.Node) *html.Node {
 }
 
 func isListingRecordElement(n *html.Node) bool {
-	if n == nil || n.Type != html.ElementNode || !containsAny(elementTokens(n), "card", "result", "item", "product", "record") {
+	if n == nil || n.Type != html.ElementNode || !elementContainsAny(n, "card", "result", "item", "product", "record") {
 		return false
 	}
 	switch strings.ToLower(n.Data) {
@@ -2978,7 +2992,7 @@ func microdataRecordShape(n *html.Node) bool {
 			continue
 		}
 		tag := strings.ToLower(p.Data)
-		if tag == "aside" || tag == "li" || containsAny(elementTokens(p), "card", "result", "item", "teaser", "archive") {
+		if tag == "aside" || tag == "li" || elementContainsAny(p, "card", "result", "item", "teaser", "archive") {
 			return true
 		}
 		if p != n && (tag == "main" || tag == "article") {
@@ -3260,7 +3274,7 @@ func isAdvertisementRegion(n *html.Node) bool {
 	// sponsored link elsewhere in the subtree can otherwise classify the entire
 	// editorial content container as an advertisement. Child widgets are visited
 	// and classified independently by the normal ancestry checks.
-	if !containsAny(elementTokens(n), "product", "price", "buy-button", "affiliate") {
+	if !elementContainsAny(n, "product", "price", "buy-button", "affiliate") {
 		return false
 	}
 	sponsored := false
@@ -3381,7 +3395,7 @@ func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 			return true
 		}
 		if p.Type == html.ElementNode && (strings.EqualFold(p.Data, "aside") ||
-			containsAny(elementTokens(p), "sidebar")) {
+			elementContainsAny(p, "sidebar")) {
 			// Asides and explicitly named sidebars may contain complete-looking
 			// comments or message previews, but they are not candidates for the
 			// page's primary shape.
@@ -3410,7 +3424,7 @@ func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 func (a *analysis) primaryArticleAncestor(n *html.Node) *html.Node {
 	for p := n; p != nil; p = p.Parent {
 		if p.Type == html.ElementNode && strings.EqualFold(p.Data, "article") &&
-			!containsAny(elementTokens(p), "card") && !a.inferenceAuxiliaryBlock(p) {
+			!elementContainsAny(p, "card") && !a.inferenceAuxiliaryBlock(p) {
 			return p
 		}
 	}
@@ -3469,7 +3483,7 @@ func (a *analysis) hasSemanticArticleBefore(n *html.Node) bool {
 			}
 			a.semanticArticleBefore[x] = seen
 			if x.Type == html.ElementNode && strings.EqualFold(x.Data, "article") &&
-				!containsAny(elementTokens(x), "card") {
+				!elementContainsAny(x, "card") {
 				seen = true
 			}
 			return true
@@ -3494,7 +3508,7 @@ func (a *analysis) hasSemanticArticleAfter(n *html.Node) bool {
 			x := nodes[i]
 			a.semanticArticleAfter[x] = seen
 			if x.Type == html.ElementNode && strings.EqualFold(x.Data, "article") &&
-				!containsAny(elementTokens(x), "card") {
+				!elementContainsAny(x, "card") {
 				seen = true
 			}
 		}
@@ -3573,7 +3587,7 @@ func isRelatedCardRegion(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	return containsAny(elementTokens(n), "related", "recommended", "recommendations") && countMarkedCards(n, 2) >= 2
+	return elementContainsAny(n, "related", "recommended", "recommendations") && countMarkedCards(n, 2) >= 2
 }
 
 // hasAuxiliaryHeading is deliberately broader than the unconditional label
@@ -4151,7 +4165,7 @@ func (a *analysis) isPeripheralLinkRegion(n *html.Node) bool {
 		return false
 	}
 	if before && countLinkedRecords(n, 3) >= 3 &&
-		(hasAuxiliaryHeading(n) || containsAny(elementTokens(n),
+		(hasAuxiliaryHeading(n) || elementContainsAny(n,
 			"related", "recommended", "recommendations", "promo", "contact-cards")) {
 		return true
 	}
@@ -4192,7 +4206,7 @@ func (a *analysis) isPeripheralLinkRegion(n *html.Node) bool {
 	// Pre-title topic taxonomies use fewer links but normally identify
 	// themselves in class/id attributes.
 	return links >= 3 && internal*2 >= links && ratio >= .65 &&
-		containsAny(elementTokens(n), "tag", "tags", "topic", "topics", "taxonomy", "category", "categories")
+		elementContainsAny(n, "tag", "tags", "topic", "topics", "taxonomy", "category", "categories")
 }
 
 func isEditorialReferenceHeading(heading string) bool {
@@ -4225,7 +4239,7 @@ func (a *analysis) isTrailingMarketingRegion(n *html.Node) bool {
 		return false
 	}
 	text := normalizedLabel(nodeText(n))
-	marked := containsAny(elementTokens(n), "promo", "marketing", "register", "signup", "sign-up", "subscribe")
+	marked := elementContainsAny(n, "promo", "marketing", "register", "signup", "sign-up", "subscribe")
 	action := containsAnyWordSequence(text, "sign up", "register", "subscribe", "apply now", "get started", "get updates", "join now")
 	socialFollow := strings.HasPrefix(heading, "follow ") && links >= 2
 	headingCTA := strings.HasPrefix(heading, "get ") || strings.HasPrefix(heading, "apply ") ||
@@ -4488,7 +4502,7 @@ func (a *analysis) isEmptyCommentControlRegion(n *html.Node) bool {
 	default:
 		return false
 	}
-	if !containsAny(elementTokens(n), "comments", "commentlist") {
+	if !elementContainsAny(n, "comments", "commentlist") {
 		return false
 	}
 	// A visible prose element can be substantive even when the comments
@@ -4575,7 +4589,7 @@ func isPlausibleCommentRecord(n *html.Node) bool {
 	if containsAny(strings.ToLower(attrValue(n, "itemtype")), "comment") {
 		return true
 	}
-	if !containsAny(elementTokens(n), "comment", "reply") {
+	if !elementContainsAny(n, "comment", "reply") {
 		return false
 	}
 	// A paragraph or quotation supplies record shape even for a very short
@@ -4731,7 +4745,7 @@ func (a *analysis) hasArticleBodyDescendant(root *html.Node) bool {
 // card or a listing page as auxiliary content.
 func hasNonCardArticleAncestor(n *html.Node) bool {
 	for p := n.Parent; p != nil; p = p.Parent {
-		if p.Type == html.ElementNode && strings.EqualFold(p.Data, "article") && !containsAny(elementTokens(p), "card") {
+		if p.Type == html.ElementNode && strings.EqualFold(p.Data, "article") && !elementContainsAny(p, "card") {
 			return true
 		}
 	}
@@ -4765,7 +4779,7 @@ func isFormElement(n *html.Node) bool {
 }
 
 func isMarkedCard(n *html.Node) bool {
-	return n != nil && n.Type == html.ElementNode && containsAny(elementTokens(n), "card")
+	return n != nil && n.Type == html.ElementNode && elementContainsAny(n, "card")
 }
 
 func isMarkedArticleCard(n *html.Node) bool {
@@ -4824,7 +4838,7 @@ func countMarkedCards(root *html.Node, limit int) int {
 			if hardHidden(ch) || ch.Type != html.ElementNode {
 				continue
 			}
-			if containsAny(elementTokens(ch), "card") {
+			if elementContainsAny(ch, "card") {
 				count++
 				continue
 			}
@@ -4859,7 +4873,7 @@ func countArticleCards(root *html.Node, limit int) int {
 
 func hasSemanticArticleBeforeOrAround(n *html.Node) bool {
 	for p := n.Parent; p != nil; p = p.Parent {
-		if p.Type == html.ElementNode && strings.EqualFold(p.Data, "article") && !containsAny(elementTokens(p), "card") {
+		if p.Type == html.ElementNode && strings.EqualFold(p.Data, "article") && !elementContainsAny(p, "card") {
 			return true
 		}
 	}
@@ -4872,7 +4886,7 @@ func hasSemanticArticleBeforeOrAround(n *html.Node) bool {
 				if found || hardHidden(x) {
 					return false
 				}
-				if x.Type == html.ElementNode && strings.EqualFold(x.Data, "article") && !containsAny(elementTokens(x), "card") {
+				if x.Type == html.ElementNode && strings.EqualFold(x.Data, "article") && !elementContainsAny(x, "card") {
 					found = true
 					return false
 				}
@@ -5040,7 +5054,7 @@ func allASCIIDigits(s string) bool {
 
 func nearestTokenAncestor(n *html.Node, values ...string) *html.Node {
 	for p := n; p != nil; p = p.Parent {
-		if p.Type == html.ElementNode && containsAny(elementTokens(p), values...) {
+		if p.Type == html.ElementNode && elementContainsAny(p, values...) {
 			return p
 		}
 	}
@@ -5079,7 +5093,7 @@ func (a *analysis) primaryDiscussionContext() bool {
 	if primary == nil {
 		return false
 	}
-	if containsAny(elementTokens(primary), "discussion", "thread", "topic", "forum", "qna", "question") {
+	if elementContainsAny(primary, "discussion", "thread", "topic", "forum", "qna", "question") {
 		return true
 	}
 	label := ""
@@ -5180,7 +5194,7 @@ func nearestNeutralDiscussionRecord(n *html.Node) *html.Node {
 				(commentRecordTextLength(p) >= 20 && !isCommentStatusPrompt(commentRecordText(p)))) {
 			record = p
 		}
-		if containsAny(elementTokens(p), "discussion", "thread", "topic") {
+		if elementContainsAny(p, "discussion", "thread", "topic") {
 			return record
 		}
 	}
@@ -5188,6 +5202,49 @@ func nearestNeutralDiscussionRecord(n *html.Node) *html.Node {
 }
 func elementTokens(n *html.Node) string {
 	return strings.ToLower(attrValue(n, "id") + " " + attrValue(n, "class") + " " + attrValue(n, "role"))
+}
+
+// elementContainsAny tests the token-bearing attributes without concatenating
+// and lowercasing them. Most classification checks only need a boolean answer.
+func elementContainsAny(n *html.Node, values ...string) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	for _, attr := range n.Attr {
+		if (strings.EqualFold(attr.Key, "id") || strings.EqualFold(attr.Key, "class") || strings.EqualFold(attr.Key, "role")) &&
+			containsAnyFold(attr.Val, values...) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyFold(s string, values ...string) bool {
+	start := -1
+	for end, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			if start < 0 {
+				start = end
+			}
+			continue
+		}
+		if start >= 0 {
+			for _, value := range values {
+				if strings.EqualFold(s[start:end], value) {
+					return true
+				}
+			}
+			start = -1
+		}
+	}
+	if start >= 0 {
+		for _, value := range values {
+			if strings.EqualFold(s[start:], value) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasDataMarker(n *html.Node, marker string) bool {
@@ -5212,10 +5269,29 @@ func containsToken(s string, tokens []string) bool {
 	return false
 }
 func containsAny(s string, values ...string) bool {
-	fields := strings.FieldsFunc(s, func(r rune) bool { return !(unicode.IsLetter(r) || unicode.IsDigit(r)) })
-	for _, f := range fields {
-		for _, v := range values {
-			if f == v {
+	// Scan tokens in place rather than materializing every token with
+	// strings.FieldsFunc. This helper is used on DOM attributes in many scoring
+	// passes, so the temporary slices otherwise dominate extraction allocations.
+	start := -1
+	for end, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			if start < 0 {
+				start = end
+			}
+			continue
+		}
+		if start >= 0 {
+			for _, value := range values {
+				if s[start:end] == value {
+					return true
+				}
+			}
+			start = -1
+		}
+	}
+	if start >= 0 {
+		for _, value := range values {
+			if s[start:] == value {
 				return true
 			}
 		}
@@ -5329,7 +5405,59 @@ func walk(n *html.Node, f func(*html.Node) bool) {
 		walk(ch, f)
 	}
 }
-func normalizeText(s string) string { return strings.Join(strings.Fields(s), " ") }
+func normalizeText(s string) string {
+	start := 0
+	for start < len(s) {
+		r, size := utf8.DecodeRuneInString(s[start:])
+		if !unicode.IsSpace(r) {
+			break
+		}
+		start += size
+	}
+	if start == len(s) {
+		return ""
+	}
+
+	// Delay allocating until whitespace actually needs trimming or collapsing.
+	i := start
+	for i < len(s) {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if unicode.IsSpace(r) {
+			break
+		}
+		i += size
+	}
+	if i == len(s) {
+		return s[start:]
+	}
+
+	var b strings.Builder
+	b.Grow(len(s) - start)
+	b.WriteString(s[start:i])
+	for i < len(s) {
+		for i < len(s) {
+			r, size := utf8.DecodeRuneInString(s[i:])
+			if !unicode.IsSpace(r) {
+				break
+			}
+			i += size
+		}
+		if i == len(s) {
+			break
+		}
+		b.WriteByte(' ')
+		run := i
+		for i < len(s) {
+			r, size := utf8.DecodeRuneInString(s[i:])
+			if unicode.IsSpace(r) {
+				break
+			}
+			i += size
+		}
+		b.WriteString(s[run:i])
+	}
+	return b.String()
+}
 func attrValue(n *html.Node, key string) string {
 	for _, x := range n.Attr {
 		if strings.EqualFold(x.Key, key) {
