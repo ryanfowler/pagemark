@@ -110,12 +110,3 @@ func attr(n *html.Node, key string) string {
 	}
 	return ""
 }
-
-func hasAttr(n *html.Node, key string) bool {
-	for _, a := range n.Attr {
-		if strings.EqualFold(a.Key, key) {
-			return true
-		}
-	}
-	return false
-}
