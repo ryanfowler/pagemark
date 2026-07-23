@@ -4,6 +4,7 @@ package dom
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/net/html"
 )
@@ -93,13 +94,53 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 	if style == "" {
 		return false
 	}
-	normalized := strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) {
-			return -1
+	return hiddenStyle(style)
+}
+
+// hiddenStyle recognizes the two relevant declarations in one pass, without
+// allocating a normalized copy of every style attribute. The common ASCII
+// path avoids Unicode tables and decoding.
+func hiddenStyle(s string) bool {
+	const display = "display:none"
+	const visibility = "visibility:hidden"
+	di, vi := 0, 0
+	for i := 0; i < len(s); {
+		var r rune
+		if s[i] < utf8.RuneSelf {
+			r = rune(s[i])
+			i++
+			if r == ' ' || r >= '\t' && r <= '\r' {
+				continue
+			}
+			if r >= 'A' && r <= 'Z' {
+				r += 'a' - 'A'
+			}
+		} else {
+			var size int
+			r, size = utf8.DecodeRuneInString(s[i:])
+			i += size
+			if unicode.IsSpace(r) {
+				continue
+			}
+			r = unicode.ToLower(r)
 		}
-		return unicode.ToLower(r)
-	}, style)
-	return strings.Contains(normalized, "display:none") || strings.Contains(normalized, "visibility:hidden")
+		di = advanceMatch(display, di, r)
+		vi = advanceMatch(visibility, vi, r)
+		if di == len(display) || vi == len(visibility) {
+			return true
+		}
+	}
+	return false
+}
+
+func advanceMatch(want string, matched int, c rune) int {
+	if c == rune(want[matched]) {
+		return matched + 1
+	}
+	if c == rune(want[0]) {
+		return 1
+	}
+	return 0
 }
 
 func attr(n *html.Node, key string) string {
