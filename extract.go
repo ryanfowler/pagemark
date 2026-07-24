@@ -249,6 +249,12 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		return nil, ErrNoContent
 	}
 	exclude := func(n *html.Node) bool {
+		// Exclusions identify structural regions. Their text descendants are only
+		// reached when the parent was retained, so probing them separately would
+		// just populate the node-state map with every text node in the document.
+		if n == nil || n.Type != html.ElementNode {
+			return false
+		}
 		discussionAuxiliary := pageType == PageTypeDiscussion &&
 			(isDiscussionControlNode(n) || a.hasStandaloneMessageAncestor(n))
 		visualAuxiliary := o.includeImages && isVisualElement(n) && !meaningfulVisual(n)
@@ -600,7 +606,7 @@ func renderedMarkdownDocument(root *html.Node) *html.Node {
 			return false
 		}
 		markdownBody := false
-		for _, class := range strings.Fields(attrValue(n, "class")) {
+		for class := range strings.FieldsSeq(attrValue(n, "class")) {
 			if strings.EqualFold(class, "markdown-body") {
 				markdownBody = true
 				break
@@ -1609,18 +1615,19 @@ func (a *analysis) hasLeadingOutputHeading(nodes []*html.Node, cfg markdown.Conf
 // record containers and therefore fail this test even if page type inference
 // was explicitly forced to generic.
 func (a *analysis) hasDominantProseOutput(nodes []*html.Node, cfg markdown.Config) bool {
-	seen := map[*html.Node]bool{}
 	regions := map[*html.Node]int{}
 	total, paragraphs := 0, 0
+	// Segmentation emits disjoint block roots, and every fallback selects either
+	// one subtree or disjoint roots. Avoid a page-sized visited map here: this
+	// title check is on the normal path for generic and product pages.
 	for _, root := range nodes {
 		walk(root, func(n *html.Node) bool {
+			if n.Type != html.ElementNode {
+				return true
+			}
 			if hardHidden(n) || a.hasIrrelevantAncestor(n) || (cfg.Exclude != nil && cfg.Exclude(n)) {
 				return false
 			}
-			if seen[n] || n.Type != html.ElementNode {
-				return true
-			}
-			seen[n] = true
 			tag := strings.ToLower(n.Data)
 			if tag != "p" && tag != "blockquote" {
 				return true
@@ -1758,7 +1765,7 @@ func isPublicationMetadataElement(n *html.Node) bool {
 	if strings.EqualFold(n.Data, "time") {
 		return true
 	}
-	for _, value := range strings.Fields(attrValue(n, "itemprop")) {
+	for value := range strings.FieldsSeq(attrValue(n, "itemprop")) {
 		value = strings.ToLower(value)
 		if strings.Contains(value, "datepublished") || strings.Contains(value, "author") {
 			return true
@@ -1768,7 +1775,7 @@ func isPublicationMetadataElement(n *html.Node) bool {
 	if containsAny(tokens, "byline", "dateline", "published") {
 		return true
 	}
-	for _, token := range strings.Fields(tokens) {
+	for token := range strings.FieldsSeq(tokens) {
 		token = strings.ReplaceAll(token, "_", "-")
 		switch token {
 		case "post-date", "entry-date", "article-date", "publication-date", "post-meta", "entry-meta", "article-meta":
@@ -1846,7 +1853,7 @@ func hasArticleHeadlineMarker(n *html.Node) bool {
 
 func hasHeadlineAttribute(n *html.Node) bool {
 	for _, key := range []string{"itemprop", "property"} {
-		for _, value := range strings.Fields(attrValue(n, key)) {
+		for value := range strings.FieldsSeq(attrValue(n, key)) {
 			if isHeadlineProperty(value) {
 				return true
 			}
@@ -1923,7 +1930,7 @@ func isExplicitHeadingPublicationMetadata(n *html.Node) bool {
 	if !strings.EqualFold(n.Data, "time") {
 		return isPublicationMetadataElement(n)
 	}
-	for _, value := range strings.Fields(attrValue(n, "itemprop")) {
+	for value := range strings.FieldsSeq(attrValue(n, "itemprop")) {
 		value = strings.ToLower(value)
 		if strings.Contains(value, "datepublished") || strings.Contains(value, "datemodified") || strings.Contains(value, "datecreated") {
 			return true
@@ -1937,7 +1944,7 @@ func isExplicitHeadingPublicationMetadata(n *html.Node) bool {
 	if containsAny(tokens, "byline", "dateline", "published") {
 		return true
 	}
-	for _, token := range strings.Fields(tokens) {
+	for token := range strings.FieldsSeq(tokens) {
 		token = strings.ReplaceAll(token, "_", "-")
 		switch token {
 		case "post-date", "entry-date", "article-date", "publication-date", "post-meta", "entry-meta", "article-meta":
@@ -2077,7 +2084,7 @@ func titleEquivalent(heading, title string, siteName ...string) bool {
 func articleTitleVariantEquivalent(heading, title string) bool {
 	words := func(value string) map[string]bool {
 		out := make(map[string]bool)
-		for _, word := range strings.Fields(normalizedLabel(value)) {
+		for word := range strings.FieldsSeq(normalizedLabel(value)) {
 			switch word {
 			case "a", "an", "and", "the", "to", "of", "for", "in", "on", "with", "after", "before",
 				"may", "might", "can", "could", "be", "been", "is", "are", "was", "were", "new",
@@ -3389,7 +3396,7 @@ func isPageFooterConvention(n *html.Node) bool {
 }
 
 func hasClassPrefix(n *html.Node, prefix string) bool {
-	for _, class := range strings.Fields(strings.ToLower(attrValue(n, "class"))) {
+	for class := range strings.FieldsSeq(strings.ToLower(attrValue(n, "class"))) {
 		if class == prefix || strings.HasPrefix(class, prefix+"-") || strings.HasPrefix(class, prefix+"_") {
 			return true
 		}
@@ -3406,7 +3413,7 @@ func isTableOfContentsRegion(n *html.Node) bool {
 		return false
 	}
 	for _, key := range []string{"id", "class"} {
-		for _, identifier := range strings.Fields(strings.ToLower(attrValue(n, key))) {
+		for identifier := range strings.FieldsSeq(strings.ToLower(attrValue(n, key))) {
 			if identifier == "table-of-contents" || identifier == "table_of_contents" {
 				return true
 			}
@@ -3491,7 +3498,7 @@ func isAdvertisementRegion(n *html.Node) bool {
 	}
 	// Restrict the direct marker to class names. An id such as
 	// "advertisement" can legitimately name a documentation section.
-	for _, class := range strings.Fields(strings.ToLower(attrValue(n, "class"))) {
+	for class := range strings.FieldsSeq(strings.ToLower(attrValue(n, "class"))) {
 		class = strings.Trim(class, "_- ")
 		if class == "ad" || class == "ads" || class == "advert" || class == "advertisement" ||
 			class == "advertising" || class == "sponsor" || class == "sponsored" ||
@@ -3526,7 +3533,7 @@ func isAdvertisementRegion(n *html.Node) bool {
 }
 
 func hasClassConvention(n *html.Node, convention string) bool {
-	for _, class := range strings.Fields(attrValue(n, "class")) {
+	for class := range strings.FieldsSeq(attrValue(n, "class")) {
 		class = strings.ToLower(strings.Trim(class, "_- "))
 		if class == convention || strings.HasPrefix(class, convention+"--") ||
 			strings.HasPrefix(class, convention+"__") || strings.Contains(class, "-"+convention) {
@@ -3563,7 +3570,7 @@ func htmlSpace(c byte) bool {
 }
 
 func hasAuthorProfileClass(n *html.Node) bool {
-	for _, class := range strings.Fields(strings.ToLower(attrValue(n, "class"))) {
+	for class := range strings.FieldsSeq(strings.ToLower(attrValue(n, "class"))) {
 		class = strings.Trim(class, "_- ")
 		if class == "author-profile" || class == "author-box" || class == "author-bio" || class == "author-biography" ||
 			class == "about-author" || class == "about-the-author" {
@@ -3574,7 +3581,7 @@ func hasAuthorProfileClass(n *html.Node) bool {
 }
 
 func hasTrailingArticleRegionClass(n *html.Node) bool {
-	for _, class := range strings.Fields(strings.ToLower(attrValue(n, "class"))) {
+	for class := range strings.FieldsSeq(strings.ToLower(attrValue(n, "class"))) {
 		class = strings.Trim(class, "_- ")
 		if class == "post-nav" || class == "article-nav" || class == "related-stories" ||
 			class == "related-posts" || class == "recommended-stories" || class == "recommendations" ||
@@ -6014,7 +6021,8 @@ func rawNodeText(n *html.Node) string {
 }
 func nodeText(n *html.Node) string {
 	var b strings.Builder
-	wrote := false
+	var first string
+	texts := 0
 	walk(n, func(x *html.Node) bool {
 		if dom.Hidden(x) {
 			return false
@@ -6026,17 +6034,25 @@ func nodeText(n *html.Node) string {
 			}
 		}
 		if x.Type == html.TextNode {
-			// Separate adjacent nodes without appending a trailing byte. A builder
-			// containing one exact-sized text node otherwise grows just for that
-			// byte, doubling allocation for the common paragraph case.
-			if wrote {
-				b.WriteByte(' ')
+			texts++
+			if texts == 1 {
+				// Most prose blocks contain one text node. Return its immutable DOM
+				// string directly rather than copying it into a builder.
+				first = x.Data
+				return true
 			}
+			if texts == 2 {
+				b.Grow(len(first) + 1 + len(x.Data))
+				b.WriteString(first)
+			}
+			b.WriteByte(' ')
 			b.WriteString(x.Data)
-			wrote = true
 		}
 		return true
 	})
+	if texts <= 1 {
+		return first
+	}
 	return b.String()
 }
 func walk(n *html.Node, f func(*html.Node) bool) {
