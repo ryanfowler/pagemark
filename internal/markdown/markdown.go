@@ -172,7 +172,7 @@ func isSourceCodeLineNumberGutter(n *html.Node) bool {
 }
 
 func hasAnyClassToken(n *html.Node, wanted ...string) bool {
-	for _, token := range strings.Fields(strings.ToLower(attr(n, "class"))) {
+	for token := range strings.FieldsSeq(strings.ToLower(attr(n, "class"))) {
 		for _, candidate := range wanted {
 			if token == candidate {
 				return true
@@ -776,7 +776,7 @@ func (c *converter) firstMathDescendantOrSelf(n *html.Node, match func(*html.Nod
 }
 
 func hasClassToken(n *html.Node, want string) bool {
-	for _, class := range strings.Fields(attr(n, "class")) {
+	for class := range strings.FieldsSeq(attr(n, "class")) {
 		if strings.EqualFold(class, want) {
 			return true
 		}
@@ -1502,7 +1502,7 @@ func (c *converter) decorativeHeadingPermalink(link *html.Node) bool {
 }
 
 func screenReaderOnly(n *html.Node) bool {
-	for _, class := range strings.Fields(strings.ToLower(attr(n, "class"))) {
+	for class := range strings.FieldsSeq(strings.ToLower(attr(n, "class"))) {
 		switch strings.Trim(class, "-_") {
 		case "sr-only", "sr_only", "screen-reader-text", "screen_reader_text", "visually-hidden", "visually_hidden", "visuallyhidden":
 			return true
@@ -2055,7 +2055,7 @@ func preformattedLineWrapper(n *html.Node) bool {
 	case "listitem", "row":
 		return true
 	}
-	for _, class := range strings.Fields(strings.ToLower(attr(n, "class"))) {
+	for class := range strings.FieldsSeq(strings.ToLower(attr(n, "class"))) {
 		switch class {
 		case "line", "code-line", "line-content", "highlight-line":
 			return true
@@ -2086,7 +2086,7 @@ func codeInfo(n *html.Node) string {
 		code = code.NextSibling
 	}
 	if code != nil && strings.EqualFold(code.Data, "code") {
-		for _, class := range strings.Fields(attr(code, "class")) {
+		for class := range strings.FieldsSeq(attr(code, "class")) {
 			lower := strings.ToLower(class)
 			if strings.HasPrefix(lower, "language-") {
 				if info := valid(class[len("language-"):]); info != "" {
@@ -2102,7 +2102,7 @@ func codeInfo(n *html.Node) string {
 	// GitHub and compatible renderers put the language marker on the wrapper
 	// around a bare pre rather than on a nested code element.
 	if parent := n.Parent; parent != nil && parent.Type == html.ElementNode {
-		for _, class := range strings.Fields(attr(parent, "class")) {
+		for class := range strings.FieldsSeq(attr(parent, "class")) {
 			const prefix = "highlight-source-"
 			if strings.HasPrefix(strings.ToLower(class), prefix) {
 				if info := valid(class[len(prefix):]); info != "" {
