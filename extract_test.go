@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"golang.org/x/net/html"
 )
 
 func TestExtractStructuresAndSafety(t *testing.T) {
@@ -44,6 +46,156 @@ func TestDocumentShellFeatureClassesDoNotPenalizePrimaryContent(t *testing.T) {
 		if !strings.Contains(doc.Markdown, required) {
 			t.Errorf("missing %q:\n%s", required, doc.Markdown)
 		}
+	}
+}
+
+func TestTOCStateOnContentLayoutDoesNotRemoveArticle(t *testing.T) {
+	for _, marker := range []string{"toc-visible:md:grid-cols-10", "toc-available:grid-cols-10", "feature-toc-available", "has-toc", "with-toc", "layout-has-toc"} {
+		t.Run(marker, func(t *testing.T) {
+			source := `<html><head><meta property="og:type" content="article"><title>Health report</title></head><body><main><article><div class="` + marker + `"><div class="toc-visible:col-span-6"><h1>Health report</h1><p>The opening paragraph explains the report, its evidence, and the practical conclusions readers should draw from the results.</p><h2>Findings</h2><p>The second paragraph preserves the detailed finding rather than mistaking a responsive grid state for the table of contents itself.</p></div></div><nav id="toc"><h2>Contents</h2><a href="#findings">Findings</a></nav></article></main></body></html>`
+			doc, err := ExtractBytes([]byte(source), "https://example.com/report")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"# Health report", "opening paragraph", "## Findings", "detailed finding"} {
+				if !strings.Contains(doc.Markdown, want) {
+					t.Errorf("responsive TOC state removed content %q: %s", want, doc.Markdown)
+				}
+			}
+			if strings.Contains(doc.Markdown, "## Contents") {
+				t.Fatalf("actual TOC survived: %s", doc.Markdown)
+			}
+		})
+	}
+}
+
+func TestCompoundTOCRegionMarkersAreExcluded(t *testing.T) {
+	for _, marker := range []string{"article-toc", "docs-toc", "sidebar-toc"} {
+		t.Run(marker, func(t *testing.T) {
+			source := `<html><head><meta property="og:type" content="article"><title>System report</title></head><body><main><article><div class="` + marker + `"><h2>Contents</h2><ul><li><a href="#result">Result section</a></li><li><a href="#limits">Limits section</a></li></ul></div><h1>System report</h1><p>The opening paragraph explains the measured result with enough detail to identify the primary article content.</p><h2 id="result">Result</h2><p>The result paragraph records the evidence and its practical interpretation for readers of the report.</p></article></main></body></html>`
+			doc, err := ExtractBytes([]byte(source), "https://example.com/system-report")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(doc.Markdown, "# System report") || !strings.Contains(doc.Markdown, "## Result") {
+				t.Fatalf("article content was lost: %s", doc.Markdown)
+			}
+			if strings.Contains(doc.Markdown, "## Contents") || strings.Contains(doc.Markdown, "Result section") || strings.Contains(doc.Markdown, "Limits section") {
+				t.Fatalf("compound TOC marker survived: %s", doc.Markdown)
+			}
+		})
+	}
+}
+
+func TestSubstantialArticleScopeIsMemoized(t *testing.T) {
+	root, err := html.Parse(strings.NewReader(`<article class="newsletter-post"><p>The first paragraph contains enough substantive text to establish the article scope without ambiguity.</p><p>The second paragraph supplies additional detail and pushes the combined content beyond the threshold.</p></article>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var article *html.Node
+	walk(root, func(n *html.Node) bool {
+		if n.Type == html.ElementNode && n.Data == "article" {
+			article = n
+		}
+		return article == nil
+	})
+	if article == nil {
+		t.Fatal("article not found")
+	}
+	a := analysis{nodeStates: make(map[*html.Node]nodeState)}
+	if !a.substantialArticleScope(article) || a.nodeStates[article].substantialArticle != 2 {
+		t.Fatalf("substantial article result was not cached: %#v", a.nodeStates[article])
+	}
+	if !a.substantialArticleScope(article) {
+		t.Fatal("cached substantial article result changed")
+	}
+}
+
+func TestArticleFurniturePatternsFromAudit(t *testing.T) {
+	source := `<html><head><meta property="og:type" content="article"><meta property="og:title" content="Field report"><meta property="og:site_name" content="Example Journal"></head><body>
+	<header><h1><a href="/"><img src="/wordmark.png" alt="Example Journal"></a></h1></header>
+	<main><article><h1>Field report</h1><p>The report begins with a substantive account of the observed result and enough context to establish the primary article body.</p><p>A second paragraph describes the evidence and limitations so that the article region remains unambiguous.</p>
+	<aside aria-label="Article details"><p>TYPE: article</p><p>SLUG: field-report</p></aside>
+	<div class="post-subscribe"><p>Enjoyed the article? Subscribe via <a href="/subscribe/">email</a> or RSS.</p></div>
+	<div class="jetpack-likes-widget-wrapper"><h3>Like this:</h3><p>Like Loading...</p></div>
+	<div id="discussion"><div class="container"><h4>Discussion about this post</h4></div></div><div class="empty-list"><p>No posts</p></div></article>
+	<section><div><h2>Keep reading</h2></div><div><article><a href="/one"><h3>Another report</h3><p>A summary of an unrelated article.</p></a></article><article><a href="/two"><h3>Second report</h3><p>Another unrelated summary.</p></a></article></div></section>
+	<section><h2>Welcome to your cloud platform</h2><p>Deploy your apps in minutes. Try it now and get started.</p><a href="/connect">Connect GitHub</a></section></main></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/reports/field")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# Field report", "substantive account", "evidence and limitations"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("missing article content %q: %s", want, doc.Markdown)
+		}
+	}
+	for _, unwanted := range []string{"Example Journal", "TYPE: article", "field-report", "Enjoyed the article", "Like Loading", "Discussion about", "No posts", "Keep reading", "Another report", "Second report", "Welcome to your cloud", "Connect GitHub"} {
+		if strings.Contains(doc.Markdown, unwanted) {
+			t.Errorf("included article furniture %q: %s", unwanted, doc.Markdown)
+		}
+	}
+}
+
+func TestAuditFurnitureRulesPreserveCounterexamples(t *testing.T) {
+	source := `<html><head><meta property="og:type" content="article"></head><body><main><article><h1>Interface guide</h1><p>The opening explanation provides enough substantive prose to identify this page as an article without relying on its later sections.</p>
+	<h2><a href="/illustration"><img src="/diagram.png" alt="Architecture diagram">System architecture</a></h2>
+	<section id="discussion"><h2>Discussion</h2><p>This discussion analyzes the tradeoffs in enough detail to be meaningful article prose, rather than an empty reader-comment widget.</p></section>
+	<section class="newsletter-guide"><h2>Newsletter delivery</h2><p>This short example documents how a newsletter is delivered; it has no subscription destination and must remain.</p></section>
+	<h2>Like this example</h2><p>The example remains part of the technical explanation.</p></article></main></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/interface-guide")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## Discussion", "analyzes the tradeoffs", "Newsletter delivery", "no subscription destination", "Like this example"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("counterexample was removed %q: %s", want, doc.Markdown)
+		}
+	}
+
+	root, err := html.Parse(strings.NewReader(`<h2><a href="/illustration"><img src="/diagram.png" alt="Architecture diagram">System architecture</a></h2>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var heading *html.Node
+	walk(root, func(n *html.Node) bool {
+		if n.Type == html.ElementNode && n.Data == "h2" {
+			heading = n
+		}
+		return heading == nil
+	})
+	if heading == nil || isLinkedImageMasthead(heading) {
+		t.Fatal("linked illustrated article heading was classified as a publication masthead")
+	}
+
+	root, err = html.Parse(strings.NewReader(`<main><article><div class="footer"><h2>Footer component</h2><p>This documentation explains the component.</p></div></article></main>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var component *html.Node
+	walk(root, func(n *html.Node) bool {
+		if n.Type == html.ElementNode && hasExactClass(n, "footer") {
+			component = n
+		}
+		return component == nil
+	})
+	if component == nil || isPageFooterConvention(component) {
+		t.Fatal("a footer-named component inside article content was classified as the page footer")
+	}
+
+	root, err = html.Parse(strings.NewReader(`<body><article><p>Primary story.</p></article><div class="footer"><p>Site slogan and subscription form.</p></div></body>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pageFooter *html.Node
+	walk(root, func(n *html.Node) bool {
+		if n.Type == html.ElementNode && hasExactClass(n, "footer") {
+			pageFooter = n
+		}
+		return pageFooter == nil
+	})
+	if pageFooter == nil || !isPageFooterConvention(pageFooter) {
+		t.Fatal("a generic page footer outside primary content was not recognized")
 	}
 }
 
@@ -112,6 +264,17 @@ Most of this project was written by hand. Automation assisted with final compati
 		if strings.Contains(doc.Markdown, unwanted) {
 			t.Errorf("repository chrome survived as %q:\n%s", unwanted, doc.Markdown)
 		}
+	}
+}
+
+func TestRenderedMarkdownHeadingOverridesRepositoryBrowserTitle(t *testing.T) {
+	source := `<html><head><title>guide.md at main · acme/project · GitHub</title></head><body><main><article class="markdown-body entry-content" itemprop="text"><h1>Deployment guide</h1><p>This authored guide explains how to deploy the project safely and verify the resulting service.</p><h2>Validation</h2><p>Run the checks before directing production traffic to the new deployment.</p></article></main></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://github.com/acme/project/blob/main/guide.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Markdown, "# Deployment guide\n\n") || strings.Contains(doc.Markdown, "guide.md at main") || strings.Contains(doc.Markdown, "## Deployment guide") {
+		t.Fatalf("repository browser title displaced the authored heading:\n%s", doc.Markdown)
 	}
 }
 
@@ -1016,6 +1179,19 @@ func TestTrailingNewsletterWrapperIsExcluded(t *testing.T) {
 	for _, unwanted := range []string{"Stay updated", "Subscribe to get updates", "low volume mailing list"} {
 		if strings.Contains(doc.Text, unwanted) {
 			t.Errorf("included subscription component %q: %s", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestNewsletterArticleMarkerDoesNotRemoveSectionHeadings(t *testing.T) {
+	source := `<html><head><meta property="og:type" content="article"><meta property="og:title" content="Workshop notes"></head><body><main><article class="typography newsletter-post post"><h1>Workshop notes</h1><p>The opening paragraph establishes a substantial newsletter article with enough context to identify its primary content.</p><h2>First finding</h2><p>The first finding explains the observed result and the evidence supporting it in useful detail for readers.</p><h2>Second finding</h2><p>The second finding records the limitation that must be considered when applying the result.</p></article></main></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/p/workshop-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# Workshop notes", "## First finding", "## Second finding", "records the limitation"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("newsletter article lost structure %q: %s", want, doc.Markdown)
 		}
 	}
 }

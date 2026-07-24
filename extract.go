@@ -45,7 +45,7 @@ type nodeState struct {
 	articleComment, commentCount                     uint8
 	articleDescendant, semanticBefore, semanticAfter uint8
 	articleProseBefore, selfReference                uint8
-	articleCardCount                                 uint8
+	articleCardCount, substantialArticle             uint8
 }
 
 type analysis struct {
@@ -258,7 +258,12 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	if a.textListingPre != nil {
 		cfg.TextPreformatted = func(n *html.Node) bool { return n == a.textListingPre }
 	}
-	selected = a.ensureDocumentTitle(selected, cfg, pageType)
+	// A rendered Markdown region is an explicit authored document. When it
+	// already starts with a heading, preserve that heading and hierarchy instead
+	// of synthesizing repository/browser chrome as a competing article title.
+	if authored == nil || !a.hasLeadingOutputHeading(selected, cfg) {
+		selected = a.ensureDocumentTitle(selected, cfg, pageType)
+	}
 	mr := markdown.Convert(selected, cfg)
 	if strings.TrimSpace(mr.Text) == "" {
 		return nil, ErrNoContent
@@ -852,7 +857,8 @@ func (a *analysis) score(pt PageType) {
 			// Feature flags and global UI state are often stored as classes on
 			// the document shell (for example, "toc-available"). They describe
 			// available chrome, not every descendant's content region.
-			if tag != "html" && tag != "body" && hasBoilerplateToken(p) {
+			if tag != "html" && tag != "body" && hasBoilerplateToken(p) &&
+				!(tag == "article" && a.substantialArticleScope(p)) {
 				score -= 3
 				a.addReason(b, "boilerplate label")
 			}
@@ -3031,7 +3037,7 @@ func (a *analysis) pageMicrodataEntities(root *html.Node) (map[*html.Node]bool, 
 	}
 	if dominant == nil {
 		for _, entity := range articleEntities {
-			if !microdataRecordShape(entity) && substantialArticleScope(entity) {
+			if !microdataRecordShape(entity) && a.substantialArticleScope(entity) {
 				if dominant != nil {
 					dominant = nil
 					break
@@ -3082,6 +3088,23 @@ func microdataRecordShape(n *html.Node) bool {
 		}
 	}
 	return false
+}
+
+func (a *analysis) substantialArticleScope(n *html.Node) bool {
+	if n == nil || a.nodeStates == nil {
+		return substantialArticleScope(n)
+	}
+	if state := a.nodeStates[n].substantialArticle; state != 0 {
+		return state == 2
+	}
+	result := substantialArticleScope(n)
+	state := a.nodeStates[n]
+	state.substantialArticle = 1
+	if result {
+		state.substantialArticle = 2
+	}
+	a.nodeStates[n] = state
+	return result
 }
 
 func substantialArticleScope(n *html.Node) bool {
@@ -3196,7 +3219,7 @@ func metadataNodes(m metadata) []*html.Node {
 	return append(nodes, n)
 }
 
-var badTokens = []string{"cookie", "cookies", "consent", "banner", "share", "newsletter", "signup", "sign-up", "promo", "copyright", "toc"}
+var badTokens = []string{"cookie", "cookies", "consent", "banner", "share", "newsletter", "signup", "sign-up", "promo", "copyright"}
 
 // hasBoilerplateToken retains the cross-page social-furniture signal without
 // treating every compound use of “social” as page chrome. In particular,
@@ -3257,9 +3280,9 @@ var auxiliaryLabels = map[string]bool{
 // These short labels are strong boilerplate signals on articles, but can name
 // legitimate sections on other page types (for example Web Share API docs).
 var articleAuxiliaryLabels = map[string]bool{
-	"related posts": true, "read more": true, "share": true,
-	"share this article": true, "share this post": true,
-	"share this story": true, "more by": true,
+	"related posts": true, "read more": true, "keep reading": true, "share": true,
+	"share this": true, "share this article": true, "share this post": true,
+	"share this story": true, "like this": true, "more by": true,
 	"leave a comment": true, "leave a comment below": true,
 }
 
@@ -3278,10 +3301,8 @@ var callToActionLabels = map[string]bool{
 	"view more": true, "see more": true,
 }
 
-// TOC is a sufficiently specific structural convention to exclude by itself.
 // Other structural names need navigational evidence because they are also
 // common documentation subjects.
-var structuralBoilerplateTokens = []string{"toc"}
 var navigationStructureTokens = []string{"breadcrumb", "pagination", "toolbar"}
 
 func irrelevantNode(n *html.Node) bool {
@@ -3296,7 +3317,9 @@ func irrelevantNode(n *html.Node) bool {
 		return false
 	}
 	if tag == "nav" || tag == "footer" || hasDataMarker(n, "site-footer") || hasExactClass(n, "article-footer") ||
-		hasClassConvention(n, "step-nav") || hasExactClass(n, "crawler-linkback-list") || hasExactClass(n, "post-likes") ||
+		isEmptyRecordList(n) ||
+		isPageFooterConvention(n) || hasClassConvention(n, "step-nav") || hasExactClass(n, "crawler-linkback-list") ||
+		hasExactClass(n, "post-likes") || hasClassPrefix(n, "jetpack-likes-widget") ||
 		hasExactClass(n, "mw-editsection") || hasExactClass(n, "printfooter") || hasExactClass(n, "catlinks") ||
 		strings.EqualFold(attrValue(n, "id"), "siteSub") ||
 		strings.EqualFold(attrValue(n, "itemprop"), "interactionStatistic") ||
@@ -3307,7 +3330,7 @@ func irrelevantNode(n *html.Node) bool {
 	if containsAny(role, "navigation", "complementary", "contentinfo", "menu") {
 		return true
 	}
-	if elementContainsAny(n, structuralBoilerplateTokens...) || isOversizedContributorRoll(n) ||
+	if isTableOfContentsRegion(n) || isLinkedImageMasthead(n) || isOversizedContributorRoll(n) ||
 		elementContainsAny(n, "banner") && controls(n) > 0 {
 		return true
 	}
@@ -3345,7 +3368,117 @@ func irrelevantNode(n *html.Node) bool {
 			return true
 		}
 	}
+	if tag == "aside" && normalizedLabel(attrValue(n, "aria-label")) == "article details" {
+		return true
+	}
 	return false
+}
+
+// A generic .footer outside primary semantic content is page furniture. The
+// ancestor check preserves documentation for footer-named components.
+func isPageFooterConvention(n *html.Node) bool {
+	if !hasExactClass(n, "footer") {
+		return false
+	}
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type == html.ElementNode && (strings.EqualFold(p.Data, "main") || strings.EqualFold(p.Data, "article")) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasClassPrefix(n *html.Node, prefix string) bool {
+	for _, class := range strings.Fields(strings.ToLower(attrValue(n, "class"))) {
+		if class == prefix || strings.HasPrefix(class, prefix+"-") || strings.HasPrefix(class, prefix+"_") {
+			return true
+		}
+	}
+	return false
+}
+
+// isTableOfContentsRegion recognizes a region marker, not a state flag on a
+// content layout. Classes such as "toc-visible" and "toc-available" say that a
+// separate TOC affects the grid; treating their ancestors as the TOC can remove
+// the entire article.
+func isTableOfContentsRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	for _, key := range []string{"id", "class"} {
+		for _, identifier := range strings.Fields(strings.ToLower(attrValue(n, key))) {
+			if identifier == "table-of-contents" || identifier == "table_of_contents" {
+				return true
+			}
+			// Avoid allocating segment slices on the overwhelmingly common path.
+			if !containsAnyFold(identifier, "toc") {
+				continue
+			}
+			segments := strings.FieldsFunc(identifier, func(r rune) bool {
+				return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+			})
+			for i, segment := range segments {
+				if segment != "toc" {
+					continue
+				}
+				// Responsive frameworks put state around the TOC segment in classes
+				// such as toc-visible:md:grid-cols-10 and has-toc. Those classes
+				// describe the content grid, while article-toc and sidebar-toc name
+				// actual regions.
+				if i+1 < len(segments) && tocStateSegment(segments[i+1]) ||
+					i > 0 && tocStatePrefixSegment(segments[i-1]) {
+					continue
+				}
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func tocStateSegment(segment string) bool {
+	switch segment {
+	case "visible", "available", "enabled", "active", "open":
+		return true
+	}
+	return false
+}
+
+func tocStatePrefixSegment(segment string) bool {
+	return segment == "has" || segment == "with"
+}
+
+// Image-only headings linked to the site root are publication wordmarks, not
+// article headings. Requiring the heading, home link, and image-only shape
+// leaves linked article headings and ordinary figures unaffected.
+func isLinkedImageMasthead(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || !isHeadingTag(strings.ToLower(n.Data)) || normalizeText(nodeText(n)) != "" {
+		return false
+	}
+	link := n.FirstChild
+	for link != nil && link.Type == html.TextNode && strings.TrimSpace(link.Data) == "" {
+		link = link.NextSibling
+	}
+	if link == nil || link.Type != html.ElementNode || !strings.EqualFold(link.Data, "a") {
+		return false
+	}
+	for sibling := link.NextSibling; sibling != nil; sibling = sibling.NextSibling {
+		if sibling.Type != html.CommentNode && (sibling.Type != html.TextNode || strings.TrimSpace(sibling.Data) != "") {
+			return false
+		}
+	}
+	href := strings.TrimSpace(attrValue(link, "href"))
+	if href != "/" && href != "./" {
+		return false
+	}
+	foundImage := false
+	walk(link, func(x *html.Node) bool {
+		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "img") && normalizeText(attrValue(x, "alt")) != "" {
+			foundImage = true
+		}
+		return true
+	})
+	return foundImage
 }
 
 func isAdvertisementRegion(n *html.Node) bool {
@@ -3778,6 +3911,35 @@ func hasAuxiliaryHeading(n *html.Node) bool {
 		strings.HasPrefix(heading, "more stories ") || strings.HasPrefix(heading, "you may also ")
 }
 
+// hasDeepLeadingAuxiliaryHeading handles presentation wrappers which put a
+// heading and its card grid in sibling divs. It considers only the first
+// heading or prose block, so an auxiliary section later in an article cannot
+// cause the article root itself to be discarded.
+func hasDeepLeadingAuxiliaryHeading(n *html.Node) bool {
+	budget := 64
+	label := ""
+	walk(n, func(x *html.Node) bool {
+		if label != "" || budget <= 0 || hardHidden(x) {
+			return false
+		}
+		if x.Type != html.ElementNode {
+			return true
+		}
+		budget--
+		tag := strings.ToLower(x.Data)
+		if isHeadingTag(tag) {
+			label = normalizedLabel(nodeText(x))
+			return false
+		}
+		if x != n && (tag == "p" || tag == "blockquote" || tag == "pre") && normalizeText(nodeText(x)) != "" {
+			label = "content"
+			return false
+		}
+		return true
+	})
+	return auxiliaryLabels[label] || isArticleAuxiliaryLabel(label)
+}
+
 func isAmbiguousRecommendationsHeading(heading string) bool {
 	return heading == "recommended" || heading == "recommendations"
 }
@@ -4051,7 +4213,7 @@ func (a *analysis) articleAuxiliaryNodeUncached(n *html.Node) bool {
 			!hasSubstantiveContentBeforeDescendant(n, isMarkedCard) {
 			return true
 		}
-		if hasAuxiliaryHeading(n) && countLinkedRecords(n, 2) >= 2 {
+		if (hasAuxiliaryHeading(n) || hasDeepLeadingAuxiliaryHeading(n)) && countLinkedRecords(n, 2) >= 2 {
 			// Broad “Recommended …” and “Related …” labels are common
 			// editorial headings. Linked records alone do not make such a
 			// section promotional when it belongs to the primary article.
@@ -4468,7 +4630,7 @@ func marketingInteractions(n *html.Node) (interactions, links int) {
 			links++
 			label := normalizedLabel(nodeText(x))
 			if strings.HasPrefix(label, "get ") || strings.HasPrefix(label, "start ") ||
-				strings.HasPrefix(label, "apply") || strings.HasPrefix(label, "register") ||
+				strings.HasPrefix(label, "connect ") || strings.HasPrefix(label, "apply") || strings.HasPrefix(label, "register") ||
 				strings.HasPrefix(label, "sign up") || label == "learn more" || label == "contact us" {
 				interactions++
 			}
@@ -4602,8 +4764,8 @@ func evaluateSubscriptionRegion(n *html.Node, hasForm, hasEmail, subscriptionFor
 	cta := strings.Contains(text, "subscribe") || strings.Contains(text, "sign up") ||
 		strings.Contains(text, "mailing list") || strings.Contains(text, "get updates")
 
-	if !hasForm && attributeMarker && cta && isSubscriptionPromptHeading(heading) &&
-		!substantialArticleScope(n) {
+	if !hasForm && attributeMarker && cta && !substantialArticleScope(n) &&
+		(isSubscriptionPromptHeading(heading) || hasSubscriptionDestination(n)) {
 		return true
 	}
 	formEvidence := hasEmail || subscriptionForm || (hasForm && cta)
@@ -4622,6 +4784,21 @@ func evaluateSubscriptionRegion(n *html.Node, hasForm, hasEmail, subscriptionFor
 	consent := containsAnyWordSequence(text, "privacy policy", "terms of use", "terms and conditions")
 	honeypot := containsAnyWordSequence(text, "field is for validation", "leave this field unchanged", "do not fill")
 	return consent || honeypot
+}
+
+func hasSubscriptionDestination(n *html.Node) bool {
+	found := false
+	walk(n, func(x *html.Node) bool {
+		if found || hardHidden(x) {
+			return false
+		}
+		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "a") &&
+			containsSubscriptionWord(attrValue(x, "href")) {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 func hasJoinCTA(n *html.Node) bool {
@@ -4701,7 +4878,8 @@ func (a *analysis) isArticleCommentRegion(n *html.Node) (result bool) {
 	// ambiguous (for example, survey responses), so they require the heading or
 	// repeated-record evidence checked below.
 	if containsAny(tokens, "comments", "commentlist") ||
-		(containsAny(tokens, "comment") && containsAny(tokens, "list")) {
+		(containsAny(tokens, "comment") && containsAny(tokens, "list")) ||
+		containsAny(tokens, "discussion") && hasArticleDiscussionHeading(n) {
 		return true
 	}
 
@@ -4731,6 +4909,46 @@ func (a *analysis) isArticleCommentRegion(n *html.Node) (result bool) {
 		}
 	}
 	return false
+}
+
+func isEmptyRecordList(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || !hasExactClass(n, "empty-list") || hasSubstantiveCommentProse(n) {
+		return false
+	}
+	status := false
+	walk(n, func(x *html.Node) bool {
+		if status || hardHidden(x) {
+			return false
+		}
+		if x.Type == html.ElementNode && (strings.EqualFold(x.Data, "p") || isHeadingTag(strings.ToLower(x.Data))) &&
+			isCommentStatusPrompt(nodeText(x)) {
+			status = true
+			return false
+		}
+		return true
+	})
+	return status
+}
+
+func hasArticleDiscussionHeading(n *html.Node) bool {
+	found := false
+	budget := 64
+	walk(n, func(x *html.Node) bool {
+		if found || budget <= 0 || hardHidden(x) {
+			return false
+		}
+		if x.Type == html.ElementNode {
+			budget--
+			if isHeadingTag(strings.ToLower(x.Data)) {
+				label := normalizedLabel(nodeText(x))
+				found = label == "discussion about this post" || label == "discussion about this article" ||
+					label == "discussion about this story"
+				return false
+			}
+		}
+		return true
+	})
+	return found
 }
 
 func isCommentRegionHeading(label string) bool {
@@ -4899,7 +5117,7 @@ func hasSubstantiveCommentProse(n *html.Node) bool {
 func isCommentStatusPrompt(label string) bool {
 	label = normalizedLabel(label)
 	short := utf8.RuneCountInString(label) <= 80
-	if label == "no comments" || short &&
+	if label == "no comments" || label == "no posts" || label == "no replies" || short &&
 		(strings.HasPrefix(label, "no comments yet") ||
 			strings.HasPrefix(label, "there are no comments") ||
 			strings.HasPrefix(label, "comments are closed") ||
