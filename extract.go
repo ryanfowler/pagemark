@@ -156,13 +156,17 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		}
 		page = u
 	}
-	a := &analysis{o: o, root: root, pageURL: page, base: page, nodeStates: make(map[*html.Node]nodeState)}
+	a := &analysis{o: o, root: root, pageURL: page, base: page}
 	if o.diagnostics {
 		a.diag = &Diagnostics{ProfileVersion: "1", Fallback: "primary"}
 	}
 	if err := a.index(root, 0); err != nil {
 		return nil, err
 	}
+	// Most classification passes eventually memoize nearly every element. Size
+	// the unified state table now that index has counted them, avoiding repeated
+	// map growth and short-lived old bucket arrays on large documents.
+	a.nodeStates = make(map[*html.Node]nodeState, a.elements)
 	a.findBase()
 	// Index subtree evidence before metadata extraction: microdata filtering uses
 	// auxiliary-region detection, and subscription checks otherwise rescan large
@@ -200,7 +204,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 			inside := nodeWithin(a.blocks[i].node, authored)
 			a.blocks[i].selected = inside
 			if inside {
-				a.blocks[i].reasons = append(a.blocks[i].reasons, "inside rendered Markdown document")
+				a.addReason(&a.blocks[i], "inside rendered Markdown document")
 			}
 		}
 	}
@@ -790,7 +794,7 @@ func explicitlyTinyImage(n *html.Node) bool {
 }
 
 func (a *analysis) score(pt PageType) {
-	seen := map[string]bool{}
+	seen := make(map[string]struct{}, len(a.blocks))
 	for i := range a.blocks {
 		b := &a.blocks[i]
 		length := utf8.RuneCountInString(b.text)
@@ -811,17 +815,17 @@ func (a *analysis) score(pt PageType) {
 		case "generic":
 			score = 0.4 + math.Min(2, float64(length)/250)
 		}
-		b.reasons = append(b.reasons, "content shape")
+		a.addReason(b, "content shape")
 		if b.imageOnly {
 			// Descriptive image-only paragraphs have no text length with which to
 			// earn the normal prose score. The remaining ancestry and boilerplate
 			// signals still decide whether this is primary content.
 			score += .4
-			b.reasons = append(b.reasons, "descriptive image")
+			a.addReason(b, "descriptive image")
 		}
 		if a.hasIrrelevantAncestor(b.node) {
 			score -= 8
-			b.reasons = append(b.reasons, "auxiliary content")
+			a.addReason(b, "auxiliary content")
 		}
 		links, total := linkTextLength(b.node), max(1, length)
 		density := float64(links) / float64(total)
@@ -833,14 +837,14 @@ func (a *analysis) score(pt PageType) {
 			tokens := elementTokens(p)
 			if tag == "main" {
 				score += 2
-				b.reasons = append(b.reasons, "inside main")
+				a.addReason(b, "inside main")
 			}
 			if tag == "article" {
 				score += 1.3
 			}
 			if tag == "header" || tag == "footer" || tag == "nav" {
 				score -= 5
-				b.reasons = append(b.reasons, "inside page chrome")
+				a.addReason(b, "inside page chrome")
 			}
 			if tag == "aside" {
 				score -= 1.5
@@ -850,7 +854,7 @@ func (a *analysis) score(pt PageType) {
 			// available chrome, not every descendant's content region.
 			if tag != "html" && tag != "body" && hasBoilerplateToken(p) {
 				score -= 3
-				b.reasons = append(b.reasons, "boilerplate label")
+				a.addReason(b, "boilerplate label")
 			}
 			if pt == PageTypeDiscussion && containsAny(tokens, "comment", "comments", "answer", "post", "thread") {
 				score += 2
@@ -864,32 +868,33 @@ func (a *analysis) score(pt PageType) {
 		}
 		if pt == PageTypeDiscussion && isDiscussionBodyContainer(b.node) {
 			score += 3
-			b.reasons = append(b.reasons, "discussion post body")
+			a.addReason(b, "discussion post body")
 		}
 		if pt == PageTypeDiscussion && a.hasStandaloneMessageAncestor(b.node) {
 			// A standalone .message is a UI notice, not a message-body convention.
 			// Make this absolute rather than relative: deeply nested thread/main
 			// context must not raise it above the selection threshold.
 			score = -8
-			b.reasons = append(b.reasons, "discussion notice")
+			a.addReason(b, "discussion notice")
 		}
 		if pt == PageTypeDiscussion && !isDiscussionBodyContainer(b.node) && isDiscussionControlBlock(b.node) {
 			score -= 6
-			b.reasons = append(b.reasons, "discussion controls")
+			a.addReason(b, "discussion controls")
 		}
 		if density > .75 && pt != PageTypeListing && pt != PageTypeCollection && pt != PageTypeDocumentation {
 			score -= 2
-			b.reasons = append(b.reasons, "high link density")
+			a.addReason(b, "high link density")
 		}
 		if controls(b.node) > 2 {
 			score -= 2
 		}
 		hash := strings.ToLower(normalizeText(b.text))
-		if seen[hash] && len(hash) > 30 {
+		_, duplicate := seen[hash]
+		if duplicate && len(hash) > 30 {
 			score -= 4
-			b.reasons = append(b.reasons, "duplicate")
+			a.addReason(b, "duplicate")
 		}
-		seen[hash] = true
+		seen[hash] = struct{}{}
 		if a.o.favorPrecision {
 			score -= .35
 		}
@@ -908,6 +913,14 @@ func (a *analysis) score(pt PageType) {
 	// not pulled into the output.
 	a.strengthenArticleContinuity(pt)
 
+}
+
+// addReason avoids allocating diagnostic-only reason slices on the normal
+// extraction path.
+func (a *analysis) addReason(b *block, reason string) {
+	if a.diag != nil {
+		b.reasons = append(b.reasons, reason)
+	}
 }
 
 func (a *analysis) populateBlockDiagnostics() {
@@ -966,7 +979,7 @@ func (a *analysis) strengthenArticleContinuity(pt PageType) {
 		}
 		b.score = math.Max(b.score, 1)
 		b.selected = true
-		b.reasons = append(b.reasons, "article region continuity")
+		a.addReason(b, "article region continuity")
 	}
 
 	const maxBridgeBlocks = 12
@@ -996,7 +1009,7 @@ func (a *analysis) strengthenArticleContinuity(pt PageType) {
 		}
 		b.score = math.Max(b.score, 1)
 		b.selected = true
-		b.reasons = append(b.reasons, "article prose bridge")
+		a.addReason(b, "article prose bridge")
 	}
 }
 
