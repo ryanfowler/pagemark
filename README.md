@@ -81,9 +81,9 @@ The project includes synthetic safety and structure tests. It also keeps a small
 
 The full WCXB data is not in this repository because it is large. WCXB uses the CC BY 4.0 license.
 
-## Difference from readability
+## Difference from Readability
 
-Readability is an article specialist. It usually selects one prose region. Pagemark can keep distributed sections, discussion posts, code, tables, specifications, and linked records. Pagemark uses `github.com/ryanfowler/readability` as a low-quality article fallback.
+Readability is an article specialist that usually selects one prose region. Pagemark uses its own page-type-aware extraction pipeline and can keep distributed sections, discussion posts, code, tables, specifications, and linked records.
 
 ## Development
 
