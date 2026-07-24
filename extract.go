@@ -45,6 +45,7 @@ type nodeState struct {
 	articleComment, commentCount                     uint8
 	articleDescendant, semanticBefore, semanticAfter uint8
 	articleProseBefore, selfReference                uint8
+	articleCardCount                                 uint8
 }
 
 type analysis struct {
@@ -3194,15 +3195,32 @@ func hasBoilerplateToken(n *html.Node) bool {
 		return true
 	}
 	for _, attr := range []string{"id", "class", "role"} {
-		for _, token := range strings.Fields(strings.ToLower(attrValue(n, attr))) {
-			if token == "social" {
+		value := attrValue(n, attr)
+		for start := 0; start < len(value); {
+			for start < len(value) && htmlSpace(value[start]) {
+				start++
+			}
+			end := start
+			for end < len(value) && !htmlSpace(value[end]) {
+				end++
+			}
+			if end == start {
+				break
+			}
+			token := value[start:end]
+			if strings.EqualFold(token, "social") {
 				return true
 			}
-			if containsAny(token, "social") && containsAny(token,
-				"follow", "link", "links", "media", "widget", "icon", "icons",
-				"share", "sharing", "profile", "network", "networks", "nav") {
-				return true
+			if containsAnyFold(token, "social") {
+				// Compound social tokens are uncommon. Only allocate a lowercase
+				// copy after the allocation-free filter has matched.
+				token = strings.ToLower(token)
+				if containsAny(token, "follow", "link", "links", "media", "widget", "icon", "icons",
+					"share", "sharing", "profile", "network", "networks", "nav") {
+					return true
+				}
 			}
+			start = end
 		}
 	}
 	return false
@@ -3371,12 +3389,29 @@ func hasClassConvention(n *html.Node, convention string) bool {
 }
 
 func hasExactClass(n *html.Node, want string) bool {
-	for _, class := range strings.Fields(attrValue(n, "class")) {
-		if strings.EqualFold(class, want) {
+	value := attrValue(n, "class")
+	for start := 0; start < len(value); {
+		for start < len(value) && htmlSpace(value[start]) {
+			start++
+		}
+		end := start
+		for end < len(value) && !htmlSpace(value[end]) {
+			end++
+		}
+		if end == start {
+			return false
+		}
+		if strings.EqualFold(value[start:end], want) {
 			return true
 		}
+		start = end
 	}
 	return false
+}
+
+// HTML class, id, and role tokenization uses the five ASCII whitespace bytes.
+func htmlSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r'
 }
 
 func hasAuthorProfileClass(n *html.Node) bool {
@@ -3468,7 +3503,7 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 		irrelevant = a.articleAuxiliaryNode(n) || a.isTrailingSocialCardRegion(n) ||
 			a.isPeripheralLinkRegion(n) || a.isTrailingMarketingRegion(n) || a.microdataArticleRecords[n]
 	}
-	if !irrelevant && isTrailingArticleCardRegion(n) {
+	if !irrelevant && a.isTrailingArticleCardRegion(n) {
 		// A final article classification makes trailing cards auxiliary. When
 		// card tokens instead caused an inferred listing classification, require
 		// an explicit promotional-region marker. Never override a caller's
@@ -3515,7 +3550,7 @@ func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 		if !auxiliary && (a.isTrailingSocialCardRegion(p) || a.isPeripheralLinkRegion(p) || a.isTrailingMarketingRegion(p)) {
 			auxiliary = true
 		}
-		if !auxiliary && isPromotionalCardRegion(p) && isTrailingArticleCardRegion(p) {
+		if !auxiliary && isPromotionalCardRegion(p) && a.isTrailingArticleCardRegion(p) {
 			auxiliary = true
 		}
 		if auxiliary {
@@ -4924,16 +4959,15 @@ func (a *analysis) hasArticleBodyDescendant(root *html.Node) bool {
 		if hardHidden(ch) || ch.Type != html.ElementNode {
 			continue
 		}
-		tokens := elementTokens(ch)
 		semanticArticle := strings.EqualFold(ch.Data, "article") &&
-			!containsAny(tokens, "card", "comment", "reply")
+			!elementContainsAny(ch, "card", "comment", "reply")
 		// WordPress and several other publishing systems predate widespread use
 		// of <article>. Their conventional *-content wrappers are equivalent
-		// evidence that this subtree contains the primary article body.
-		conventionalArticleBody := (containsAny(tokens, "entry") ||
-			containsAny(tokens, "post") || containsAny(tokens, "article")) &&
-			containsAny(tokens, "content") &&
-			!containsAny(tokens, "comment", "reply")
+		// evidence that this subtree contains the primary article body. Inspect
+		// attributes in place to avoid constructing a token string for every node.
+		conventionalArticleBody := elementContainsAny(ch, "entry", "post", "article") &&
+			elementContainsAny(ch, "content") &&
+			!elementContainsAny(ch, "comment", "reply")
 		if semanticArticle || conventionalArticleBody {
 			found = true
 			break
@@ -4963,7 +4997,7 @@ func hasNonCardArticleAncestor(n *html.Node) bool {
 	return false
 }
 
-func isTrailingArticleCardRegion(n *html.Node) bool {
+func (a *analysis) isTrailingArticleCardRegion(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
@@ -4972,7 +5006,7 @@ func isTrailingArticleCardRegion(n *html.Node) bool {
 	default:
 		return false
 	}
-	if countArticleCards(n, 2) < 2 {
+	if a.articleCardCount(n) < 2 {
 		return false
 	}
 	// A layout wrapper can contain both the article body and a final card grid.
@@ -5058,24 +5092,33 @@ func countMarkedCards(root *html.Node, limit int) int {
 	return count
 }
 
-func countArticleCards(root *html.Node, limit int) int {
+// articleCardCount returns the number of top-level marked article cards in a
+// subtree, capped at two. Caching turns repeated candidate-region checks from
+// overlapping subtree walks into one bottom-up pass.
+func (a *analysis) articleCardCount(root *html.Node) int {
+	if root == nil || hardHidden(root) {
+		return 0
+	}
+	if cached := a.nodeStates[root].articleCardCount; cached != 0 {
+		return int(cached - 1)
+	}
 	count := 0
-	var visit func(*html.Node)
-	visit = func(parent *html.Node) {
-		for ch := parent.FirstChild; ch != nil && count < limit; ch = ch.NextSibling {
-			if hardHidden(ch) || ch.Type != html.ElementNode {
-				continue
-			}
-			isCard := elementContainsAny(ch, "card") &&
-				(strings.EqualFold(ch.Data, "article") || elementContainsAny(ch, "article", "post", "story", "newsletter"))
-			if isCard {
-				count++
-				continue // Do not count nested wrappers belonging to the same card.
-			}
-			visit(ch)
+	for ch := root.FirstChild; ch != nil && count < 2; ch = ch.NextSibling {
+		if hardHidden(ch) || ch.Type != html.ElementNode {
+			continue
+		}
+		if isMarkedArticleCard(ch) {
+			count++
+			continue // Do not count nested wrappers belonging to the same card.
+		}
+		count += a.articleCardCount(ch)
+		if count > 2 {
+			count = 2
 		}
 	}
-	visit(root)
+	state := a.nodeStates[root]
+	state.articleCardCount = uint8(count + 1)
+	a.nodeStates[root] = state
 	return count
 }
 
@@ -5489,38 +5532,35 @@ func elementContainsAny(n *html.Node, values ...string) bool {
 }
 
 func containsAnyFold(s string, values ...string) bool {
-	// Class, id, and role values are overwhelmingly ASCII. Avoid rune decoding,
-	// Unicode tables, and EqualFold's general case on this hot path.
-	ascii := true
-	for i := 0; i < len(s); i++ {
-		if s[i] >= utf8.RuneSelf {
-			ascii = false
-			break
+	// Class, id, and role values are overwhelmingly ASCII. Scan that common
+	// case once; only restart with Unicode tokenization when a non-ASCII byte is
+	// actually encountered.
+	start := -1
+	for end := 0; end <= len(s); end++ {
+		if end < len(s) && s[end] >= utf8.RuneSelf {
+			return containsAnyFoldUnicode(s, values)
+		}
+		alnum := end < len(s) && (s[end] >= 'a' && s[end] <= 'z' ||
+			s[end] >= 'A' && s[end] <= 'Z' || s[end] >= '0' && s[end] <= '9')
+		if alnum {
+			if start < 0 {
+				start = end
+			}
+			continue
+		}
+		if start >= 0 {
+			for _, value := range values {
+				if equalFoldASCII(s[start:end], value) {
+					return true
+				}
+			}
+			start = -1
 		}
 	}
-	if ascii {
-		start := -1
-		for end := 0; end <= len(s); end++ {
-			alnum := end < len(s) && (s[end] >= 'a' && s[end] <= 'z' ||
-				s[end] >= 'A' && s[end] <= 'Z' || s[end] >= '0' && s[end] <= '9')
-			if alnum {
-				if start < 0 {
-					start = end
-				}
-				continue
-			}
-			if start >= 0 {
-				for _, value := range values {
-					if equalFoldASCII(s[start:end], value) {
-						return true
-					}
-				}
-				start = -1
-			}
-		}
-		return false
-	}
+	return false
+}
 
+func containsAnyFoldUnicode(s string, values []string) bool {
 	start := -1
 	for end, r := range s {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
