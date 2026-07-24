@@ -20,7 +20,6 @@ import (
 
 	"github.com/ryanfowler/pagemark/internal/dom"
 	"github.com/ryanfowler/pagemark/internal/markdown"
-	"github.com/ryanfowler/readability"
 	"golang.org/x/net/html"
 	"golang.org/x/net/publicsuffix"
 )
@@ -218,17 +217,12 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	}
 	quality := a.quality(selected)
 	if authored == nil && (pageType == PageTypeArticle || pageType == PageTypeGeneric) && quality < .42 {
-		// Preserve classes in readability's cloned result so the normal auxiliary
-		// exclusion can still recognize empty comments and other marked regions.
-		// Classes are not emitted to Markdown.
-		readabilityOptions := readability.DefaultOptions()
-		readabilityOptions.KeepClasses = true
-		if article, err := readability.ParseNode(root, rawURL, &readabilityOptions); err == nil && article.Node != nil && len(article.TextContent) > 100 {
-			selected = []*html.Node{article.Node}
+		if article, articleQuality := a.semanticArticleFallback(); article != nil {
+			selected = []*html.Node{article}
 			repeatedExcluded = nil
 			repeatedDropped = 0
-			fallback = "readability"
-			quality = math.Max(quality, .58)
+			fallback = "semantic-article"
+			quality = articleQuality
 		}
 	}
 	if len(selected) == 0 {
@@ -1154,9 +1148,9 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 		distance := adjacentSelectedBlockDistance(a.blocks, i, nodes, 2)
 		if distance == 0 && strongDetachedHeadline {
 			distance = adjacentSelectedBlockDistance(a.blocks, i, nodes, 6)
-			// Readability fallback nodes are clones and cannot be matched by pointer
-			// against the segmented DOM. In that case, containment in the semantic
-			// article supplies the structural tie instead of pointer proximity.
+			// Selected nodes may have been cloned while normalizing headings and
+			// therefore cannot always be matched by pointer against the segmented DOM.
+			// Containment in the semantic article supplies the structural tie instead.
 			if distance == 0 {
 				region := primaryHeadingRegion(b.node)
 				if region != nil && strings.EqualFold(region.Data, "article") {
@@ -1398,10 +1392,10 @@ func (a *analysis) titleLeavesOutputForArticleProse(nodes []*html.Node, cfg mark
 	}
 
 	// Count only publication furniture preceding the first body block. Derive
-	// this prefix from the selected tree itself: readability returns cloned nodes
-	// which cannot be matched against a.blocks from the original DOM. Furniture
-	// after the body is deliberately ignored so removing prose cannot pull a
-	// trailing date forward and make a fitting title look unsafe.
+	// this prefix from the selected tree itself because heading normalization may
+	// clone nodes that cannot be matched against a.blocks from the original DOM.
+	// Furniture after the body is deliberately ignored so removing prose cannot
+	// pull a trailing date forward and make a fitting title look unsafe.
 	prefix := publicationFurniturePrefix(nodes, cfg)
 	prefixFurniture := markdown.Convert(prefix, cfg).EmittedContentBlocks
 	return actualContent > prefixFurniture
@@ -2405,6 +2399,58 @@ func (a *analysis) semanticFallback() []*html.Node {
 	}
 	return []*html.Node{main}
 }
+
+// semanticArticleFallback recovers short articles whose paragraphs are useful
+// but score poorly because most of their text is linked. Restrict candidates to
+// semantic articles supported by segmented, non-auxiliary content so cards,
+// comments, and other article-shaped records do not become page content. Its
+// quality uses the same eligible blocks, matching the text the converter sees.
+func (a *analysis) semanticArticleFallback() (*html.Node, float64) {
+	type candidate struct {
+		n      *html.Node
+		chars  int
+		links  int
+		blocks int
+	}
+	var candidates []candidate
+	indexes := make(map[*html.Node]int)
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		article := a.primaryArticleAncestor(b.node)
+		if article == nil || a.hasIrrelevantAncestor(b.node) {
+			continue
+		}
+		// A nested article may represent an embedded post, comment, or related
+		// record within the primary article. Group its blocks under the outermost
+		// eligible article so a longer nested record cannot replace its container.
+		for p := article.Parent; p != nil; p = p.Parent {
+			if p.Type == html.ElementNode && strings.EqualFold(p.Data, "article") &&
+				!elementContainsAny(p, "card") && !a.inferenceAuxiliaryBlock(p) {
+				article = p
+			}
+		}
+		index, ok := indexes[article]
+		if !ok {
+			index = len(candidates)
+			indexes[article] = index
+			candidates = append(candidates, candidate{n: article})
+		}
+		candidates[index].chars += utf8.RuneCountInString(b.text)
+		candidates[index].links += linkTextLength(b.node)
+		candidates[index].blocks++
+	}
+	var best candidate
+	for _, candidate := range candidates {
+		if candidate.chars > best.chars {
+			best = candidate
+		}
+	}
+	if best.chars <= 100 {
+		return nil, 0
+	}
+	return best.n, qualityFromEvidence(best.chars, best.links, best.blocks)
+}
+
 func (a *analysis) highRecall() []*html.Node {
 	var out []*html.Node
 	for i := range a.blocks {
@@ -2436,11 +2482,15 @@ func (a *analysis) quality(nodes []*html.Node) float64 {
 		chars += utf8.RuneCountInString(t)
 		links += linkTextLength(n)
 	}
+	return qualityFromEvidence(chars, links, len(nodes))
+}
+
+func qualityFromEvidence(chars, links, blocks int) float64 {
 	q := .35 + math.Min(.4, float64(chars)/1500)
 	if chars > 0 && float64(links)/float64(chars) > .8 {
 		q -= .25
 	}
-	if len(nodes) > 100 {
+	if blocks > 100 {
 		q -= .1
 	}
 	return clamp(q)
@@ -4714,7 +4764,7 @@ func (a *analysis) isSubscriptionRegion(n *html.Node) bool {
 		}
 	}
 	if !inRoot {
-		// Readability may supply a cloned tree during fallback.
+		// Heading normalization may supply a cloned tree.
 		return isSubscriptionRegion(n)
 	}
 	evidence := a.nodeStates[n].subscriptionEvidence

@@ -862,27 +862,94 @@ func TestTrailingPublicationFurnitureDoesNotRemoveFittingTitle(t *testing.T) {
 	}
 }
 
-func TestReadabilityFallbackTitleBudgetPreservesBody(t *testing.T) {
+func TestLinkedArticleTitleBudgetPreservesBody(t *testing.T) {
 	body := "This complete linked body explains the practical workflow, preserves every important instruction, and fits only when a lower-value title does not displace it."
 	html := `<html><head><title>Actual Guide</title></head><body><article><h1>Actual Guide</h1><p>March 12</p><p><a href="/complete">` + body + `</a></p></article></body></html>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/guide", WithPageType(PageTypeArticle), WithMaxOutputBytes(210))
 	if err != nil {
 		t.Fatal(err)
 	}
-	readabilityFallback := false
-	for _, warning := range doc.Warnings {
-		if warning.Code == "fallback" && strings.Contains(strings.ToLower(warning.Message), "readability") {
-			readabilityFallback = true
-		}
-	}
-	if !readabilityFallback {
-		t.Fatalf("test did not exercise readability fallback: %#v", doc.Warnings)
-	}
 	if !strings.Contains(doc.Text, "This complete linked body") {
-		t.Fatalf("readability publication furniture displaced body prose:\n%s", doc.Markdown)
+		t.Fatalf("publication furniture displaced body prose:\n%s", doc.Markdown)
 	}
 	if strings.Contains(doc.Text, "Actual Guide") {
-		t.Fatalf("title should be omitted when it displaces readability prose:\n%s", doc.Markdown)
+		t.Fatalf("title should be omitted when it displaces linked article prose:\n%s", doc.Markdown)
+	}
+}
+
+func TestShortLinkedSemanticArticleFallback(t *testing.T) {
+	html := `<article>
+<h1>Release notes</h1>
+<p><a href="/one">The first update fixes startup failures for existing users.</a></p>
+<p><a href="/two">The second update restores saved settings after migration.</a></p>
+</article>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/releases", WithPageType(PageTypeArticle), WithDiagnostics(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# Release notes", "The first update fixes startup failures", "The second update restores saved settings"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("short linked article missing %q:\n%s", want, doc.Markdown)
+		}
+	}
+	if doc.Diagnostics.Fallback != "semantic-article" {
+		t.Fatalf("fallback = %q, want semantic-article", doc.Diagnostics.Fallback)
+	}
+}
+
+func TestSemanticArticleFallbackKeepsOuterArticleAroundNestedArticle(t *testing.T) {
+	html := `<article>
+<h1>Main release</h1>
+<p><a href="/main-one">The main release fixes startup failures for existing users.</a></p>
+<article>
+<h2>Partner release</h2>
+<p><a href="/partner-one">The partner release adds a detailed migration workflow for established installations.</a></p>
+<p><a href="/partner-two">It also documents compatibility checks for every supported deployment environment.</a></p>
+</article>
+<p><a href="/main-two">The main release also restores saved settings after migration.</a></p>
+</article>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/releases", WithPageType(PageTypeArticle), WithDiagnostics(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# Main release", "main release fixes startup failures", "## Partner release", "partner release adds a detailed migration workflow", "main release also restores saved settings"} {
+		if !strings.Contains(doc.Markdown, want) {
+			t.Errorf("nested article fallback missing %q:\n%s", want, doc.Markdown)
+		}
+	}
+	if doc.Diagnostics.Fallback != "semantic-article" {
+		t.Fatalf("fallback = %q, want semantic-article", doc.Diagnostics.Fallback)
+	}
+}
+
+func TestSemanticArticleFallbackQualityIgnoresExcludedComments(t *testing.T) {
+	extract := func(extra string) *Document {
+		t.Helper()
+		html := `<article>
+<h1>Release notes</h1>
+<p><a href="/one">The first update fixes startup failures for existing users.</a></p>` + extra + `
+<p><a href="/two">The second update restores saved settings after migration.</a></p>
+</article>`
+		doc, err := ExtractBytes([]byte(html), "https://example.com/releases", WithPageType(PageTypeArticle), WithDiagnostics(true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if doc.Diagnostics.Fallback != "semantic-article" {
+			t.Fatalf("fallback = %q, want semantic-article", doc.Diagnostics.Fallback)
+		}
+		return doc
+	}
+	withoutComments := extract("")
+	comment := "A reader comment discusses an unrelated deployment in extensive detail. " + strings.Repeat("Additional excluded comment text. ", 30)
+	withComments := extract(`<section class="comments"><article class="comment"><p>` + comment + `</p></article></section>`)
+	if withComments.Markdown != withoutComments.Markdown {
+		t.Fatalf("excluded comments changed output:\nwithout:\n%s\nwith:\n%s", withoutComments.Markdown, withComments.Markdown)
+	}
+	if withComments.Quality != withoutComments.Quality {
+		t.Fatalf("quality without comments = %v, with comments = %v", withoutComments.Quality, withComments.Quality)
+	}
+	if strings.Contains(withComments.Text, "reader comment") {
+		t.Fatalf("excluded comment was emitted: %s", withComments.Text)
 	}
 }
 
@@ -2980,7 +3047,7 @@ func TestPromptLikeMarkedCommentWithReplyButtonIsKept(t *testing.T) {
 	}
 }
 
-func TestEmptyCommentsDoNotDisableReadabilityFallback(t *testing.T) {
+func TestEmptyCommentsDoNotReduceShortArticleQuality(t *testing.T) {
 	prose := strings.Repeat("A", 101)
 	extract := func(extra string) *Document {
 		t.Helper()
@@ -2993,11 +3060,11 @@ func TestEmptyCommentsDoNotDisableReadabilityFallback(t *testing.T) {
 	}
 	withoutWidget := extract("")
 	withWidget := extract(`<section class="comments"><p>No comments yet.</p><button>Open discussion</button></section>`)
-	if withoutWidget.Quality < .58 || withWidget.Quality != withoutWidget.Quality {
+	if withWidget.Quality != withoutWidget.Quality {
 		t.Fatalf("quality without widget = %v, with widget = %v", withoutWidget.Quality, withWidget.Quality)
 	}
 	if strings.Contains(withWidget.Text, "No comments yet") {
-		t.Fatalf("readability restored empty comments: %s", withWidget.Text)
+		t.Fatalf("empty comments were restored: %s", withWidget.Text)
 	}
 }
 
