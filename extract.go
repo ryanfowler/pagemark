@@ -2260,12 +2260,14 @@ func (a *analysis) inferenceListingRecord(n *html.Node) *html.Node {
 		if p.Type != html.ElementNode {
 			continue
 		}
-		tokens := elementTokens(p)
-		if containsAny(tokens, "card", "item", "record") {
+		// Test token-bearing attributes directly. This lookup runs for every block
+		// ancestor during type inference; building a normalized token string here
+		// made listing-heavy pages spend much of their time copying attributes.
+		if elementContainsAny(p, "card", "item", "record") {
 			return p
 		}
-		wrapper := containsAny(tokens, "listing", "listings", "results")
-		if wrapper || containsAny(tokens, "result") {
+		wrapper := elementContainsAny(p, "listing", "listings", "results")
+		if wrapper || elementContainsAny(p, "result") {
 			for q := n; q != nil && q != p; q = q.Parent {
 				if a.inferenceListingWrapperRecords(p)[q] {
 					return q
@@ -3670,30 +3672,24 @@ func (a *analysis) hasSemanticArticleBefore(n *html.Node) bool {
 func (a *analysis) hasSemanticArticleAfter(n *html.Node) bool {
 	if !a.semanticAfterIndexed {
 		a.semanticAfterIndexed = true
-		var nodes []*html.Node
-		walk(a.root, func(x *html.Node) bool {
-			if hardHidden(x) {
-				return false
-			}
-			if x.Type == html.ElementNode {
-				nodes = append(nodes, x)
-			}
-			return true
-		})
 		seen := false
-		for i := len(nodes) - 1; i >= 0; i-- {
-			x := nodes[i]
+		// Visit in reverse preorder rather than collecting the complete document
+		// into a temporary slice. This preserves the document-order semantics while
+		// avoiding an elements-sized allocation on pages that need this index.
+		walkVisibleReverse(a.root, func(x *html.Node) {
+			if x.Type != html.ElementNode {
+				return
+			}
 			state := a.nodeStates[x]
 			state.semanticAfter = 1
 			if seen {
 				state.semanticAfter = 2
 			}
 			a.nodeStates[x] = state
-			if x.Type == html.ElementNode && strings.EqualFold(x.Data, "article") &&
-				!elementContainsAny(x, "card") {
+			if strings.EqualFold(x.Data, "article") && !elementContainsAny(x, "card") {
 				seen = true
 			}
-		}
+		})
 	}
 	return a.nodeStates[n].semanticAfter == 2
 }
@@ -5642,9 +5638,34 @@ func containsToken(s string, tokens []string) bool {
 	return false
 }
 func containsAny(s string, values ...string) bool {
-	// Scan tokens in place rather than materializing every token with
-	// strings.FieldsFunc. This helper is used on DOM attributes in many scoring
-	// passes, so the temporary slices otherwise dominate extraction allocations.
+	// DOM tokens are almost always ASCII. Avoid rune decoding and Unicode table
+	// lookups on that hot path, falling back only when a non-ASCII byte occurs.
+	start := -1
+	for end := 0; end <= len(s); end++ {
+		if end < len(s) && s[end] >= utf8.RuneSelf {
+			return containsAnyUnicode(s, values)
+		}
+		alnum := end < len(s) && (s[end] >= 'a' && s[end] <= 'z' ||
+			s[end] >= 'A' && s[end] <= 'Z' || s[end] >= '0' && s[end] <= '9')
+		if alnum {
+			if start < 0 {
+				start = end
+			}
+			continue
+		}
+		if start >= 0 {
+			for _, value := range values {
+				if s[start:end] == value {
+					return true
+				}
+			}
+			start = -1
+		}
+	}
+	return false
+}
+
+func containsAnyUnicode(s string, values []string) bool {
 	start := -1
 	for end, r := range s {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
@@ -5807,6 +5828,18 @@ func walk(n *html.Node, f func(*html.Node) bool) {
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
 		walk(ch, f)
 	}
+}
+
+// walkVisibleReverse visits visible nodes in the reverse of walk's preorder
+// without auxiliary storage.
+func walkVisibleReverse(n *html.Node, f func(*html.Node)) {
+	if n == nil || hardHidden(n) {
+		return
+	}
+	for ch := n.LastChild; ch != nil; ch = ch.PrevSibling {
+		walkVisibleReverse(ch, f)
+	}
+	f(n)
 }
 func normalizeText(s string) string {
 	start := 0
