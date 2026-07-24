@@ -1273,6 +1273,15 @@ func cellAlignment(n *html.Node) string {
 	return ""
 }
 func (c *converter) fallbackTable(n *html.Node) *Node {
+	// A single row whose cells each contain block structure is a common legacy
+	// two-column page layout, not one data record. Preserve its headings,
+	// paragraphs, and lists as normal document blocks instead of nesting the
+	// entire page under a synthetic bullet. Inline key/value rows and multi-row
+	// record tables continue through the list fallback below.
+	if columns := c.layoutTableColumns(n); columns != nil {
+		return &Node{Kind: Document, Children: columns}
+	}
+
 	type rowItem struct {
 		item     *Node
 		level    int
@@ -1337,6 +1346,45 @@ func (c *converter) fallbackTable(n *html.Node) *Node {
 		previous, previousLevel = row.item, level
 	}
 	return root
+}
+
+func (c *converter) layoutTableColumns(n *html.Node) []*Node {
+	var rows, cells []*html.Node
+	var visit func(*html.Node)
+	visit = func(x *html.Node) {
+		if c.skip(x) || x != n && x.Type == html.ElementNode && strings.EqualFold(x.Data, "table") {
+			return
+		}
+		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "tr") {
+			rows = append(rows, x)
+			if len(rows) > 1 {
+				return
+			}
+			for child := x.FirstChild; child != nil; child = child.NextSibling {
+				if !c.skip(child) && child.Type == html.ElementNode && (strings.EqualFold(child.Data, "td") || strings.EqualFold(child.Data, "th")) {
+					cells = append(cells, child)
+				}
+			}
+			return
+		}
+		for child := x.FirstChild; child != nil; child = child.NextSibling {
+			visit(child)
+		}
+	}
+	visit(n)
+	if len(rows) != 1 || len(cells) < 2 {
+		return nil
+	}
+	for _, cell := range cells {
+		if !c.hasBlockDescendant(cell) {
+			return nil
+		}
+	}
+	var out []*Node
+	for _, cell := range cells {
+		out = append(out, c.mixedItem(cell)...)
+	}
+	return out
 }
 
 // tableRowHasOwnRenderableContent distinguishes a presentational wrapper row

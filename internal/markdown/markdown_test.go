@@ -524,6 +524,20 @@ func TestOrdinaryTableRetainsLineNumbersColumn(t *testing.T) {
 	}
 }
 
+func TestSingleRowLayoutTablePreservesColumnBlocks(t *testing.T) {
+	source := `<table><tr><td><h1>Resources</h1><ul><li>Manual</li><li>Examples</li></ul></td><td><h1>Project</h1><p>The project prioritizes a simple interface.</p><blockquote><p>A short quotation.</p></blockquote></td></tr></table>`
+	want := "# Resources\n\n- Manual\n- Examples\n\n# Project\n\nThe project prioritizes a simple interface.\n\n> A short quotation."
+	if got := convertHTML(t, source).Markdown; got != want {
+		t.Fatalf("want:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+func TestSingleRowDataTableStillUsesRecordFallback(t *testing.T) {
+	if got := convertHTML(t, `<table><tr><td>Name</td><td>Value</td></tr></table>`).Markdown; got != "- NameValue" {
+		t.Fatalf("inline data row was flattened as layout columns: %q", got)
+	}
+}
+
 func TestTableHeaderCaptionAlignmentAndBreak(t *testing.T) {
 	r := convertHTML(t, `<table><caption>Sizes</caption><tr><th align="right">Name</th><th style="text-align:center">Value</th></tr><tr><td>A<br>B</td><td>x|y</td></tr></table>`)
 	want := "Sizes\n\n| Name | Value |\n| ---: | :---: |\n| A B | x\\|y |"
