@@ -1240,13 +1240,13 @@ func TestTrailingSocialCardAndSelfPreviewAreExcluded(t *testing.T) {
 	}
 }
 
-func TestSubstantiveTrailingSocialSectionSurvives(t *testing.T) {
-	html := `<html><head><title>Designing public spaces</title><meta property="og:type" content="article"></head><body><main><article><h1>Designing public spaces</h1><p>The design process began with observations of how residents use the square throughout the day.</p><p>Those observations informed the proposed seating, lighting, and pedestrian routes.</p></article><section class="social-impact"><h2>Social impact</h2><p>The finished square gave neighborhood groups a dependable meeting place and made community events easier to organize.</p><p>Local accessibility advocates also documented how the unobstructed routes improved independent travel.</p></section></main></body></html>`
+func TestSubstantiveTrailingSocialSectionsSurvive(t *testing.T) {
+	html := `<html><head><title>Designing public spaces</title><meta property="og:type" content="article"></head><body><main><article><h1>Designing public spaces</h1><p>The design process began with observations of how residents use the square throughout the day.</p><p>Those observations informed the proposed seating, lighting, and pedestrian routes.</p></article><section class="social-impact"><h2>Social impact</h2><p>The finished square gave neighborhood groups a dependable meeting place and made community events easier to organize.</p><p>Local accessibility advocates also documented how the unobstructed routes improved independent travel.</p></section><section class="antisocial-network"><h2>Antisocial network research</h2><p>The research network studies how hostile architecture affects public participation and community trust.</p><p>Its longitudinal evidence is substantive article content rather than a social networking widget.</p></section></main></body></html>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com/articles/public-spaces")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Social impact", "dependable meeting place", "improved independent travel"} {
+	for _, want := range []string{"Social impact", "dependable meeting place", "improved independent travel", "Antisocial network research", "hostile architecture", "longitudinal evidence"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing substantive trailing section %q: %s", want, doc.Text)
 		}
