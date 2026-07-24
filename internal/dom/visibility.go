@@ -27,9 +27,28 @@ func hiddenElement(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	switch strings.ToLower(n.Data) {
+	// The HTML parser canonicalizes tag names. Keep the overwhelmingly common
+	// path allocation-free and only normalize caller-built mixed-case trees.
+	tag := n.Data
+	switch tag {
 	case "script", "style", "template", "canvas", "svg", "iframe", "object", "embed":
 		return true
+	}
+	for i := 0; i < len(tag); i++ {
+		if tag[i] >= 'A' && tag[i] <= 'Z' {
+			switch strings.ToLower(tag) {
+			case "script", "style", "template", "canvas", "svg", "iframe", "object", "embed":
+				return true
+			}
+			break
+		}
+		if tag[i] >= utf8.RuneSelf {
+			// Preserve Unicode case-folding for manually constructed trees.
+			return strings.EqualFold(tag, "script") || strings.EqualFold(tag, "style") ||
+				strings.EqualFold(tag, "template") || strings.EqualFold(tag, "canvas") ||
+				strings.EqualFold(tag, "svg") || strings.EqualFold(tag, "iframe") ||
+				strings.EqualFold(tag, "object") || strings.EqualFold(tag, "embed")
+		}
 	}
 	return false
 }
@@ -123,7 +142,7 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 		}
 	}
 	// A dialog is not rendered until its boolean open attribute is present.
-	if strings.EqualFold(n.Data, "dialog") && !open {
+	if (n.Data == "dialog" || len(n.Data) == len("dialog") && strings.EqualFold(n.Data, "dialog")) && !open {
 		return true
 	}
 	if style == "" {
