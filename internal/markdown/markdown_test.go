@@ -73,6 +73,16 @@ func TestRenderableNonTextListItemIsPreserved(t *testing.T) {
 	}
 }
 
+func TestWhitespaceOnlyLinkedSuperscriptDoesNotEmitListItem(t *testing.T) {
+	r := convertHTML(t, `<ul>
+		<li><sup><a href="/x"><em> </em></a></sup></li>
+		<li>real</li>
+	</ul>`)
+	if r.Markdown != "- real" {
+		t.Fatalf("empty linked superscript left an empty bullet: %q", r.Markdown)
+	}
+}
+
 func TestAdjacentControlDeduplicationIsNarrow(t *testing.T) {
 	t.Run("ordinary adjacent identical links", func(t *testing.T) {
 		r := convertHTML(t, `<p><a href="/terms">Terms</a></p><p><a href="/terms">Terms</a></p>`)
@@ -235,6 +245,17 @@ func TestEmptyHeadingsArePrunedAfterConversion(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWhitespaceOnlyLinkedSuperscriptDoesNotPreserveHeading(t *testing.T) {
+	base, _ := url.Parse("https://example.com/")
+	r := convertHTMLConfig(t, `<h2>Empty</h2><p><sup><a href="/x"><em> </em></a></sup></p>`, Config{
+		Base: base, Links: true, MaxLinks: 100, PruneEmptyHeadings: true,
+		Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096},
+	})
+	if r.Markdown != "" {
+		t.Fatalf("empty linked superscript preserved a standalone heading: %q", r.Markdown)
 	}
 }
 

@@ -5833,8 +5833,11 @@ func containsAnyFold(s string, values ...string) bool {
 			continue
 		}
 		if start >= 0 {
+			token := s[start:end]
 			for _, value := range values {
-				if equalFoldASCII(s[start:end], value) {
+				// Length and first-byte checks reject nearly all vocabulary entries
+				// before the full case-insensitive comparison.
+				if len(token) == len(value) && lowerASCII(token[0]) == lowerASCII(value[0]) && equalFoldASCII(token, value) {
 					return true
 				}
 			}
@@ -5870,6 +5873,13 @@ func containsAnyFoldUnicode(s string, values []string) bool {
 		}
 	}
 	return false
+}
+
+func lowerASCII(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
 }
 
 func equalFoldASCII(a, b string) bool {
@@ -6128,8 +6138,8 @@ func walkVisibleReverse(n *html.Node, f func(*html.Node)) {
 func normalizeText(s string) string {
 	start := 0
 	for start < len(s) {
-		r, size := utf8.DecodeRuneInString(s[start:])
-		if !unicode.IsSpace(r) {
+		space, size := textRuneSpace(s[start:])
+		if !space {
 			break
 		}
 		start += size
@@ -6141,8 +6151,8 @@ func normalizeText(s string) string {
 	// Delay allocating until whitespace actually needs trimming or collapsing.
 	i := start
 	for i < len(s) {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		if unicode.IsSpace(r) {
+		space, size := textRuneSpace(s[i:])
+		if space {
 			break
 		}
 		i += size
@@ -6156,8 +6166,8 @@ func normalizeText(s string) string {
 	b.WriteString(s[start:i])
 	for i < len(s) {
 		for i < len(s) {
-			r, size := utf8.DecodeRuneInString(s[i:])
-			if !unicode.IsSpace(r) {
+			space, size := textRuneSpace(s[i:])
+			if !space {
 				break
 			}
 			i += size
@@ -6168,8 +6178,8 @@ func normalizeText(s string) string {
 		b.WriteByte(' ')
 		run := i
 		for i < len(s) {
-			r, size := utf8.DecodeRuneInString(s[i:])
-			if unicode.IsSpace(r) {
+			space, size := textRuneSpace(s[i:])
+			if space {
 				break
 			}
 			i += size
@@ -6177,6 +6187,17 @@ func normalizeText(s string) string {
 		b.WriteString(s[run:i])
 	}
 	return b.String()
+}
+
+// textRuneSpace keeps normalization's overwhelmingly common ASCII path out of
+// utf8.DecodeRuneInString and the Unicode whitespace tables.
+func textRuneSpace(s string) (bool, int) {
+	if s[0] < utf8.RuneSelf {
+		c := s[0]
+		return c == ' ' || c >= '\t' && c <= '\r', 1
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	return unicode.IsSpace(r), size
 }
 func attrValue(n *html.Node, key string) string {
 	for _, x := range n.Attr {
