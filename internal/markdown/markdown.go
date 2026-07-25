@@ -519,7 +519,10 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 		}
 	}
 	walkSiblings(nodes)
-	var merged []*Node
+	// Compact in place: out is no longer needed, and allocating another pointer
+	// slice here is expensive because every converted inline container takes this
+	// path.
+	merged := out[:0]
 	for _, n := range out {
 		if n.Kind == Text && len(merged) > 0 && merged[len(merged)-1].Kind == Text {
 			merged[len(merged)-1].Value = inlineText(merged[len(merged)-1].Value + n.Value)
@@ -865,7 +868,7 @@ func (c *converter) listItems(n *html.Node) []*Node {
 			// Excluding a control inside a list item (for example, a skip link)
 			// must not leave an empty Markdown bullet behind. Check converted
 			// content because an excluded descendant may leave an empty wrapper.
-			if strings.TrimSpace(renderBlock(item, 0)) == "" {
+			if !hasRenderedContent(item) {
 				continue
 			}
 			out = append(out, item)
@@ -2181,7 +2184,44 @@ func hasSubstantiveBlock(n *Node) bool {
 		}
 		return false
 	}
-	return n.Kind != Heading && n.Kind != ThematicBreak && strings.TrimSpace(renderBlock(n, 0)) != ""
+	return n.Kind != Heading && n.Kind != ThematicBreak && hasRenderedContent(n)
+}
+
+// hasRenderedContent answers the common emptiness question without serializing
+// an AST subtree to temporary Markdown. List conversion and heading pruning ask
+// this before the final render; rendering there doubled work on list-heavy pages.
+func hasRenderedContent(n *Node) bool {
+	if n == nil {
+		return false
+	}
+	switch n.Kind {
+	case Text:
+		return strings.TrimSpace(n.Value) != ""
+	case InlineCode, Image, CodeBlock, Blockquote, ThematicBreak, HardBreak:
+		// These kinds emit Markdown syntax even when their payload is empty.
+		return true
+	case Table:
+		return len(n.Children) > 0
+	case UnorderedList, OrderedList:
+		// A list marker itself is visible when at least one converted item remains.
+		return len(n.Children) > 0
+	case Heading:
+		// An ATX marker is renderable, though substantive-content checks reject it.
+		return true
+	case Superscript:
+		// Linked footnote-style superscripts suppress the caret. In that case only
+		// their children can make them visible; an ordinary superscript always
+		// contributes a caret even when its children are empty.
+		if !superscriptIsLinkedReference(n) {
+			return true
+		}
+	}
+	for _, child := range n.Children {
+		if hasRenderedContent(child) {
+			return true
+		}
+	}
+	return false
 }
 
 func render(doc *Node, max int, pruneHeadings bool) Result {
@@ -2253,10 +2293,10 @@ func render(doc *Node, max int, pruneHeadings bool) Result {
 // multiplicity. Comparing destinations preserves equally labelled controls that
 // perform different actions.
 func collapseAdjacentControls(blocks []*Node) []*Node {
-	kept := make([]*Node, 0, len(blocks))
+	kept := blocks[:0]
 	previous := ""
 	for _, block := range blocks {
-		if strings.TrimSpace(renderBlock(block, 0)) == "" {
+		if !hasRenderedContent(block) {
 			// Empty conversion artifacts do not separate visible blocks.
 			kept = append(kept, block)
 			continue
@@ -2311,7 +2351,7 @@ func plainInlineParagraph(n *Node) bool {
 // before the next heading of equal or higher level. Lower-level headings do not
 // end the range because their content also belongs to the enclosing section.
 func pruneStandaloneHeadings(blocks []*Node) []*Node {
-	kept := make([]*Node, 0, len(blocks))
+	kept := blocks[:0]
 	for i, block := range blocks {
 		if block.Kind != Heading {
 			kept = append(kept, block)
