@@ -34,6 +34,42 @@ type block struct {
 	reasons    []string
 }
 
+// scoringProfile is deliberately internal. Relaxation is an article recovery
+// mechanism, not a general-purpose extraction mode.
+type scoringProfile uint8
+
+const (
+	scoringPrimary scoringProfile = iota
+	scoringRelaxedLabels
+	scoringRelaxedThreshold
+)
+
+func (p scoringProfile) name() string {
+	switch p {
+	case scoringRelaxedLabels:
+		return "relaxed-labels"
+	case scoringRelaxedThreshold:
+		return "relaxed-threshold"
+	default:
+		return "primary"
+	}
+}
+
+type extractionAttempt struct {
+	profile              string
+	nodes                []*html.Node
+	quality              float64
+	chars, links, blocks int
+	hardExcluded         bool
+	state                []blockAttemptState
+}
+
+type blockAttemptState struct {
+	score    float64
+	selected bool
+	reasons  []string
+}
+
 // nodeState combines the per-node memoization used by classification passes.
 // Keeping one map avoids paying for several independent hash tables containing
 // the same DOM pointers on large pages.
@@ -48,24 +84,26 @@ type nodeState struct {
 }
 
 type analysis struct {
-	o                                               options
-	root                                            *html.Node
-	pageURL, base                                   *url.URL
-	elements, attrs, attrBytes, textBytes, maxDepth int
-	blocks                                          []block
-	meta                                            metadata
-	pageType                                        PageType
-	pageTypeExplicit                                bool
-	diag                                            *Diagnostics
-	nodeStates                                      map[*html.Node]nodeState
-	titleExcluded                                   map[*html.Node]bool
-	contentTitle                                    string
-	suppressHeadingTitle                            bool
-	semanticBeforeIndexed, semanticAfterIndexed     bool
-	articleProseBeforeIndexed                       bool
-	microdataArticleRecords                         map[*html.Node]bool
-	listingWrapperRecords                           map[*html.Node]map[*html.Node]bool
-	dominantMicrodataArticle, textListingPre        *html.Node
+	o                                                options
+	root                                             *html.Node
+	pageURL, base                                    *url.URL
+	elements, attrs, attrBytes, textBytes, maxDepth  int
+	blocks                                           []block
+	meta                                             metadata
+	pageType                                         PageType
+	pageTypeExplicit                                 bool
+	diag                                             *Diagnostics
+	nodeStates                                       map[*html.Node]nodeState
+	titleExcluded                                    map[*html.Node]bool
+	contentTitle                                     string
+	suppressHeadingTitle                             bool
+	semanticBeforeIndexed, semanticAfterIndexed      bool
+	articleProseBeforeIndexed                        bool
+	microdataArticleRecords                          map[*html.Node]bool
+	listingWrapperRecords                            map[*html.Node]map[*html.Node]bool
+	dominantMicrodataArticle, textListingPre         *html.Node
+	strongArticleProse                               map[*html.Node]bool
+	strongArticleProseIndexed, hasStrongArticleProse bool
 }
 
 type metadata struct {
@@ -208,8 +246,9 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	// Record the final type before scoring so those regions are hard exclusions,
 	// rather than relying on score penalties that long card copy can overcome.
 	a.pageType = pageType
-	a.score(pageType)
+	a.score(pageType, scoringPrimary)
 	selected, repeatedExcluded, repeatedDropped := a.selectedNodes(pageType)
+	winningProfile := scoringPrimary.name()
 	// Rendered Markdown documents are already an explicit primary-content
 	// boundary. Selecting their complete root both removes surrounding project
 	// chrome (file browsers, repository controls, and sidebars) and preserves
@@ -228,8 +267,25 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 			}
 		}
 	}
+	if authored == nil {
+		if a.shouldRetryArticle(pageType, selected) {
+			primary := a.makeExtractionAttempt(scoringPrimary, selected)
+			winner := primary
+			for _, profile := range []scoringProfile{scoringRelaxedLabels, scoringRelaxedThreshold} {
+				a.score(pageType, profile)
+				nodes, _, _ := a.selectedNodes(pageType)
+				candidate := a.makeExtractionAttempt(profile, nodes)
+				if betterArticleAttempt(winner, candidate) {
+					winner = candidate
+				}
+			}
+			a.restoreExtractionAttempt(winner)
+			selected = winner.nodes
+			winningProfile = winner.profile
+		}
+	}
 	a.populateBlockDiagnostics()
-	fallback := "primary"
+	fallback := winningProfile
 	if len(selected) == 0 {
 		selected = a.semanticFallback()
 		repeatedExcluded = nil
@@ -345,7 +401,9 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	if mr.Truncated {
 		doc.Warnings = append(doc.Warnings, Warning{"output-truncated", "The output reached the configured byte limit."})
 	}
-	if fallback != "primary" {
+	if strings.HasPrefix(fallback, "relaxed-") {
+		doc.Warnings = append(doc.Warnings, Warning{"relaxed-article-extraction", "A relaxed article extraction profile produced the result."})
+	} else if fallback != "primary" {
 		doc.Warnings = append(doc.Warnings, Warning{"fallback", "The " + fallback + " fallback produced the result."})
 	}
 	if a.diag != nil {
@@ -855,10 +913,15 @@ func explicitlyTinyImage(n *html.Node) bool {
 	return width > 0 && width <= 8 || height > 0 && height <= 8
 }
 
-func (a *analysis) score(pt PageType) {
+func (a *analysis) score(pt PageType, profile scoringProfile) {
 	seen := make(map[string]struct{}, len(a.blocks))
 	for i := range a.blocks {
 		b := &a.blocks[i]
+		// Scoring is non-destructive, but its result state is not. Every profile
+		// starts from the segmented block evidence rather than the previous pass.
+		b.score = 0
+		b.selected = false
+		b.reasons = nil
 		length := utf8.RuneCountInString(b.text)
 		score := 0.0
 		switch b.kind {
@@ -916,8 +979,14 @@ func (a *analysis) score(pt PageType) {
 			// available chrome, not every descendant's content region.
 			if tag != "html" && tag != "body" && hasBoilerplateToken(p) &&
 				!(tag == "article" && a.substantialArticleScope(p)) {
-				score -= 3
-				a.addReason(b, "boilerplate label")
+				// This is only a weak class/id signal. Structural auxiliary decisions
+				// above remain absolute in every profile.
+				if profile == scoringPrimary || !a.strongArticleProseEvidence(b) {
+					score -= 3
+					a.addReason(b, "boilerplate label")
+				} else {
+					a.addReason(b, "article evidence overrides weak label")
+				}
 			}
 			if pt == PageTypeDiscussion && containsAny(tokens, "comment", "comments", "answer", "post", "thread") {
 				score += 2
@@ -973,6 +1042,13 @@ func (a *analysis) score(pt PageType) {
 		}
 		b.score = score
 		b.selected = score >= 1.0
+		if profile == scoringRelaxedThreshold && !b.selected && score >= .65 &&
+			b.kind == "p" && utf8.RuneCountInString(b.text) >= 40 &&
+			a.strongArticleProseEvidence(b) && !a.hasIrrelevantAncestor(b.node) &&
+			controls(b.node) == 0 && linkTextLength(b.node)*2 < max(1, utf8.RuneCountInString(b.text)) {
+			b.selected = true
+			a.addReason(b, "relaxed article prose threshold")
+		}
 	}
 
 	// Independent scores are deliberately conservative, but article prose is a
@@ -983,6 +1059,155 @@ func (a *analysis) score(pt PageType) {
 	// not pulled into the output.
 	a.strengthenArticleContinuity(pt)
 
+}
+
+// indexStrongArticleProse computes local paragraph cohorts once. Relaxed
+// profiles consult this cache for every block, so rescoring remains linear
+// rather than repeatedly scanning all sibling blocks.
+func (a *analysis) indexStrongArticleProse() {
+	if a.strongArticleProseIndexed {
+		return
+	}
+	a.strongArticleProseIndexed = true
+	a.strongArticleProse = make(map[*html.Node]bool, len(a.blocks))
+	type cohortEvidence struct {
+		paragraphs, chars int
+	}
+	cohorts := make(map[*html.Node]cohortEvidence)
+	eligible := make([]bool, len(a.blocks))
+	insideMain := make([]bool, len(a.blocks))
+	insideArticle := make([]bool, len(a.blocks))
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		length := utf8.RuneCountInString(b.text)
+		if b.kind != "p" || length < 40 || a.hasIrrelevantAncestor(b.node) ||
+			controls(b.node) != 0 || linkTextLength(b.node)*2 >= max(1, length) {
+			continue
+		}
+		eligible[i] = true
+		cohort := cohorts[b.node.Parent]
+		cohort.paragraphs++
+		cohort.chars += length
+		cohorts[b.node.Parent] = cohort
+		for p := b.node.Parent; p != nil; p = p.Parent {
+			if p.Type != html.ElementNode {
+				continue
+			}
+			tag := strings.ToLower(p.Data)
+			insideMain[i] = insideMain[i] || tag == "main" || strings.EqualFold(attrValue(p, "role"), "main")
+			insideArticle[i] = insideArticle[i] || tag == "article"
+		}
+	}
+	metadataEvidence := a.meta.articlePublished || a.meta.articleType || a.meta.headline ||
+		containsAny(strings.ToLower(a.meta.schemaType), "article", "newsarticle", "blogposting")
+	for i := range a.blocks {
+		if !eligible[i] {
+			continue
+		}
+		cohort := cohorts[a.blocks[i].node.Parent]
+		strong := insideArticle[i] || cohort.paragraphs >= 2 && cohort.chars >= 100 && (insideMain[i] || metadataEvidence)
+		if strong {
+			a.strongArticleProse[a.blocks[i].node] = true
+			a.hasStrongArticleProse = true
+		}
+	}
+}
+
+// strongArticleProseEvidence can neutralize a weak boilerplate-looking class,
+// but never a structural auxiliary decision.
+func (a *analysis) strongArticleProseEvidence(b *block) bool {
+	if b == nil {
+		return false
+	}
+	a.indexStrongArticleProse()
+	return a.strongArticleProse[b.node]
+}
+
+func (a *analysis) hasStrongArticleEvidence() bool {
+	a.indexStrongArticleProse()
+	return a.hasStrongArticleProse
+}
+
+func (a *analysis) makeExtractionAttempt(profile scoringProfile, nodes []*html.Node) extractionAttempt {
+	attempt := extractionAttempt{profile: profile.name(), nodes: append([]*html.Node(nil), nodes...)}
+	attempt.state = make([]blockAttemptState, len(a.blocks))
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		attempt.state[i] = blockAttemptState{score: b.score, selected: b.selected, reasons: b.reasons}
+		if !b.selected {
+			continue
+		}
+		if a.hasIrrelevantAncestor(b.node) || hardHidden(b.node) {
+			attempt.hardExcluded = true
+			continue
+		}
+		length := utf8.RuneCountInString(b.text)
+		attempt.chars += length
+		attempt.links += linkTextLength(b.node)
+		attempt.blocks++
+	}
+	attempt.quality = qualityFromEvidence(attempt.chars, attempt.links, attempt.blocks)
+	return attempt
+}
+
+func (a *analysis) restoreExtractionAttempt(attempt extractionAttempt) {
+	for i := range a.blocks {
+		a.blocks[i].score = attempt.state[i].score
+		a.blocks[i].selected = attempt.state[i].selected
+		a.blocks[i].reasons = attempt.state[i].reasons
+	}
+}
+
+func (a *analysis) shouldRetryArticle(pt PageType, nodes []*html.Node) bool {
+	eligible := pt == PageTypeArticle || pt == PageTypeGeneric && !a.pageTypeExplicit && a.hasStrongArticleEvidence()
+	if !eligible {
+		return false
+	}
+	if len(nodes) == 0 {
+		return true
+	}
+	chars, links, blocks := 0, 0, 0
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		if !b.selected || a.hasIrrelevantAncestor(b.node) || hardHidden(b.node) {
+			continue
+		}
+		chars += utf8.RuneCountInString(b.text)
+		links += linkTextLength(b.node)
+		blocks++
+	}
+	if qualityFromEvidence(chars, links, blocks) < .42 {
+		return true
+	}
+	metadataEvidence := a.meta.articlePublished || a.meta.articleType || a.meta.headline ||
+		containsAny(strings.ToLower(a.meta.schemaType), "article", "newsarticle", "blogposting")
+	return metadataEvidence && chars < 120 && a.hasStrongArticleEvidence()
+}
+
+func betterArticleAttempt(current, candidate extractionAttempt) bool {
+	if candidate.hardExcluded || len(candidate.nodes) == 0 || candidate.chars == 0 {
+		return false
+	}
+	if candidate.links*2 >= candidate.chars {
+		return false
+	}
+	// With no primary content there is no meaningful relative growth baseline.
+	// Still enforce absolute safety and link-density checks above.
+	if len(current.nodes) == 0 {
+		return true
+	}
+	if candidate.blocks > current.blocks*3+12 {
+		return false
+	}
+	// Quality already combines useful prose, link density, and block count. A
+	// close relaxed result must additionally recover a material amount of prose.
+	if candidate.quality > current.quality+.05 && candidate.chars >= current.chars {
+		return true
+	}
+	added := candidate.chars - current.chars
+	material := added >= 120 && candidate.chars*4 >= current.chars*5 ||
+		current.chars < 120 && added >= 40 && candidate.chars*3 >= current.chars*4
+	return material && candidate.quality >= current.quality-.03
 }
 
 // addReason avoids allocating diagnostic-only reason slices on the normal
