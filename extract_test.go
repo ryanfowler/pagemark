@@ -1324,6 +1324,17 @@ func TestDistributedServiceAndHiddenContent(t *testing.T) {
 	}
 }
 
+func TestInlineStyleOverridePreservesArticleProse(t *testing.T) {
+	source := `<article><h1>Visibility cascade</h1><p style="display:none; display:block">This visible article prose remains available after the earlier declaration is overridden.</p></article>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/article", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "This visible article prose remains available") {
+		t.Fatalf("overridden display declaration removed visible prose: %q", doc.Text)
+	}
+}
+
 func TestHiddenDescendantsNeverAppear(t *testing.T) {
 	html := `<main><h1>Visibility</h1><p>Visible <span hidden>INLINE_SECRET</span><span aria-hidden="true">ARIA_SECRET</span><span inert>INERT_SECRET</span><span style="display: none">DISPLAY_SECRET</span><span style="visibility: hidden">VISIBILITY_SECRET</span> text.</p><ul><li>Shown</li><li hidden>LIST_SECRET</li><li>Item <span hidden>LIST_INLINE_SECRET</span>end</li></ul><table><tr><th>Name</th><th>Value</th></tr><tr><td>Shown</td><td><span hidden>TABLE_SECRET</span>Safe</td></tr><tr hidden><td>ROW_SECRET</td><td>Bad</td></tr></table></main>`
 	doc, err := ExtractBytes([]byte(html), "https://example.com", WithPageType(PageTypeDocumentation), WithDiagnostics(true))

@@ -3,7 +3,6 @@ package dom
 
 import (
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/net/html"
@@ -151,55 +150,501 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 	return hiddenStyle(style)
 }
 
-// hiddenStyle recognizes the two relevant declarations in one pass, without
-// allocating a normalized copy of every style attribute. The common ASCII
-// path avoids Unicode tables and decoding.
 func equalFoldTrimmedTrue(value string) bool {
 	value = strings.TrimSpace(value)
 	return value == "true" || strings.EqualFold(value, "true")
 }
 
-func hiddenStyle(s string) bool {
-	const display = "display:none"
-	const visibility = "visibility:hidden"
-	di, vi := 0, 0
-	for i := 0; i < len(s); {
-		var r rune
-		if s[i] < utf8.RuneSelf {
-			r = rune(s[i])
-			i++
-			if r == ' ' || r >= '\t' && r <= '\r' {
-				continue
-			}
-			if r >= 'A' && r <= 'Z' {
-				r += 'a' - 'A'
-			}
+// inlineStyleValue returns the value selected by declaration order and
+// !important for one property. It scans declarations directly to avoid
+// allocating a slice or normalizing the complete style attribute.
+func inlineStyleValue(style, property string) string {
+	var winning string
+	winningImportant := false
+	found := false
+
+	for len(style) > 0 {
+		declaration := style
+		if semi := cssTopLevelDelimiter(style, ';'); semi >= 0 {
+			declaration = style[:semi]
+			style = style[semi+1:]
 		} else {
-			var size int
-			r, size = utf8.DecodeRuneInString(s[i:])
+			style = ""
+		}
+
+		colon := cssTopLevelDelimiter(declaration, ':')
+		if colon < 0 {
+			continue
+		}
+		name := strings.TrimSpace(cssWithoutComments(declaration[:colon]))
+		name = cssDecodeIdentifierEscapes(name)
+		if !strings.EqualFold(name, property) {
+			continue
+		}
+
+		value := strings.TrimSpace(cssWithoutComments(declaration[colon+1:]))
+		if value == "" {
+			// Empty property values are invalid declarations and do not
+			// participate in the cascade.
+			continue
+		}
+		value, important := cssStripImportant(value)
+		value = strings.TrimSpace(value)
+		if value == "" { // A bare !important has no property value.
+			continue
+		}
+		if !validInlineStyleValue(property, value) {
+			// Invalid declarations are discarded before cascade precedence is
+			// considered, just as they are by a browser.
+			continue
+		}
+
+		if found && winningImportant && !important {
+			continue
+		}
+		// Validation happens on the tokenized source. Decode only afterward so
+		// escaped punctuation cannot turn an identifier into CSS syntax.
+		winning = cssDecodeIdentifierEscapes(value)
+		winningImportant = important
+		found = true
+	}
+	return winning
+}
+
+// cssStripImportant recognizes a trailing importance annotation while
+// retaining the distinction between a literal '!' delimiter and an escaped
+// exclamation mark. Escapes are permitted within the important identifier.
+func cssStripImportant(value string) (string, bool) {
+	bang := -1
+	var quote byte
+	for i := 0; i < len(value); i++ {
+		if value[i] == '\\' {
+			i++
+			continue
+		}
+		if quote != 0 {
+			if value[i] == quote {
+				quote = 0
+			}
+			continue
+		}
+		if value[i] == '\'' || value[i] == '"' {
+			quote = value[i]
+		} else if value[i] == '!' {
+			bang = i
+		}
+	}
+	if bang < 0 || !strings.EqualFold(
+		cssDecodeIdentifierEscapes(strings.TrimSpace(value[bang+1:])), "important") {
+		return value, false
+	}
+	return strings.TrimSpace(value[:bang]), true
+}
+
+// cssDecodeIdentifierEscapes decodes CSS escapes used by property names and
+// keyword values. It preserves the allocation-free path for ordinary styles.
+func cssDecodeIdentifierEscapes(value string) string {
+	if strings.IndexByte(value, '\\') < 0 {
+		return value
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	for i := 0; i < len(value); i++ {
+		if value[i] != '\\' {
+			b.WriteByte(value[i])
+			continue
+		}
+		if i+1 == len(value) {
+			b.WriteRune(utf8.RuneError)
+			break
+		}
+
+		start := i + 1
+		if isCSSHex(value[start]) {
+			end := start
+			var decoded rune
+			for end < len(value) && end-start < 6 && isCSSHex(value[end]) {
+				decoded = decoded*16 + rune(cssHexValue(value[end]))
+				end++
+			}
+			if decoded == 0 || decoded > utf8.MaxRune || decoded >= 0xD800 && decoded <= 0xDFFF {
+				decoded = utf8.RuneError
+			}
+			b.WriteRune(decoded)
+			if end < len(value) && isCSSWhitespace(value[end]) {
+				if value[end] == '\r' && end+1 < len(value) && value[end+1] == '\n' {
+					end++
+				}
+				i = end
+			} else {
+				i = end - 1
+			}
+			continue
+		}
+
+		r, size := utf8.DecodeRuneInString(value[start:])
+		if r == '\n' || r == '\f' {
 			i += size
-			if unicode.IsSpace(r) {
+			continue
+		}
+		if r == '\r' {
+			i += size
+			if i+1 < len(value) && value[i+1] == '\n' {
+				i++
+			}
+			continue
+		}
+		b.WriteRune(r)
+		i += size
+	}
+	return b.String()
+}
+
+func isCSSHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+func cssHexValue(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	default:
+		return c - 'A' + 10
+	}
+}
+
+func isCSSWhitespace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
+}
+
+func validInlineStyleValue(property, value string) bool {
+	if cssSubstitutionValue(value) {
+		return true
+	}
+
+	var words [3]string
+	wordCount, validTokens := cssIdentifierWords(value, &words)
+	if !validTokens || wordCount == 0 {
+		return false
+	}
+	if strings.EqualFold(property, "visibility") {
+		return wordCount == 1 &&
+			(equalFoldAny(words[0], "visible", "hidden", "collapse") || cssWideKeyword(words[0]))
+	}
+	if !strings.EqualFold(property, "display") {
+		return false
+	}
+	if wordCount == 1 {
+		return cssWideKeyword(words[0]) || displaySingleKeyword(words[0])
+	}
+
+	// Multi-keyword display syntax combines at most one outside value, one
+	// inside value, and optionally list-item. Order is not significant.
+	var outside, inside, insideAllowsListItem, listItem bool
+	for _, word := range words[:wordCount] {
+		switch {
+		case equalFoldAny(word, "block", "inline", "run-in"):
+			if outside {
+				return false
+			}
+			outside = true
+		case equalFoldAny(word, "flow", "flow-root", "table", "flex", "grid", "ruby", "math"):
+			if inside {
+				return false
+			}
+			inside = true
+			insideAllowsListItem = equalFoldAny(word, "flow", "flow-root")
+			if listItem && !insideAllowsListItem {
+				return false
+			}
+		case strings.EqualFold(word, "list-item"):
+			if listItem || inside && !insideAllowsListItem {
+				return false
+			}
+			listItem = true
+		default:
+			return false
+		}
+	}
+	if listItem {
+		return true // Incompatible inside values were rejected while scanning.
+	}
+	return outside && inside
+}
+
+// cssIdentifierWords tokenizes the identifier-only value grammars used by
+// display and visibility. Escapes are consumed as part of their identifier
+// token before being decoded, so escaped punctuation remains identifier data.
+func cssIdentifierWords(value string, words *[3]string) (int, bool) {
+	count := 0
+	for i := 0; ; {
+		for i < len(value) && isCSSWhitespace(value[i]) {
+			i++
+		}
+		if i == len(value) {
+			return count, true
+		}
+		if count == len(words) {
+			return 0, false
+		}
+
+		start := i
+		for i < len(value) {
+			if cssNameByte(value[i]) {
+				i++
 				continue
 			}
-			r = unicode.ToLower(r)
+			if value[i] != '\\' {
+				break
+			}
+			var ok bool
+			i, ok = cssEscapeEnd(value, i)
+			if !ok {
+				return 0, false
+			}
 		}
-		di = advanceMatch(display, di, r)
-		vi = advanceMatch(visibility, vi, r)
-		if di == len(display) || vi == len(visibility) {
+		if i == start || i < len(value) && !isCSSWhitespace(value[i]) {
+			return 0, false
+		}
+		words[count] = cssDecodeIdentifierEscapes(value[start:i])
+		count++
+	}
+}
+
+// cssEscapeEnd returns the first byte after one CSS escape, including the
+// optional whitespace terminator of a hexadecimal escape.
+func cssEscapeEnd(value string, slash int) (int, bool) {
+	if slash+1 >= len(value) {
+		return slash, false
+	}
+	i := slash + 1
+	if value[i] == '\n' || value[i] == '\r' || value[i] == '\f' {
+		return slash, false
+	}
+	if isCSSHex(value[i]) {
+		start := i
+		for i < len(value) && i-start < 6 && isCSSHex(value[i]) {
+			i++
+		}
+		if i < len(value) && isCSSWhitespace(value[i]) {
+			if value[i] == '\r' && i+1 < len(value) && value[i+1] == '\n' {
+				i++
+			}
+			i++
+		}
+		return i, true
+	}
+	_, size := utf8.DecodeRuneInString(value[i:])
+	return i + size, true
+}
+
+func cssWideKeyword(value string) bool {
+	return equalFoldAny(value, "inherit", "initial", "revert", "revert-layer", "unset")
+}
+
+// cssSubstitutionValue reports whether a value contains a complete var(),
+// env(), or attr() component. Substitution functions make the declaration's
+// grammar dependent on the computed replacement and may occur alongside
+// ordinary display keywords.
+func cssSubstitutionValue(value string) bool {
+	for i := 0; i < len(value); {
+		if value[i] == '\'' || value[i] == '"' {
+			quote := value[i]
+			for i++; i < len(value); i++ {
+				if value[i] == '\\' {
+					i++
+				} else if value[i] == quote {
+					i++
+					break
+				}
+			}
+			continue
+		}
+		if !cssNameByte(value[i]) && value[i] != '\\' {
+			i++
+			continue
+		}
+
+		start := i
+		for i < len(value) && (cssNameByte(value[i]) || value[i] == '\\') {
+			if value[i] == '\\' {
+				var ok bool
+				i, ok = cssEscapeEnd(value, i)
+				if !ok {
+					return false
+				}
+			} else {
+				i++
+			}
+		}
+		if i >= len(value) || value[i] != '(' {
+			continue
+		}
+		name := cssDecodeIdentifierEscapes(value[start:i])
+		if !equalFoldAny(name, "var", "env", "attr") {
+			continue
+		}
+		return cssFunctionEnd(value, i) >= 0
+	}
+	return false
+}
+
+func cssFunctionEnd(value string, open int) int {
+	depth := 1
+	var quote byte
+	for i := open + 1; i < len(value); i++ {
+		if value[i] == '\\' {
+			i++
+			continue
+		}
+		if quote != 0 {
+			if value[i] == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch value[i] {
+		case '\'', '"':
+			quote = value[i]
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func cssNameByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
+		c >= '0' && c <= '9' || c == '-' || c == '_' || c >= 0x80
+}
+
+func displaySingleKeyword(value string) bool {
+	return equalFoldAny(value,
+		"none", "contents", "block", "inline", "run-in", "flow", "flow-root",
+		"table", "flex", "grid", "ruby", "math", "list-item", "inline-block",
+		"inline-table", "inline-flex", "inline-grid", "table-row-group",
+		"table-header-group", "table-footer-group", "table-row", "table-cell",
+		"table-column-group", "table-column", "table-caption", "ruby-base",
+		"ruby-text", "ruby-base-container", "ruby-text-container", "-webkit-box",
+		"-webkit-inline-box", "-ms-flexbox", "-ms-inline-flexbox")
+}
+
+func equalFoldAny(value string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		if strings.EqualFold(value, candidate) {
 			return true
 		}
 	}
 	return false
 }
 
-func advanceMatch(want string, matched int, c rune) int {
-	if c == rune(want[matched]) {
-		return matched + 1
+// cssTopLevelDelimiter finds a declaration delimiter while ignoring comments,
+// strings, escapes, and nested blocks. This is deliberately narrower than a
+// full CSS parser, but prevents content inside values from becoming phantom
+// declarations.
+func cssTopLevelDelimiter(s string, delimiter byte) int {
+	var quote byte
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '\\':
+			i++ // An escape consumes the following byte, including a delimiter.
+		case quote != 0:
+			if s[i] == quote {
+				quote = 0
+			}
+		case s[i] == '\'' || s[i] == '"':
+			quote = s[i]
+		case s[i] == '/' && i+1 < len(s) && s[i+1] == '*':
+			if end := strings.Index(s[i+2:], "*/"); end >= 0 {
+				i += end + 3
+			} else {
+				return -1
+			}
+		case s[i] == '(' || s[i] == '[' || s[i] == '{':
+			depth++
+		case s[i] == ')' || s[i] == ']' || s[i] == '}':
+			if depth > 0 {
+				depth--
+			}
+		case s[i] == delimiter && depth == 0:
+			return i
+		}
 	}
-	if c == rune(want[0]) {
-		return 1
+	return -1
+}
+
+// cssWithoutComments treats comments as whitespace, as CSS tokenization does.
+// The usual comment-free style value is returned without allocation.
+func cssWithoutComments(s string) string {
+	var b strings.Builder
+	changed := false
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' {
+			if changed {
+				b.WriteByte(s[i])
+				if i+1 < len(s) {
+					i++
+					b.WriteByte(s[i])
+				}
+			} else if i+1 < len(s) {
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			if changed {
+				b.WriteByte(s[i])
+			}
+			if s[i] == quote {
+				quote = 0
+			}
+			continue
+		}
+		if s[i] == '\'' || s[i] == '"' {
+			quote = s[i]
+			if changed {
+				b.WriteByte(s[i])
+			}
+			continue
+		}
+		if s[i] == '/' && i+1 < len(s) && s[i+1] == '*' {
+			if !changed {
+				b.Grow(len(s))
+				b.WriteString(s[:i])
+				changed = true
+			}
+			b.WriteByte(' ')
+			if end := strings.Index(s[i+2:], "*/"); end >= 0 {
+				i += end + 3
+			} else {
+				break
+			}
+			continue
+		}
+		if changed {
+			b.WriteByte(s[i])
+		}
 	}
-	return 0
+	if changed {
+		return b.String()
+	}
+	return s
+}
+
+func hiddenStyle(style string) bool {
+	display := inlineStyleValue(style, "display")
+	visibility := inlineStyleValue(style, "visibility")
+	return strings.EqualFold(strings.TrimSpace(display), "none") ||
+		strings.EqualFold(strings.TrimSpace(visibility), "hidden")
 }
 
 func attr(n *html.Node, key string) string {
