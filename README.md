@@ -30,13 +30,14 @@ func main() {
     if err != nil {
         panic(err)
     }
+    fmt.Println(doc.Title)
     fmt.Println(doc.Markdown)
 }
 ```
 
 You can also use `ExtractBytes` or `ExtractNode`. `ExtractNode` does not change the supplied tree.
 
-The `Document` result contains metadata, a page type, Markdown, plain text, sections, safe links, useful images, a quality score, warnings, and extraction statistics. Useful images are included by default as Markdown image syntax and in `Document.Images`; Pagemark records their safe remote URLs but does not fetch them. Pass `WithIncludeImages(false)` for text-only output.
+The `Document` result contains metadata, a page type, Markdown, plain text, sections, safe links, useful images, a quality score, warnings, and extraction statistics. The document title is returned separately in `Document.Title` and is not repeated in `Document.Markdown`, `Document.Text`, or `Document.Sections`. Useful images are included by default as Markdown image syntax and in `Document.Images`; Pagemark records their safe remote URLs but does not fetch them. Pass `WithIncludeImages(false)` for text-only output.
 
 Enable diagnostics only when you need block scores and rejected-link details:
 

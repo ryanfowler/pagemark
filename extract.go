@@ -58,6 +58,9 @@ type analysis struct {
 	pageTypeExplicit                                bool
 	diag                                            *Diagnostics
 	nodeStates                                      map[*html.Node]nodeState
+	titleExcluded                                   map[*html.Node]bool
+	contentTitle                                    string
+	suppressHeadingTitle                            bool
 	semanticBeforeIndexed, semanticAfterIndexed     bool
 	articleProseBeforeIndexed                       bool
 	microdataArticleRecords                         map[*html.Node]bool
@@ -252,25 +255,31 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		discussionAuxiliary := pageType == PageTypeDiscussion &&
 			(isDiscussionControlNode(n) || a.hasStandaloneMessageAncestor(n))
 		visualAuxiliary := o.includeImages && isVisualElement(n) && !meaningfulVisual(n)
-		return a.hasIrrelevantAncestor(n) || repeatedExcluded[n] || discussionAuxiliary || visualAuxiliary
+		titleHeading := a.contentTitle != "" && isHeadingTag(strings.ToLower(n.Data)) &&
+			(titleEquivalent(articleHeadingText(n), a.contentTitle, a.meta.site) || titleEquivalent(nodeText(n), a.contentTitle, a.meta.site))
+		return titleHeading || a.titleExcluded[n] || a.hasIrrelevantAncestor(n) || repeatedExcluded[n] || discussionAuxiliary || visualAuxiliary
 	}
 	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: o.urlPolicy.Schemes, AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude, PruneEmptyHeadings: true}
 	if a.textListingPre != nil {
 		cfg.TextPreformatted = func(n *html.Node) bool { return n == a.textListingPre }
 	}
-	// A rendered Markdown region is an explicit authored document. When it
-	// already starts with a heading, preserve that heading and hierarchy instead
-	// of synthesizing repository/browser chrome as a competing article title.
-	if authored == nil || !a.hasLeadingOutputHeading(selected, cfg) {
-		selected = a.ensureDocumentTitle(selected, cfg, pageType)
-	}
+	// Resolve the document title before rendering and remove only the heading
+	// that represents it. Titles are returned as metadata rather than repeated
+	// in Markdown, plain text, sections, or retained media.
+	selected, resolvedTitle := a.separateDocumentTitle(selected, cfg, pageType, authored != nil)
 	mr := markdown.Convert(selected, cfg)
 	if strings.TrimSpace(mr.Text) == "" {
 		return nil, ErrNoContent
 	}
-	documentTitle := normalizeText(a.meta.title)
-	if !a.meta.titleFromHeading {
-		documentTitle = a.cleanedMetadataTitle(documentTitle)
+	documentTitle := normalizeText(resolvedTitle)
+	if documentTitle == "" && !(a.suppressHeadingTitle && a.meta.titleFromHeading) {
+		documentTitle = normalizeText(a.meta.title)
+		if !a.meta.titleFromHeading {
+			documentTitle = a.cleanedMetadataTitle(documentTitle)
+		}
+	}
+	if pageType == PageTypeDocumentation {
+		documentTitle = a.visibleH1TitleVariant(documentTitle)
 	}
 	doc := &Document{URL: rawURL, CanonicalURL: a.meta.canonical, Title: documentTitle, Description: a.meta.description, Author: a.meta.author, SiteName: a.meta.site, Language: a.meta.language, PublishedTime: a.meta.published, PageType: pageType, PageTypeScore: confidence, Markdown: mr.Markdown, Text: mr.Text, Quality: clamp(quality), Diagnostics: a.diag, Stats: Stats{Elements: a.elements, TextBytes: a.textBytes, Blocks: len(a.blocks), OutputBytes: len(mr.Markdown)}}
 	if len(mr.Links) > 0 {
@@ -1060,6 +1069,213 @@ func (a *analysis) plausibleArticleBridge(b *block, region *html.Node) bool {
 	return nodeWithin(b.node, region)
 }
 
+// separateDocumentTitle applies the existing structural title recovery, then
+// removes the resolved title heading before Markdown conversion. Resolving at
+// the HTML-node level keeps Markdown, plain text, sections, retained media, and
+// byte limits consistent; rendered Markdown must not be post-processed as text.
+func (a *analysis) separateDocumentTitle(nodes []*html.Node, cfg markdown.Config, pageType PageType, authored bool) ([]*html.Node, string) {
+	resolved := nodes
+	if !authored {
+		// A title no longer consumes output budget. Disable the renderer limit for
+		// title recovery so the old title/body fit checks cannot suppress metadata.
+		titleCfg := cfg
+		titleCfg.MaxBytes = 0
+		resolved = a.ensureDocumentTitle(nodes, titleCfg, pageType)
+	}
+
+	heading := a.leadingSelectedHeading(resolved, cfg)
+	metadataTitle := a.restorationTitle()
+	if pageType != PageTypeArticle && !authored {
+		allowListingH1 := pageType != PageTypeListing && pageType != PageTypeCollection || a.meta.browserTitle != "" || a.meta.socialTitle != ""
+		if sourceH1 := a.firstSelectedSourceH1(resolved, cfg); sourceH1 != nil && allowListingH1 {
+			// Prefer an authored source h1 over a synthetic metadata heading. This
+			// also removes browser branding when metadata lacks a site-name field.
+			heading = sourceH1
+		}
+	}
+	if heading != nil && pageType != PageTypeArticle && !authored {
+		headingTitle := articleHeadingText(heading)
+		// Non-article pages often place navigation or a tool heading before the
+		// actual h1. A leading heading is authoritative only when it agrees with
+		// metadata; otherwise prefer the first selected h1 below.
+		if metadataTitle != "" && !titleEquivalent(headingTitle, metadataTitle, a.meta.site) {
+			heading = nil
+		}
+	}
+	if heading == nil && metadataTitle != "" {
+		heading = a.firstSelectedEquivalentHeading(resolved, cfg, metadataTitle)
+	}
+	if heading == nil && (pageType != PageTypeListing && pageType != PageTypeCollection || a.meta.browserTitle != "" || a.meta.socialTitle != "") {
+		heading = a.firstSelectedH1(resolved, cfg)
+	}
+	if heading == nil {
+		return resolved, ""
+	}
+	title := normalizeText(articleHeadingText(heading))
+	if title == "" {
+		return resolved, ""
+	}
+	// H1 is the only independently authoritative heading level. Lower-level
+	// headings are normally sections and require metadata agreement or an
+	// explicit article-headline marker before they can be separated as a title.
+	if !strings.EqualFold(heading.Data, "h1") &&
+		(metadataTitle == "" || !titleEquivalent(title, metadataTitle, a.meta.site)) &&
+		!hasArticleHeadlineMarker(heading) {
+		return resolved, ""
+	}
+	// A metadata-less listing or collection often begins with the h1 of its
+	// first record. Retain that record heading and suppress the heading-derived
+	// metadata fallback. A page-level h1 outside any record remains authoritative.
+	if (pageType == PageTypeListing || pageType == PageTypeCollection) &&
+		a.meta.browserTitle == "" && a.meta.socialTitle == "" && a.listingHeadingIsRecord(heading) {
+		a.suppressHeadingTitle = true
+		return resolved, ""
+	}
+
+	content := make([]*html.Node, 0, len(resolved))
+	for _, root := range resolved {
+		if root == heading {
+			continue
+		}
+		content = append(content, root)
+	}
+	if a.titleExcluded == nil {
+		a.titleExcluded = make(map[*html.Node]bool)
+	}
+	if len(content) == len(resolved) {
+		// The title is nested in a selected container. Mark only that heading as
+		// excluded; ExtractNode's caller-owned tree is never changed.
+		a.titleExcluded[heading] = true
+		a.overrideIrrelevant(heading, true)
+	}
+	// Title recovery can prepend a synthetic heading while an equivalent source
+	// heading remains inside a selected ancestor. Exclude that source copy too;
+	// equivalent prose is deliberately preserved.
+	a.contentTitle = title
+	for _, root := range content {
+		walk(root, func(n *html.Node) bool {
+			if n.Type == html.ElementNode && isHeadingTag(strings.ToLower(n.Data)) &&
+				titleEquivalent(articleHeadingText(n), title, a.meta.site) {
+				a.titleExcluded[n] = true
+				a.overrideIrrelevant(n, true)
+				return false
+			}
+			return true
+		})
+	}
+	return content, title
+}
+
+func (a *analysis) firstSelectedEquivalentHeading(nodes []*html.Node, cfg markdown.Config, title string) *html.Node {
+	var found *html.Node
+	for _, root := range nodes {
+		walk(root, func(n *html.Node) bool {
+			if found != nil || hardHidden(n) || (cfg.Exclude != nil && cfg.Exclude(n)) {
+				return false
+			}
+			if n.Type == html.ElementNode && isHeadingTag(strings.ToLower(n.Data)) &&
+				titleEquivalent(articleHeadingText(n), title, a.meta.site) {
+				found = n
+				return false
+			}
+			return true
+		})
+		if found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func (a *analysis) firstSelectedSourceH1(nodes []*html.Node, cfg markdown.Config) *html.Node {
+	var found *html.Node
+	for _, root := range nodes {
+		walk(root, func(n *html.Node) bool {
+			if found != nil || hardHidden(n) || (cfg.Exclude != nil && cfg.Exclude(n)) {
+				return false
+			}
+			if n.Type == html.ElementNode && strings.EqualFold(n.Data, "h1") && n.Parent != nil {
+				found = n
+				return false
+			}
+			return true
+		})
+		if found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func (a *analysis) firstSelectedH1(nodes []*html.Node, cfg markdown.Config) *html.Node {
+	var found *html.Node
+	for _, root := range nodes {
+		walk(root, func(n *html.Node) bool {
+			if found != nil || hardHidden(n) || (cfg.Exclude != nil && cfg.Exclude(n)) {
+				return false
+			}
+			if n.Type == html.ElementNode && strings.EqualFold(n.Data, "h1") {
+				found = n
+				return false
+			}
+			return true
+		})
+		if found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// leadingSelectedHeading returns only a heading that precedes substantive
+// selected prose. This avoids turning a later section heading into the title.
+// Synthetic and reordered title roots are checked first because they are not
+// present in the segmented source block index.
+func (a *analysis) leadingSelectedHeading(nodes []*html.Node, cfg markdown.Config) *html.Node {
+	var inspect func(*html.Node) (*html.Node, bool)
+	inspect = func(n *html.Node) (*html.Node, bool) {
+		if n == nil || hardHidden(n) || (cfg.Exclude != nil && cfg.Exclude(n)) {
+			return nil, false
+		}
+		if n.Type == html.ElementNode {
+			tag := strings.ToLower(n.Data)
+			if isHeadingTag(tag) {
+				return n, true
+			}
+			// Publication furniture may precede a title. Other rendered blocks with
+			// text establish that a later heading is a section, not the title.
+			if isBlockTag(tag) && tag != "div" && tag != "main" && tag != "article" && tag != "section" && tag != "header" &&
+				normalizeText(nodeText(n)) != "" && !isPublicationFurnitureBlock(n) {
+				return nil, true
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			if heading, stopped := inspect(child); stopped {
+				return heading, true
+			}
+		}
+		return nil, false
+	}
+	for _, root := range nodes {
+		if heading, stopped := inspect(root); stopped {
+			return heading
+		}
+	}
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		if !representedBySelection(b.node, nodes) || hardHidden(b.node) || a.hasIrrelevantAncestor(b.node) || (cfg.Exclude != nil && cfg.Exclude(b.node)) {
+			continue
+		}
+		if isHeadingTag(b.kind) {
+			return b.node
+		}
+		if isSubstantiveProseBlock(b) {
+			return nil
+		}
+	}
+	return nil
+}
+
 // ensureDocumentTitle restores titles according to the shape of the selected
 // output. Articles retain the broader source-heading recovery below. Other
 // classifications only receive a synthetic title when they still look like a
@@ -1173,7 +1389,8 @@ func (a *analysis) ensureArticleTitle(nodes []*html.Node, cfg markdown.Config) [
 		// evidence. This prevents an adjacent site masthead from replacing the
 		// metadata fallback. H2 also requires such evidence when metadata is absent;
 		// proximity alone must not turn an ordinary section heading into a title.
-		if (restorationTitle != "" && !equivalent && !credible) || (b.kind == "h2" && !equivalent && !credible) {
+		if (restorationTitle != "" && !equivalent && !credible) ||
+			(b.kind == "h2" && !equivalent && (!credible || restorationTitle == "" && !marked)) {
 			continue
 		}
 		// A source heading that agrees with the normalized metadata is the least
@@ -1577,6 +1794,43 @@ func (a *analysis) cleanedMetadataTitle(title string) string {
 			return normalizeText(title)
 		}
 	}
+}
+
+// visibleH1TitleVariant prefers a visible h1 when browser metadata is exactly
+// that heading plus a delimited branding segment. This covers documentation
+// systems that omit usable site-name metadata without stripping real subtitles.
+func (a *analysis) visibleH1TitleVariant(title string) string {
+	if title == "" {
+		return title
+	}
+	best := ""
+	walk(a.root, func(n *html.Node) bool {
+		if best != "" || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "h1") || hardHidden(n) || a.hasIrrelevantAncestor(n) {
+			return best == ""
+		}
+		heading := normalizeText(articleHeadingText(n))
+		if heading == "" {
+			return true
+		}
+		runes := []rune(title)
+		for i, r := range runes {
+			if !isTitleSeparator(r) {
+				continue
+			}
+			left := normalizeText(string(runes[:i]))
+			right := normalizeText(string(runes[i+1:]))
+			if normalizedLabel(left) == normalizedLabel(heading) && right != "" ||
+				normalizedLabel(right) == normalizedLabel(heading) && left != "" {
+				best = heading
+				return false
+			}
+		}
+		return true
+	})
+	if best != "" {
+		return best
+	}
+	return title
 }
 
 func stripTitleDecorationPreservingCase(title, site string) string {
@@ -2275,6 +2529,103 @@ func (a *analysis) listingRecord(n *html.Node) *html.Node {
 		return record
 	}
 	return a.inferenceListingRecord(n)
+}
+
+func (a *analysis) listingHeadingIsRecord(n *html.Node) bool {
+	if a.listingRecord(n) != nil {
+		return true
+	}
+	// On listing pages an article or list row is a record even when its class
+	// only says "featured" and does not carry a conventional record token.
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		// A forced listing may have no record classes at all. Recognize repeated
+		// sibling div/section records only when each has a compatible card shape.
+		// Merely having two generic layout children is insufficient: a wrapped page
+		// heading next to a grid is a common heterogeneous layout.
+		if repeatedUnmarkedListingRecord(p) {
+			return true
+		}
+		switch strings.ToLower(p.Data) {
+		case "article", "li", "tr":
+			return true
+		case "main", "body", "html":
+			return false
+		}
+	}
+	return false
+}
+
+func repeatedUnmarkedListingRecord(n *html.Node) bool {
+	if n == nil || n.Parent == nil || n.Type != html.ElementNode {
+		return false
+	}
+	tag := strings.ToLower(n.Data)
+	if tag != "div" && tag != "section" || listingCohortFurniture(n) || !unmarkedListingRecordShape(n) {
+		return false
+	}
+	matches := 0
+	for sibling := n.Parent.FirstChild; sibling != nil; sibling = sibling.NextSibling {
+		if sibling.Type == html.ElementNode && strings.EqualFold(sibling.Data, tag) &&
+			!listingCohortFurniture(sibling) && unmarkedListingRecordShape(sibling) {
+			matches++
+			if matches >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// listingCohortFurniture identifies heterogeneous page-level panels that often
+// sit beside a results grid but are not records in that grid. Explicitly marked
+// records are recognized before this conservative unmarked-record fallback.
+func listingCohortFurniture(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	switch strings.ToLower(n.Data) {
+	case "header", "nav", "aside":
+		return true
+	}
+	if elementContainsAny(n, "heading", "header", "title", "intro", "filter", "help", "toolbar", "controls") {
+		return true
+	}
+	switch normalizedLabel(firstRegionHeading(n)) {
+	case "filter", "filters", "help", "search", "refine results", "filter results":
+		return true
+	}
+	return false
+}
+
+// unmarkedListingRecordShape requires one record heading plus body or link
+// evidence. Requiring exactly one heading prevents a grid wrapper containing
+// several cards from looking compatible with a separate page-title wrapper.
+func unmarkedListingRecordShape(n *html.Node) bool {
+	headings, proseOrLink := 0, false
+	walk(n, func(current *html.Node) bool {
+		if current != n && (hardHidden(current) || irrelevantNode(current) || isAdvertisementRegion(current)) {
+			return false
+		}
+		if current.Type != html.ElementNode {
+			return true
+		}
+		tag := strings.ToLower(current.Data)
+		if isHeadingTag(tag) && normalizeText(nodeText(current)) != "" {
+			headings++
+			return headings <= 1
+		}
+		if tag == "p" || tag == "blockquote" {
+			proseOrLink = proseOrLink || normalizeText(nodeText(current)) != ""
+		}
+		if tag == "a" && attrValue(current, "href") != "" && normalizeText(nodeText(current)) != "" {
+			proseOrLink = true
+		}
+		return headings <= 1
+	})
+	return headings == 1 && proseOrLink
 }
 
 func isListingRecordElement(n *html.Node) bool {

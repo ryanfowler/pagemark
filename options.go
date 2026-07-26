@@ -52,8 +52,11 @@ func WithIncludeLinks(v bool) Option    { return func(o *options) { o.includeLin
 
 // WithIncludeImages controls useful images in Markdown and Document.Images.
 // Images are included by default; pass false for text-only output.
-func WithIncludeImages(v bool) Option   { return func(o *options) { o.includeImages = v } }
-func WithIncludeTables(v bool) Option   { return func(o *options) { o.includeTables = v } }
+func WithIncludeImages(v bool) Option { return func(o *options) { o.includeImages = v } }
+func WithIncludeTables(v bool) Option { return func(o *options) { o.includeTables = v } }
+
+// WithIncludeMetadata controls metadata fields such as Document.Title.
+// The document title is never repeated in content, even when metadata is disabled.
 func WithIncludeMetadata(v bool) Option { return func(o *options) { o.includeMetadata = v } }
 func WithURLPolicy(v URLPolicy) Option  { return func(o *options) { o.urlPolicy = v } }
 func WithProfile(v Profile) Option      { return func(o *options) { o.pageType = v.PageType } }

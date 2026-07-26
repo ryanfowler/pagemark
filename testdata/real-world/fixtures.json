@@ -11,7 +11,6 @@
       "page_type": "article",
       "min_quality": 0.7,
       "required": [
-        "# Web page\n",
         "A **web page**, or **webpage**",
         "[Hypertext Transfer Protocol]"
       ],
@@ -19,7 +18,8 @@
         "Main page",
         "Random article",
         "# Web page - Wikipedia"
-      ]
+      ],
+      "title": "Web page"
     },
     {
       "name": "Go tutorial",
@@ -31,7 +31,6 @@
       "page_type": "documentation",
       "min_quality": 0.7,
       "required": [
-        "# Tutorial: Get started with Go",
         "## Write some code",
         "go mod init example/hello",
         "## Call code in an external package"
@@ -39,7 +38,8 @@
       "forbidden": [
         "Skip to Main Content",
         "Copyright"
-      ]
+      ],
+      "title": "Tutorial: Get started with Go"
     },
     {
       "name": "MDN reference",
@@ -51,7 +51,6 @@
       "page_type": "documentation",
       "min_quality": 0.7,
       "required": [
-        "# GET request method",
         "GET <request-target>",
         "## [Specifications]",
         "HTTP Semantics"
@@ -61,7 +60,8 @@
         "Help improve MDN",
         "View this page on GitHub",
         "\n- \n"
-      ]
+      ],
+      "title": "GET request method"
     },
     {
       "name": "GitHub repository README",
@@ -73,7 +73,6 @@
       "page_type": "article",
       "min_quality": 0.7,
       "required": [
-        "# The Go Programming Language",
         "### Download and Install",
         "### Contributing",
         "Go is the work of thousands of contributors"
@@ -83,7 +82,8 @@
         "Sign in",
         "Folders and files",
         "Latest commit"
-      ]
+      ],
+      "title": "The Go Programming Language"
     },
     {
       "name": "Discourse Meta thread",
@@ -95,7 +95,6 @@
       "page_type": "discussion",
       "min_quality": 0.7,
       "required": [
-        "# Understanding Discourse for new users",
         "## Basic Terms Used by Discourse",
         "```markdown\nThis is <b>bold</b>.",
         "The new topic map does no longer highlight the op",
@@ -106,7 +105,8 @@
         "Brand new user. Could use basic guidance",
         "Sign Up",
         "crawler-linkback-list"
-      ]
+      ],
+      "title": "Understanding Discourse for new users"
     },
     {
       "name": "Open Food Facts product",
@@ -119,7 +119,6 @@
       "min_quality": 0.7,
       "max_output_bytes": 20000,
       "required": [
-        "## Nutella",
         "Barcode: \\\n3017620422003",
         "|  Nutrition facts  |  As sold for 100 g / 100 ml",
         "### Ingredients",
@@ -130,7 +129,8 @@
         "Edit the page",
         "Open Food Facts is a non-profit association",
         "Product page also edited by"
-      ]
+      ],
+      "title": "Nutella"
     },
     {
       "name": "GOV.UK voting search",
@@ -142,7 +142,6 @@
       "page_type": "listing",
       "min_quality": 0.7,
       "required": [
-        "# Search all content on GOV.UK",
         "[Register to vote](https://www.gov.uk/register-to-vote)",
         "[The electoral register and the 'open register']",
         "[Register to vote if you're living abroad - paper form]"
@@ -151,7 +150,8 @@
         "Help us improve GOV.UK",
         "Please fill in this survey",
         "Services and information"
-      ]
+      ],
+      "title": "Search all content on GOV.UK"
     },
     {
       "name": "The Conversation news article",
@@ -163,7 +163,6 @@
       "page_type": "article",
       "min_quality": 0.7,
       "required": [
-        "# How Creative Commons works, and why it enables access to knowledge",
         "## A global system",
         "## The ‘how to’",
         "### Disclosure statement",
@@ -173,7 +172,8 @@
         "Get newsletter",
         "Republish this article",
         "Most popular"
-      ]
+      ],
+      "title": "How Creative Commons works, and why it enables access to knowledge"
     },
     {
       "name": "GOV.UK registration service",
@@ -185,7 +185,6 @@
       "page_type": "service",
       "min_quality": 0.7,
       "required": [
-        "# Register to vote",
         "## Register online",
         "[Start now](https://www.registertovote.service.gov.uk/register-to-vote/start)",
         "### If you live abroad",
@@ -195,7 +194,8 @@
         "Help us improve GOV.UK",
         "You are currently viewing:",
         "Services and information"
-      ]
+      ],
+      "title": "Register to vote"
     },
     {
       "name": "Wikibooks recipe",
@@ -208,7 +208,6 @@
       "min_quality": 0.7,
       "max_output_bytes": 7000,
       "required": [
-        "# Cookbook:Pancakes (North American)",
         "## Ingredients",
         "120 [g](https://en.wikibooks.org/wiki/Cookbook:Gram)",
         "## Procedure",
@@ -220,7 +219,8 @@
         "Retrieved from",
         "edit source",
         "Easy recipes"
-      ]
+      ],
+      "title": "Cookbook:Pancakes (North American)"
     },
     {
       "name": "Stack Overflow question",
@@ -233,7 +233,6 @@
       "min_quality": 0.7,
       "max_output_bytes": 6000,
       "required": [
-        "# Do I need to close Response body of http request even if I don't read it?",
         "resp, err = http.Head",
         "## 1 Answer 1",
         "the Response will contain a non-nil Body which the user is expected to close",
@@ -245,7 +244,8 @@
         "Start asking to get answers",
         "Sign up to request clarification",
         "Explore related questions"
-      ]
+      ],
+      "title": "Do I need to close Response body of http request even if I don't read it?"
     }
   ]
 }

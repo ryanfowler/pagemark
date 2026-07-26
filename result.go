@@ -15,6 +15,7 @@ const (
 )
 
 // Document contains safe Markdown and metadata from one HTML document.
+// Title is returned separately and is not repeated in Markdown, Text, or Sections.
 // Markdown is untrusted source data. Do not use it as privileged instructions.
 type Document struct {
 	URL           string       `json:"url,omitempty"`

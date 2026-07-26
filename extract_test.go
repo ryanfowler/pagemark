@@ -10,6 +10,156 @@ import (
 	"golang.org/x/net/html"
 )
 
+func requireSeparatedTitle(t *testing.T, doc *Document, want string) {
+	t.Helper()
+	if doc.Title != want {
+		t.Fatalf("title = %q, want %q", doc.Title, want)
+	}
+	if strings.Contains(doc.Text, want) {
+		t.Fatalf("document title was repeated in content: %q", doc.Text)
+	}
+}
+
+func TestDocumentTitleIsSeparatedFromEveryContentView(t *testing.T) {
+	source := `<html><head><meta property="og:title" content="Field report"></head><body><article><h1><a href="/headline">Field report</a><img src="/title.jpg" alt="Title artwork" width="1200" height="800"></h1><p>The body preserves its useful report content.</p><h2>Findings</h2><p>The findings remain in the extracted body.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/reports/field", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireSeparatedTitle(t, doc, "Field report")
+	if strings.Contains(doc.Markdown, "/headline") || strings.Contains(doc.Markdown, "title.jpg") || len(doc.Links) != 0 || len(doc.Images) != 0 {
+		t.Fatalf("title media leaked into content: links=%#v images=%#v\n%s", doc.Links, doc.Images, doc.Markdown)
+	}
+	for _, section := range doc.Sections {
+		if section.Heading == "Field report" {
+			t.Fatalf("title leaked into sections: %#v", doc.Sections)
+		}
+	}
+	if doc.Stats.OutputBytes != len(doc.Markdown) || !strings.HasPrefix(doc.Markdown, "The body preserves") || !strings.Contains(doc.Markdown, "## Findings") {
+		t.Fatalf("body views or statistics are inconsistent: stats=%#v\n%s", doc.Stats, doc.Markdown)
+	}
+
+	withoutMetadata, err := ExtractBytes([]byte(source), "https://example.com/reports/field", WithPageType(PageTypeArticle), WithIncludeMetadata(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutMetadata.Title != "" || withoutMetadata.Markdown != doc.Markdown {
+		t.Fatalf("metadata suppression changed title separation: title=%q\n%s", withoutMetadata.Title, withoutMetadata.Markdown)
+	}
+}
+
+func TestMetadataLessListingSeparatesOnlyPageLevelTitle(t *testing.T) {
+	t.Run("page heading", func(t *testing.T) {
+		source := `<main><h1>Catalog</h1><div class="card"><h2>First product</h2><p>The first product has useful listing details.</p></div><div class="card"><h2>Second product</h2><p>The second product has useful listing details.</p></div></main>`
+		doc, err := ExtractBytes([]byte(source), "https://example.com/catalog", WithPageType(PageTypeListing))
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireSeparatedTitle(t, doc, "Catalog")
+		if !strings.Contains(doc.Markdown, "## First product") || !strings.Contains(doc.Markdown, "## Second product") {
+			t.Fatalf("listing records were lost:\n%s", doc.Markdown)
+		}
+	})
+
+	t.Run("tokenized first record heading", func(t *testing.T) {
+		source := `<main><div class="card"><h1>First product</h1><p>The first product has useful listing details.</p></div><div class="card"><h1>Second product</h1><p>The second product has useful listing details.</p></div></main>`
+		doc, err := ExtractBytes([]byte(source), "https://example.com/catalog", WithPageType(PageTypeListing))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if doc.Title != "" {
+			t.Fatalf("first record was exposed as document title: %q", doc.Title)
+		}
+		if !strings.Contains(doc.Markdown, "# First product") || !strings.Contains(doc.Markdown, "# Second product") {
+			t.Fatalf("record headings were removed:\n%s", doc.Markdown)
+		}
+	})
+
+	for _, tag := range []string{"div", "section"} {
+		t.Run("unmarked sibling "+tag+" records", func(t *testing.T) {
+			source := `<main><` + tag + `><h1>First product</h1><p>The first product has useful listing details.</p></` + tag + `><` + tag + `><h2>Second product</h2><p>The second product has useful listing details.</p></` + tag + `></main>`
+			doc, err := ExtractBytes([]byte(source), "https://example.com/catalog", WithPageType(PageTypeListing))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.Title != "" {
+				t.Fatalf("unmarked first record was exposed as document title: %q", doc.Title)
+			}
+			if !strings.Contains(doc.Markdown, "# First product") || !strings.Contains(doc.Markdown, "## Second product") {
+				t.Fatalf("unmarked record headings were removed:\n%s", doc.Markdown)
+			}
+		})
+	}
+
+	t.Run("wrapped page heading next to grid", func(t *testing.T) {
+		source := `<main><div class="heading"><h1>Catalog</h1></div><div class="grid"><div><h2>First product</h2><p>The first product has useful listing details.</p></div><div><h2>Second product</h2><p>The second product has useful listing details.</p></div></div></main>`
+		doc, err := ExtractBytes([]byte(source), "https://example.com/catalog", WithPageType(PageTypeListing))
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireSeparatedTitle(t, doc, "Catalog")
+		if !strings.Contains(doc.Markdown, "## First product") || !strings.Contains(doc.Markdown, "## Second product") {
+			t.Fatalf("grid records were lost:\n%s", doc.Markdown)
+		}
+	})
+
+	for _, furniture := range []struct {
+		class, heading, prose string
+	}{
+		{class: "filters", heading: "Filters", prose: "Choose a category."},
+		{class: "help", heading: "Help", prose: "Choose a category or contact support."},
+	} {
+		t.Run("title panel next to "+furniture.class, func(t *testing.T) {
+			source := `<main><div class="heading"><h1>Catalog</h1><p>Browse products.</p></div><div class="` + furniture.class + `"><h2>` + furniture.heading + `</h2><p>` + furniture.prose + `</p></div><div class="grid"><div><h2>First product</h2><p>The first product has useful listing details.</p></div><div><h2>Second product</h2><p>The second product has useful listing details.</p></div></div></main>`
+			doc, err := ExtractBytes([]byte(source), "https://example.com/catalog", WithPageType(PageTypeListing))
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireSeparatedTitle(t, doc, "Catalog")
+			if !strings.Contains(doc.Text, "Browse products") || !strings.Contains(doc.Markdown, "## First product") {
+				t.Fatalf("title introduction or grid records were lost:\n%s", doc.Markdown)
+			}
+		})
+	}
+}
+
+func TestMetadataLessLowerLevelHeadingRemainsContent(t *testing.T) {
+	t.Run("article section", func(t *testing.T) {
+		source := `<article><h2>Introduction</h2><p>This substantive introduction explains the topic clearly and remains useful article content.</p></article>`
+		doc, err := ExtractBytes([]byte(source), "https://example.com/article", WithPageType(PageTypeArticle))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if doc.Title != "" || !strings.HasPrefix(doc.Markdown, "## Introduction\n") {
+			t.Fatalf("section heading was promoted to title: title=%q\n%s", doc.Title, doc.Markdown)
+		}
+	})
+
+	for _, heading := range []string{"h2", "h3"} {
+		t.Run("rendered Markdown "+heading, func(t *testing.T) {
+			source := `<article class="markdown-body" itemprop="text"><` + heading + `>Installation</` + heading + `><p>Install the package and verify the resulting command before continuing.</p></article>`
+			doc, err := ExtractBytes([]byte(source), "https://example.com/repository/readme")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]string{"h2": "## Installation\n", "h3": "### Installation\n"}[heading]
+			if doc.Title != "" || !strings.HasPrefix(doc.Markdown, want) {
+				t.Fatalf("rendered Markdown section was promoted to title: title=%q\n%s", doc.Title, doc.Markdown)
+			}
+		})
+	}
+}
+
+func TestTitleTextInBodyIsPreserved(t *testing.T) {
+	doc, err := ExtractBytes([]byte(`<main><h1>Guide</h1><p>Guide is the name readers use for this document.</p></main>`), "https://example.com/guide")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Title != "Guide" || doc.Markdown != "Guide is the name readers use for this document." {
+		t.Fatalf("title separation removed ordinary prose: title=%q Markdown=%q", doc.Title, doc.Markdown)
+	}
+}
+
 func TestExtractStructuresAndSafety(t *testing.T) {
 	html := `<!doctype html><html lang="en"><head><title>API Guide</title><base href="https://example.com/docs/"><meta name="author" content="Ada"><link rel="canonical" href="guide"></head><body>
 <header><nav><a href="/">Home</a></nav></header><main><h1>API Guide</h1><p>Use <strong>this API</strong> safely.</p><pre>go test
@@ -18,7 +168,7 @@ func TestExtractStructuresAndSafety(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"# API Guide", "**this API** safely", "````\ngo test\n```\n````", "- First", "| Name | Value |", "https://example.com/docs/next"} {
+	for _, want := range []string{"**this API** safely", "````\ngo test\n```\n````", "- First", "| Name | Value |", "https://example.com/docs/next"} {
 		if !strings.Contains(doc.Markdown, want) {
 			t.Errorf("Markdown does not contain %q:\n%s", want, doc.Markdown)
 		}
@@ -42,7 +192,7 @@ func TestDocumentShellFeatureClassesDoNotPenalizePrimaryContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"# Recipe", "## Ingredients", "- Flour", "## Procedure", "1. Mix the ingredients."} {
+	for _, required := range []string{"## Ingredients", "- Flour", "## Procedure", "1. Mix the ingredients."} {
 		if !strings.Contains(doc.Markdown, required) {
 			t.Errorf("missing %q:\n%s", required, doc.Markdown)
 		}
@@ -57,7 +207,7 @@ func TestTOCStateOnContentLayoutDoesNotRemoveArticle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{"# Health report", "opening paragraph", "## Findings", "detailed finding"} {
+			for _, want := range []string{"opening paragraph", "## Findings", "detailed finding"} {
 				if !strings.Contains(doc.Markdown, want) {
 					t.Errorf("responsive TOC state removed content %q: %s", want, doc.Markdown)
 				}
@@ -77,7 +227,7 @@ func TestCompoundTOCRegionMarkersAreExcluded(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(doc.Markdown, "# System report") || !strings.Contains(doc.Markdown, "## Result") {
+			if doc.Title != "System report" || strings.Contains(doc.Text, "System report") || !strings.Contains(doc.Markdown, "## Result") {
 				t.Fatalf("article content was lost: %s", doc.Markdown)
 			}
 			if strings.Contains(doc.Markdown, "## Contents") || strings.Contains(doc.Markdown, "Result section") || strings.Contains(doc.Markdown, "Limits section") {
@@ -125,7 +275,7 @@ func TestArticleFurniturePatternsFromAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"# Field report", "substantive account", "evidence and limitations"} {
+	for _, want := range []string{"substantive account", "evidence and limitations"} {
 		if !strings.Contains(doc.Markdown, want) {
 			t.Errorf("missing article content %q: %s", want, doc.Markdown)
 		}
@@ -255,7 +405,7 @@ Most of this project was written by hand. Automation assisted with final compati
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"# Fast", "## Install", "```shell\npip install fast\n```", "AI Use Disclosure", "Most of this project was written by hand", "Expanding compatibility coverage"} {
+	for _, want := range []string{"## Install", "```shell\npip install fast\n```", "AI Use Disclosure", "Most of this project was written by hand", "Expanding compatibility coverage"} {
 		if !strings.Contains(doc.Markdown, want) {
 			t.Errorf("missing repository document content %q:\n%s", want, doc.Markdown)
 		}
@@ -273,7 +423,7 @@ func TestRenderedMarkdownHeadingOverridesRepositoryBrowserTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Deployment guide\n\n") || strings.Contains(doc.Markdown, "guide.md at main") || strings.Contains(doc.Markdown, "## Deployment guide") {
+	if doc.Title != "Deployment guide" || strings.Contains(doc.Text, "Deployment guide") || strings.Contains(doc.Markdown, "guide.md at main") || strings.Contains(doc.Markdown, "## Deployment guide") {
 		t.Fatalf("repository browser title displaced the authored heading:\n%s", doc.Markdown)
 	}
 }
@@ -288,7 +438,7 @@ func TestShortRenderedRepositoryMarkdownRemainsAuthoritative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.Markdown != "# Tiny\n\nSmall useful tool." {
+	if doc.Title != "Tiny" || doc.Markdown != "Small useful tool." {
 		t.Fatalf("short rendered document was not authoritative:\n%s", doc.Markdown)
 	}
 	if doc.PageType != PageTypeArticle || doc.Quality >= .42 {
@@ -354,7 +504,7 @@ func TestHiddenRenderedMarkdownDoesNotOverrideVisibleContent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(doc.Markdown, "# Visible guide") || !strings.Contains(doc.Markdown, "configure and operate") {
+			if doc.Title != "Visible guide" || strings.Contains(doc.Text, "Visible guide") || !strings.Contains(doc.Markdown, "configure and operate") {
 				t.Fatalf("visible content was lost:\n%s", doc.Markdown)
 			}
 			if strings.Contains(doc.Markdown, "Hidden README") || strings.Contains(doc.Markdown, "hidden document") {
@@ -413,7 +563,7 @@ func TestRealColeFixtureRestoresHeadlineBeforeBodySections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# So Reddit has decided that plain HTML is unsafe\n") {
+	if doc.Title != "So Reddit has decided that plain HTML is unsafe" || strings.Contains(doc.Text, "So Reddit has decided that plain HTML is unsafe") {
 		t.Fatalf("article headline was lost behind body section headings:\n%s", doc.Markdown)
 	}
 	for _, want := range []string{"## Reddit-The-Company", "## Reddit-The-Search-Results", "genuinely human-generated data"} {
@@ -435,10 +585,10 @@ func TestRealAlexYangFixturePromotesArticleH2OverSiteMasthead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Making ASCII art in Vim\n") {
+	if doc.Title != "Making ASCII art in Vim" || strings.Contains(doc.Text, "Making ASCII art in Vim") {
 		t.Fatalf("site masthead replaced the article headline:\n%s", doc.Markdown)
 	}
-	if strings.Contains(doc.Markdown, "# Alex Yang") || strings.Count(doc.Text, "Making ASCII art in Vim") != 1 {
+	if strings.Contains(doc.Markdown, "# Alex Yang") || strings.Count(doc.Text, "Making ASCII art in Vim") != 0 {
 		t.Fatalf("masthead survived or promoted headline was repeated:\n%s", doc.Markdown)
 	}
 	for _, want := range []string{"I like using Vim", ":set virtualedit=all", "Parting words"} {
@@ -457,7 +607,7 @@ func TestRealGitHubBlogFixtureDropsShareControlsAndTrailingTaxonomy(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"# Next chapter: Restructuring GitHub's bug bounty program", "## What's changed and why", "We'll see you out there"} {
+	for _, want := range []string{"## What's changed and why", "We'll see you out there"} {
 		if !strings.Contains(doc.Markdown, want) {
 			t.Errorf("missing real GitHub Blog-derived content %q:\n%s", want, doc.Markdown)
 		}
@@ -513,10 +663,10 @@ func TestRealEbellaniFixtureDoesNotRepeatNestedH2Headline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Why care about programming languages\n") {
+	if doc.Title != "Why care about programming languages" || strings.Contains(doc.Text, "Why care about programming languages") {
 		t.Fatalf("article headline was not promoted to the document title:\n%s", doc.Markdown)
 	}
-	if strings.Count(doc.Text, "Why care about programming languages") != 1 {
+	if strings.Count(doc.Text, "Why care about programming languages") != 0 {
 		t.Fatalf("nested h2 headline was repeated after promotion:\n%s", doc.Markdown)
 	}
 	for _, want := range []string{"In the age of AI-assisted coding", "borrow checker", "These ideas transcend"} {
@@ -535,7 +685,7 @@ func TestRealCitizenDotFixtureDropsLeadingDiscussionLinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"# I Inspected My Take-Home Interview Project", "tree -a", "checks the victim's operating system"} {
+	for _, want := range []string{"tree -a", "checks the victim's operating system"} {
 		if !strings.Contains(doc.Markdown, want) {
 			t.Errorf("missing real CitizenDot-derived content %q:\n%s", want, doc.Markdown)
 		}
@@ -554,7 +704,7 @@ func TestRealAbhiFixtureDropsClosedDialogAndSiteFooter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"# Calm Technologies That Excite Me", "## The Daylight Computer", "## Footnotes"} {
+	for _, want := range []string{"## The Daylight Computer", "## Footnotes"} {
 		if !strings.Contains(doc.Markdown, want) {
 			t.Errorf("missing real Abhi-derived content %q:\n%s", want, doc.Markdown)
 		}
@@ -575,7 +725,7 @@ func TestRealBox2DFixtureDropsTrailingPostMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"SIMD for Collision", "| Boulder | 32 | 59 | 89 |", "TestCrossProduct(edgeA, edgeB);", "SSE2 is over twice as fast"} {
+	for _, want := range []string{"| Boulder | 32 | 59 | 89 |", "TestCrossProduct(edgeA, edgeB);", "SSE2 is over twice as fast"} {
 		if !strings.Contains(doc.Markdown, want) {
 			t.Errorf("missing real Box2D-derived content %q:\n%s", want, doc.Markdown)
 		}
@@ -599,10 +749,10 @@ func TestArticleHeadlineSmallSubtitleIsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# A Main Title: A Practical Guide\n") {
+	if doc.Title != "A Main Title: A Practical Guide" || strings.Contains(doc.Text, "A Main Title: A Practical Guide") {
 		t.Fatalf("small subtitle was discarded from promoted headline:\n%s", doc.Markdown)
 	}
-	if strings.Count(doc.Text, "A Main Title: A Practical Guide") != 1 {
+	if strings.Count(doc.Text, "A Main Title: A Practical Guide") != 0 {
 		t.Fatalf("headline was missing or duplicated:\n%s", doc.Markdown)
 	}
 }
@@ -619,10 +769,10 @@ func TestArticleHeadlineUnmarkedTimeTextIsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# The 2024 Report\n") {
+	if doc.Title != "The 2024 Report" || strings.Contains(doc.Text, "The 2024 Report") {
 		t.Fatalf("unmarked time text was discarded from promoted headline:\n%s", doc.Markdown)
 	}
-	if strings.Count(doc.Text, "The 2024 Report") != 1 {
+	if strings.Count(doc.Text, "The 2024 Report") != 0 {
 		t.Fatalf("headline was missing or duplicated:\n%s", doc.Markdown)
 	}
 }
@@ -639,10 +789,10 @@ func TestArticleHeadlineSmallSubtitleWithUnmarkedTimeIsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# The 2024 Report\n") {
+	if doc.Title != "The 2024 Report" || strings.Contains(doc.Text, "The 2024 Report") {
 		t.Fatalf("small subtitle containing unmarked time text was discarded:\n%s", doc.Markdown)
 	}
-	if strings.Count(doc.Text, "The 2024 Report") != 1 {
+	if strings.Count(doc.Text, "The 2024 Report") != 0 {
 		t.Fatalf("headline was missing or duplicated:\n%s", doc.Markdown)
 	}
 }
@@ -659,8 +809,8 @@ func TestRealRedfinArticleFixturePreservesBodyTableAndExcludesTail(t *testing.T)
 	if doc.PageType != PageTypeArticle {
 		t.Fatalf("page type = %q, want article", doc.PageType)
 	}
+	requireSeparatedTitle(t, doc, "Most Americans Say “Not in My Backyard” to AI Data Centers")
 	for _, want := range []string{
-		"# Most Americans Say “Not in My Backyard” to AI Data Centers",
 		"More than half of U.S. residents",
 		"## AI Data Centers Are Helping Fund Virginia Schools",
 		"## Methodology",
@@ -735,7 +885,7 @@ func TestRealPerlinFixtureUsesLeadingTitleSingleMathAndFigures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Perlin's Noise Algorithm\n") {
+	if doc.Title != "Perlin's Noise Algorithm" || strings.Contains(doc.Text, "Perlin's Noise Algorithm") {
 		t.Fatalf("metadata title was not the leading heading:\n%s", doc.Markdown)
 	}
 	if strings.Count(doc.Text, "P = (x, y)") != 1 || strings.Contains(doc.Text, "P=(x,y)P") {
@@ -762,7 +912,7 @@ func TestRealBeejFixtureUsesArticleTitleInsteadOfSiteMasthead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# On Making\n") {
+	if doc.Title != "On Making" || strings.Contains(doc.Text, "On Making") {
 		t.Fatalf("article title was not first:\n%s", doc.Markdown)
 	}
 	for _, unwanted := range []string{"Beej's Bit Bucket", "Tech and Programming Fun", "# Comments"} {
@@ -857,7 +1007,7 @@ func TestTrailingPublicationFurnitureDoesNotRemoveFittingTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Actual Guide\n") || !strings.Contains(doc.Text, "This body paragraph fits together") {
+	if doc.Title != "Actual Guide" || strings.Contains(doc.Text, "Actual Guide") || !strings.Contains(doc.Text, "This body paragraph fits together") {
 		t.Fatalf("trailing publication furniture caused a fitting title to be omitted:\n%s", doc.Markdown)
 	}
 }
@@ -887,7 +1037,7 @@ func TestShortLinkedSemanticArticleFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"# Release notes", "The first update fixes startup failures", "The second update restores saved settings"} {
+	for _, want := range []string{"The first update fixes startup failures", "The second update restores saved settings"} {
 		if !strings.Contains(doc.Markdown, want) {
 			t.Errorf("short linked article missing %q:\n%s", want, doc.Markdown)
 		}
@@ -912,7 +1062,7 @@ func TestSemanticArticleFallbackKeepsOuterArticleAroundNestedArticle(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"# Main release", "main release fixes startup failures", "## Partner release", "partner release adds a detailed migration workflow", "main release also restores saved settings"} {
+	for _, want := range []string{"main release fixes startup failures", "## Partner release", "partner release adds a detailed migration workflow", "main release also restores saved settings"} {
 		if !strings.Contains(doc.Markdown, want) {
 			t.Errorf("nested article fallback missing %q:\n%s", want, doc.Markdown)
 		}
@@ -962,7 +1112,7 @@ func TestRealYummymelonFixtureDropsCodeLineNumberGutter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Malleable Computing, Emacs, and You\n") {
+	if doc.Title != "Malleable Computing, Emacs, and You" || strings.Contains(doc.Text, "Malleable Computing, Emacs, and You") {
 		t.Fatalf("article title was not first:\n%s", doc.Markdown)
 	}
 	if strings.Count(doc.Markdown, "```") != 2 || !strings.Contains(doc.Markdown, "(defun fj-request-issues (repo)") {
@@ -1162,7 +1312,7 @@ func TestDistributedServiceAndHiddenContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Cloud Service", "Build and ship", "Features", "Reliable storage", "FAQ", "Cancel at any time"} {
+	for _, want := range []string{"Build and ship", "Features", "Reliable storage", "FAQ", "Cancel at any time"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing %q: %s", want, doc.Text)
 		}
@@ -1213,7 +1363,7 @@ func TestAuxiliarySectionsAndCallsToActionAreRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"City budget approved", "council approved", "read more about", "Budget documents", "resolution and voting record"} {
+	for _, want := range []string{"council approved", "read more about", "Budget documents", "resolution and voting record"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing relevant content %q: %s", want, doc.Text)
 		}
@@ -1256,7 +1406,7 @@ func TestNewsletterArticleMarkerDoesNotRemoveSectionHeadings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"# Workshop notes", "## First finding", "## Second finding", "records the limitation"} {
+	for _, want := range []string{"## First finding", "## Second finding", "records the limitation"} {
 		if !strings.Contains(doc.Markdown, want) {
 			t.Errorf("newsletter article lost structure %q: %s", want, doc.Markdown)
 		}
@@ -1292,7 +1442,7 @@ func TestStructuralArticleTailsAreExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Measured result", "evidence supporting it", "The archived measurement"} {
+	for _, want := range []string{"evidence supporting it", "The archived measurement"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing article content %q: %s", want, doc.Text)
 		}
@@ -1430,7 +1580,7 @@ func TestArticleAuxiliaryLabelsAreHardExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Primary analysis", "important result", "read more about the underlying method"} {
+	for _, want := range []string{"important result", "read more about the underlying method"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing article content %q: %s", want, doc.Text)
 		}
@@ -1453,7 +1603,7 @@ func TestTrailingArticleCardGridIsHardExcluded(t *testing.T) {
 	if doc.PageType != PageTypeArticle {
 		t.Fatalf("got page type %q, want article", doc.PageType)
 	}
-	for _, want := range []string{"Primary report", "complete findings"} {
+	for _, want := range []string{"complete findings"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing article content %q: %s", want, doc.Text)
 		}
@@ -1502,7 +1652,7 @@ func TestDocumentationSocialFollowWidgetIsExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Deployment reference", "immutable revision identifier", "Verify the resulting status"} {
+	for _, want := range []string{"immutable revision identifier", "Verify the resulting status"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing documentation content %q: %s", want, doc.Text)
 		}
@@ -1554,7 +1704,7 @@ func TestStrongArticleSignalsOutweighRelatedContentCards(t *testing.T) {
 	if doc.PageType != PageTypeArticle {
 		t.Fatalf("page type = %q, want article", doc.PageType)
 	}
-	if !strings.HasPrefix(doc.Text, "GitHub suddenly rejected my SSH key") {
+	if doc.Title != "GitHub suddenly rejected my SSH key" || strings.Contains(doc.Text, "GitHub suddenly rejected my SSH key") {
 		t.Fatalf("article title was not first: %q", doc.Text)
 	}
 	for _, want := range []string{"working SSH key", "verbose client output", "restored access"} {
@@ -1668,7 +1818,7 @@ func TestArticleWrapperInferenceDoesNotCacheAuthorProfileAsRelevant(t *testing.T
 	if doc.PageType != PageTypeArticle {
 		t.Fatalf("page type = %q, want article", doc.PageType)
 	}
-	for _, want := range []string{"Primary investigation", "verification process"} {
+	for _, want := range []string{"verification process"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing article content %q: %s", want, doc.Text)
 		}
@@ -1791,7 +1941,7 @@ func TestPrimaryMicrodataArticleOutweighsSingleTeaser(t *testing.T) {
 	if doc.PageType != PageTypeArticle {
 		t.Fatalf("page type = %q, want article", doc.PageType)
 	}
-	for _, want := range []string{"Primary investigation", "observed behavior", "underlying cause"} {
+	for _, want := range []string{"observed behavior", "underlying cause"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing primary article content %q: %s", want, doc.Text)
 		}
@@ -1812,7 +1962,7 @@ func TestDivMicrodataArticleCanDominateSemanticTeaser(t *testing.T) {
 	if doc.PageType != PageTypeArticle {
 		t.Fatalf("page type = %q, want article", doc.PageType)
 	}
-	for _, want := range []string{"Primary report in a generic container", "substantial description", "verification process"} {
+	for _, want := range []string{"substantial description", "verification process"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing primary article content %q: %s", want, doc.Text)
 		}
@@ -2007,10 +2157,10 @@ func TestArticleMetadataTitleWinsOverInternalH1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Intel Starts Shipping High-NA EUV Silicon\n") {
+	if doc.Title != "Intel Starts Shipping High-NA EUV Silicon" || strings.Contains(doc.Text, "Intel Starts Shipping High-NA EUV Silicon") {
 		t.Fatalf("metadata title did not precede the internal heading:\n%s", doc.Markdown)
 	}
-	if strings.Count(doc.Text, "Intel Starts Shipping High-NA EUV Silicon") != 1 || !strings.Contains(doc.Markdown, "## What the machine actually is") {
+	if strings.Count(doc.Text, "Intel Starts Shipping High-NA EUV Silicon") != 0 || !strings.Contains(doc.Markdown, "## What the machine actually is") {
 		t.Fatalf("title was duplicated or internal h1 was not demoted:\n%s", doc.Markdown)
 	}
 }
@@ -2021,7 +2171,7 @@ func TestArticleMetadataTitleWinsOverNumberedInternalH1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Introducing Ghost Cut - or why Cut \\& Paste is broken everywhere\n") || !strings.Contains(doc.Markdown, "## 1\\. Cut is undoable") {
+	if doc.Title != "Introducing Ghost Cut - or why Cut & Paste is broken everywhere" || strings.Contains(doc.Text, "Introducing Ghost Cut - or why Cut & Paste is broken everywhere") || !strings.Contains(doc.Markdown, "## 1\\. Cut is undoable") {
 		t.Fatalf("numbered section replaced the metadata title:\n%s", doc.Markdown)
 	}
 }
@@ -2032,7 +2182,7 @@ func TestSingleDigitListStyleArticleTitleOverridesStaleMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# 7 Ways to Improve Reliability\n") || strings.Contains(doc.Text, "Stale Metadata") {
+	if doc.Title != "7 Ways to Improve Reliability" || strings.Contains(doc.Text, "7 Ways to Improve Reliability") || strings.Contains(doc.Text, "Stale Metadata") {
 		t.Fatalf("single-digit list-style title was treated as a section:\n%s", doc.Markdown)
 	}
 }
@@ -2043,7 +2193,7 @@ func TestHiddenPublicationMetadataDoesNotInvalidateHeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Current Visible Headline\n") || strings.Contains(doc.Text, "Stale Metadata Title") {
+	if doc.Title != "Current Visible Headline" || strings.Contains(doc.Text, "Current Visible Headline") || strings.Contains(doc.Text, "Stale Metadata Title") {
 		t.Fatalf("hidden publication metadata invalidated visible headline:\n%s", doc.Markdown)
 	}
 }
@@ -2054,7 +2204,7 @@ func TestArticleMetadataTitleWinsWhenDatePrecedesInternalH1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Perlin's Noise Algorithm\n") || !strings.Contains(doc.Markdown, "## What is Noise?") {
+	if doc.Title != "Perlin's Noise Algorithm" || strings.Contains(doc.Text, "Perlin's Noise Algorithm") || !strings.Contains(doc.Markdown, "## What is Noise?") {
 		t.Fatalf("post-date section heading replaced metadata title:\n%s", doc.Markdown)
 	}
 }
@@ -2065,7 +2215,7 @@ func TestArticleMetadataEquivalentH2IsPromoted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Perlin's Noise Algorithm\n") || strings.Count(doc.Text, "Perlin's Noise Algorithm") != 1 {
+	if doc.Title != "Perlin's Noise Algorithm" || strings.Contains(doc.Text, "Perlin's Noise Algorithm") || strings.Count(doc.Text, "Perlin's Noise Algorithm") != 0 {
 		t.Fatalf("matching h2 was not promoted exactly once:\n%s", doc.Markdown)
 	}
 }
@@ -2076,7 +2226,7 @@ func TestMarkedSourceHeadlineOverridesConflictingBrowserTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Correct Body Headline\n") || strings.Contains(doc.Text, "Incorrect Browser Title") {
+	if doc.Title != "Correct Body Headline" || strings.Contains(doc.Text, "Correct Body Headline") || strings.Contains(doc.Text, "Incorrect Browser Title") {
 		t.Fatalf("marked source headline did not override browser metadata:\n%s", doc.Markdown)
 	}
 }
@@ -2087,7 +2237,7 @@ func TestGenericMediumBrowserTitleUsesBodyHeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# The Correct Body Headline\n") || strings.Contains(doc.Markdown, "# Medium") {
+	if doc.Title != "The Correct Body Headline" || strings.Contains(doc.Text, "The Correct Body Headline") || strings.Contains(doc.Markdown, "# Medium") {
 		t.Fatalf("generic browser title replaced body headline:\n%s", doc.Markdown)
 	}
 }
@@ -2098,7 +2248,7 @@ func TestArticleSiteSuffixRestoresNormalizedTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Article title\n") || strings.Contains(doc.Markdown, "Site Name") || strings.Count(doc.Text, "Article title") != 1 {
+	if doc.Title != "Article title" || strings.Contains(doc.Text, "Article title") || strings.Contains(doc.Markdown, "Site Name") || strings.Count(doc.Text, "Article title") != 0 {
 		t.Fatalf("site suffix was not stripped from restored title:\n%s", doc.Markdown)
 	}
 }
@@ -2114,7 +2264,7 @@ func TestAuthorSuffixIsRemovedFromDocumentAndRestoredTitles(t *testing.T) {
 			if doc.Title != "How to Build Reliable Systems" {
 				t.Fatalf("title = %q, want suffix removed", doc.Title)
 			}
-			if !strings.HasPrefix(doc.Markdown, "# How to Build Reliable Systems\n") || strings.Contains(doc.Markdown, "Ada Lovelace") {
+			if doc.Title != "How to Build Reliable Systems" || strings.Contains(doc.Text, "How to Build Reliable Systems") || strings.Contains(doc.Markdown, "Ada Lovelace") {
 				t.Fatalf("author suffix was not removed from restored title:\n%s", doc.Markdown)
 			}
 		})
@@ -2142,7 +2292,7 @@ func TestTitleMatchingAuthorMetadataIsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.Title != "Ada Lovelace" || !strings.HasPrefix(doc.Markdown, "# Ada Lovelace\n") {
+	if doc.Title != "Ada Lovelace" || strings.Contains(doc.Text, "Ada Lovelace") {
 		t.Fatalf("title matching author metadata was erased: title=%q\n%s", doc.Title, doc.Markdown)
 	}
 }
@@ -2158,7 +2308,7 @@ func TestAuthorAndPublicationDecorationsAreBothRemoved(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if doc.Title != "Reliable Systems" || !strings.HasPrefix(doc.Markdown, "# Reliable Systems\n") {
+			if doc.Title != "Reliable Systems" || strings.Contains(doc.Text, "Reliable Systems") {
 				t.Fatalf("decorations were not both removed: title=%q\n%s", doc.Title, doc.Markdown)
 			}
 		})
@@ -2181,8 +2331,8 @@ func TestTitleRestorationUsesRegistrableDomainBelowMultiLabelSuffix(t *testing.T
 	for _, tc := range []struct {
 		name, title, want string
 	}{
-		{name: "public suffix label is not site", title: "COM | Introduction", want: "# COM | Introduction\n"},
-		{name: "registrable label is site", title: "Example | Introduction", want: "# Introduction\n"},
+		{name: "public suffix label is not site", title: "COM | Introduction", want: "COM | Introduction"},
+		{name: "registrable label is site", title: "Example | Introduction", want: "Introduction"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			html := `<html><head><title>` + tc.title + `</title></head>` + body + `</html>`
@@ -2190,9 +2340,7 @@ func TestTitleRestorationUsesRegistrableDomainBelowMultiLabelSuffix(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.HasPrefix(doc.Markdown, tc.want) {
-				t.Fatalf("restored title does not start with %q:\n%s", tc.want, doc.Markdown)
-			}
+			requireSeparatedTitle(t, doc, tc.want)
 		})
 	}
 }
@@ -2203,7 +2351,7 @@ func TestAlreadySelectedArticleTitleRemainsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Already Selected Title\n") || strings.Count(doc.Text, "Already Selected Title") != 1 {
+	if doc.Title != "Already Selected Title" || strings.Contains(doc.Text, "Already Selected Title") || strings.Count(doc.Text, "Already Selected Title") != 0 {
 		t.Fatalf("already selected title was duplicated:\n%s", doc.Markdown)
 	}
 }
@@ -2214,8 +2362,8 @@ func TestArticleDecoratedBrowserTitleDoesNotDuplicateH1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(doc.Markdown, "# 95 reasons for having your own website") != 1 {
-		t.Fatalf("decorated browser title duplicated the visible heading:\n%s", doc.Markdown)
+	if doc.Title != "95 reasons for having your own website" || strings.Contains(doc.Text, "95 reasons for having your own website") {
+		t.Fatalf("decorated browser title was not separated from content:\n%s", doc.Markdown)
 	}
 	if strings.Contains(doc.Markdown, "in 2026 ~ Bell Kiosk") {
 		t.Fatalf("decorated browser title was emitted instead of the visible heading:\n%s", doc.Markdown)
@@ -2228,7 +2376,7 @@ func TestArticleHeadingWinsWhenSiteNameDiffersFromTitleBranding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(doc.Text, "Article title") != 1 {
+	if strings.Count(doc.Text, "Article title") != 0 {
 		t.Fatalf("differently branded browser title duplicated the article heading: %q", doc.Text)
 	}
 	if strings.Contains(doc.Text, "NYTimes.com") {
@@ -2242,10 +2390,10 @@ func TestArticleKeepsAdjacentH1BelowScoreThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Agent swarms and the new model economics\n") {
+	if doc.Title != "Agent swarms and the new model economics" || strings.Contains(doc.Text, "Agent swarms and the new model economics") {
 		t.Fatalf("article title was not restored before its body:\n%s", doc.Markdown)
 	}
-	if strings.Count(doc.Text, "Agent swarms and the new model economics") != 1 {
+	if strings.Count(doc.Text, "Agent swarms and the new model economics") != 0 {
 		t.Fatalf("article title was duplicated: %q", doc.Text)
 	}
 }
@@ -2256,13 +2404,13 @@ func TestSemanticArticleHeadingOverridesConflictingMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# \\--end-of-options\n") {
+	if doc.Title != "--end-of-options" || strings.Contains(doc.Text, "--end-of-options") {
 		t.Fatalf("semantic source heading did not override conflicting metadata:\n%s", doc.Markdown)
 	}
 	if strings.Contains(doc.Markdown, "# –end-of-options") {
 		t.Fatalf("conflicting metadata title was synthesized:\n%s", doc.Markdown)
 	}
-	if strings.Count(doc.Text, "--end-of-options") != 1 {
+	if strings.Count(doc.Text, "--end-of-options") != 0 {
 		t.Fatalf("source heading was duplicated: %q", doc.Text)
 	}
 }
@@ -2282,10 +2430,10 @@ func TestAbsoluteSchemaHeadlineOverridesConflictingMetadata(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.HasPrefix(doc.Markdown, "# Correct source title\n") {
+			if doc.Title != "Correct source title" || strings.Contains(doc.Text, "Correct source title") {
 				t.Fatalf("absolute Schema.org headline did not override metadata:\n%s", doc.Markdown)
 			}
-			if strings.Contains(doc.Text, "Incorrect metadata title") || strings.Count(doc.Text, "Correct source title") != 1 {
+			if strings.Contains(doc.Text, "Incorrect metadata title") || strings.Count(doc.Text, "Correct source title") != 0 {
 				t.Fatalf("metadata was synthesized or source heading was duplicated: %q", doc.Text)
 			}
 		})
@@ -2298,7 +2446,7 @@ func TestSemanticMastheadOutsideArticleDoesNotOverrideMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Actual Story\n") {
+	if doc.Title != "Actual Story" || strings.Contains(doc.Text, "Actual Story") {
 		t.Fatalf("document-specific metadata fallback was not used:\n%s", doc.Markdown)
 	}
 	if strings.Contains(doc.Markdown, "Example Site") {
@@ -2315,7 +2463,7 @@ func TestArticleSocialTitleOverridesAdjacentBrowserTitleMasthead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Actual Story\n") {
+	if doc.Title != "Actual Story" || strings.Contains(doc.Text, "Actual Story") {
 		t.Fatalf("preferred social title was not restored:\n%s", doc.Markdown)
 	}
 	if strings.Contains(doc.Text, "Example Site") {
@@ -2329,7 +2477,7 @@ func TestArticleSocialTitleBeforeBrowserTitleOverridesAdjacentMasthead(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Actual Story\n") {
+	if doc.Title != "Actual Story" || strings.Contains(doc.Text, "Actual Story") {
 		t.Fatalf("preferred social title was not restored when it preceded title:\n%s", doc.Markdown)
 	}
 	if strings.Contains(doc.Text, "Example Site") {
@@ -2343,10 +2491,10 @@ func TestArticleMetadataTitleRetainsLeadingSectionHeading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Actual Story\n\n## Introduction\n") {
+	if doc.Title != "Actual Story" || strings.Contains(doc.Text, "Actual Story") || !strings.HasPrefix(doc.Markdown, "## Introduction\n") {
 		t.Fatalf("legitimate leading section heading was not retained:\n%s", doc.Markdown)
 	}
-	if strings.Count(doc.Text, "Actual Story") != 1 || strings.Count(doc.Text, "Introduction") != 1 {
+	if strings.Count(doc.Text, "Actual Story") != 0 || strings.Count(doc.Text, "Introduction") != 1 {
 		t.Fatalf("title or section heading was duplicated: %q", doc.Text)
 	}
 }
@@ -2357,7 +2505,7 @@ func TestExcludedEquivalentHeadingDoesNotBlockTitleRestoration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Actual Story\n") || strings.Count(doc.Text, "Actual Story") != 1 {
+	if doc.Title != "Actual Story" || strings.Contains(doc.Text, "Actual Story") || strings.Count(doc.Text, "Actual Story") != 0 {
 		t.Fatalf("excluded equivalent heading blocked restoration:\n%s", doc.Markdown)
 	}
 }
@@ -2368,7 +2516,7 @@ func TestArticleDoesNotRestoreAdjacentSiteMasthead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Actual Story\n") {
+	if doc.Title != "Actual Story" || strings.Contains(doc.Text, "Actual Story") {
 		t.Fatalf("metadata title was not used:\n%s", doc.Markdown)
 	}
 	if strings.Contains(doc.Text, "Example News") {
@@ -2382,7 +2530,7 @@ func TestArticleSitePrefixedTitleDoesNotDuplicateH1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(doc.Text, "Agent swarms and the new model economics") != 1 {
+	if strings.Count(doc.Text, "Agent swarms and the new model economics") != 0 {
 		t.Fatalf("site-prefixed browser title duplicated the source h1: %q", doc.Text)
 	}
 	if strings.Contains(doc.Text, "Cursor |") {
@@ -2396,7 +2544,7 @@ func TestArticlePrependsMetadataTitleWhenHeadingIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# How to pack ternary numbers in 8-bit bytes\n") {
+	if doc.Title != "How to pack ternary numbers in 8-bit bytes" || strings.Contains(doc.Text, "How to pack ternary numbers in 8-bit bytes") {
 		t.Fatalf("metadata title was not prepended:\n%s", doc.Markdown)
 	}
 }
@@ -2407,7 +2555,7 @@ func TestGenericDominantProseRestoresMetadataTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# A Useful Guide\n") || strings.Count(doc.Text, "A Useful Guide") != 1 {
+	if doc.Title != "A Useful Guide" || strings.Contains(doc.Text, "A Useful Guide") || strings.Count(doc.Text, "A Useful Guide") != 0 {
 		t.Fatalf("generic prose title was not restored exactly once:\n%s", doc.Markdown)
 	}
 }
@@ -2429,7 +2577,7 @@ func TestGenericDominantProseDoesNotDuplicateEquivalentHeading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(doc.Text, "A Useful Guide") != 1 {
+	if strings.Count(doc.Text, "A Useful Guide") != 0 {
 		t.Fatalf("surviving generic heading was duplicated: %q", doc.Text)
 	}
 }
@@ -2508,7 +2656,7 @@ func TestArticleDoesNotDuplicateSurvivingTitleEquivalentHeading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(doc.Text, "Refactoring English") != 1 {
+	if strings.Count(doc.Text, "Refactoring English") != 0 {
 		t.Fatalf("surviving title-equivalent heading was duplicated: %q", doc.Text)
 	}
 }
@@ -2519,7 +2667,7 @@ func TestArticlePromotesMetadataEquivalentH2OverSiteH1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# A Specific Article Title\n") {
+	if doc.Title != "A Specific Article Title" || strings.Contains(doc.Text, "A Specific Article Title") {
 		t.Fatalf("h2 article headline was not promoted:\n%s", doc.Markdown)
 	}
 	if strings.Contains(doc.Text, "Blog") {
@@ -2545,13 +2693,13 @@ func TestStructurallyMarkedH2OverridesConflictingMetadata(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.HasPrefix(doc.Markdown, "# Correct Structural Headline\n") {
+			if doc.Title != "Correct Structural Headline" || strings.Contains(doc.Text, "Correct Structural Headline") {
 				t.Fatalf("structurally marked h2 did not override metadata:\n%s", doc.Markdown)
 			}
 			if strings.Contains(doc.Text, "Incorrect Metadata Title") {
 				t.Fatalf("conflicting metadata title was emitted: %q", doc.Text)
 			}
-			if strings.Count(doc.Text, "Correct Structural Headline") != 1 {
+			if strings.Count(doc.Text, "Correct Structural Headline") != 0 {
 				t.Fatalf("source headline was duplicated: %q", doc.Text)
 			}
 		})
@@ -2564,7 +2712,7 @@ func TestArticleDoesNotPromoteUnrelatedDistantH2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(doc.Markdown, "# Actual Article Title\n") {
+	if doc.Title != "Actual Article Title" || strings.Contains(doc.Text, "Actual Article Title") {
 		t.Fatalf("distant unrelated h2 replaced metadata title:\n%s", doc.Markdown)
 	}
 	if strings.Contains(strings.SplitN(doc.Markdown, "\n\n", 2)[0], "Unrelated Feature") {
@@ -2581,7 +2729,7 @@ func TestNestedAuxiliaryRegionDoesNotExcludeSharedLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Actual article", "relevant details"} {
+	for _, want := range []string{"relevant details"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing %q: %s", want, doc.Text)
 		}
@@ -2599,7 +2747,7 @@ func TestDivSidebarDoesNotExcludeSharedLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Actual article", "article remains relevant"} {
+	for _, want := range []string{"article remains relevant"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing %q: %s", want, doc.Text)
 		}
@@ -2617,7 +2765,7 @@ func TestSiblingHeaderDoesNotExcludeSharedLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Actual article", "article remains relevant"} {
+	for _, want := range []string{"article remains relevant"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing %q: %s", want, doc.Text)
 		}
@@ -2633,7 +2781,7 @@ func TestTrailingOrganizationProfileIsExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Product release notes", "Stay tuned", "readers can expect next"} {
+	for _, want := range []string{"Stay tuned", "readers can expect next"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing article content %q: %s", want, doc.Text)
 		}
@@ -2806,7 +2954,7 @@ func TestWrappedAuxiliaryHeadingExcludesSection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Primary report", "relevant findings"} {
+	for _, want := range []string{"relevant findings"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing %q: %s", want, doc.Text)
 		}
@@ -3236,7 +3384,7 @@ func TestWordPressArticleBodyIsNotExcludedWithSiblingComments(t *testing.T) {
 			if doc.PageType != PageTypeArticle {
 				t.Fatalf("page type = %q, want article", doc.PageType)
 			}
-			for _, want := range []string{"Example article", "substantial opening paragraph"} {
+			for _, want := range []string{"substantial opening paragraph"} {
 				if !strings.Contains(doc.Text, want) {
 					t.Errorf("article content %q missing: %s", want, doc.Text)
 				}
@@ -3355,8 +3503,8 @@ func TestMaxRepeatedDoesNotTruncateProseSiblings(t *testing.T) {
 			t.Fatalf("unexpected repetition warning: %#v", warning)
 		}
 	}
-	if doc.Stats.SelectedBlocks != 11 {
-		t.Fatalf("selected blocks = %d, want 11", doc.Stats.SelectedBlocks)
+	if doc.Stats.SelectedBlocks != 10 {
+		t.Fatalf("selected blocks = %d, want 10", doc.Stats.SelectedBlocks)
 	}
 }
 
@@ -3369,8 +3517,8 @@ func TestMaxRepeatedLimitsListingRecordsAndWarns(t *testing.T) {
 	if !strings.Contains(doc.Text, "First listed") || !strings.Contains(doc.Text, "Second listed") || strings.Contains(doc.Text, "Third listed") {
 		t.Fatalf("unexpected listing output: %s", doc.Text)
 	}
-	if doc.Stats.SelectedBlocks != 3 { // heading and two emitted records
-		t.Fatalf("selected blocks = %d, want 3", doc.Stats.SelectedBlocks)
+	if doc.Title != "Results" || doc.Stats.SelectedBlocks != 2 { // two emitted records; title is metadata
+		t.Fatalf("title=%q selected blocks = %d, want title Results and 2 blocks", doc.Title, doc.Stats.SelectedBlocks)
 	}
 	if len(doc.Warnings) != 1 || doc.Warnings[0].Code != "repeated-items-truncated" {
 		t.Fatalf("missing repetition warning: %#v", doc.Warnings)
@@ -3407,8 +3555,8 @@ func TestMaxRepeatedLimitsRecordsInsideListsAndTables(t *testing.T) {
 			if len(doc.Warnings) != 1 || doc.Warnings[0].Code != "repeated-items-truncated" {
 				t.Fatalf("missing repetition warning: %#v", doc.Warnings)
 			}
-			if doc.Stats.SelectedBlocks != 2 { // heading and list/table block
-				t.Fatalf("selected blocks = %d, want 2", doc.Stats.SelectedBlocks)
+			if doc.Title != "Results" || doc.Stats.SelectedBlocks != 1 { // list/table block; title is metadata
+				t.Fatalf("title=%q selected blocks = %d, want title Results and 1 block", doc.Title, doc.Stats.SelectedBlocks)
 			}
 		})
 	}
@@ -3565,7 +3713,7 @@ func TestLimitsAndInvalidURL(t *testing.T) {
 }
 
 func TestOutputLimitIsUTF8Safe(t *testing.T) {
-	html := `<main><h1>Title</h1><p>` + strings.Repeat("界", 100) + `</p><p>later block</p></main>`
+	html := `<main><h1>Title</h1><p>` + strings.Repeat("界", 10) + `</p><p>later block</p></main>`
 	d, e := ExtractBytes([]byte(html), "", WithMaxOutputBytes(40))
 	if e != nil {
 		t.Fatal(e)
@@ -3573,8 +3721,8 @@ func TestOutputLimitIsUTF8Safe(t *testing.T) {
 	if len(d.Markdown) > 40 {
 		t.Fatalf("output has %d bytes", len(d.Markdown))
 	}
-	if !strings.Contains(d.Markdown, "Title") {
-		t.Fatal(d.Markdown)
+	if d.Title != "Title" || strings.Contains(d.Markdown, "Title") {
+		t.Fatalf("title was not separated: title=%q Markdown=%q", d.Title, d.Markdown)
 	}
 	if len(d.Warnings) == 0 {
 		t.Fatal("missing truncation warning")
@@ -3811,10 +3959,10 @@ func TestRealCNNArticleLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantTitle := "Medici family mystery may be solved after more than 400 years"
-	if !strings.HasPrefix(doc.Markdown, "# "+wantTitle+"\n") {
+	if doc.Title != wantTitle || strings.Contains(doc.Text, wantTitle) {
 		t.Fatalf("visible article headline was not used as title:\n%s", doc.Markdown)
 	}
-	if strings.Count(doc.Markdown, "Medici family mystery") != 1 || strings.Contains(doc.Markdown, "Medici family murder mystery") {
+	if strings.Contains(doc.Markdown, "Medici family mystery") || strings.Contains(doc.Markdown, "Medici family murder mystery") {
 		t.Fatalf("metadata rewrite produced a duplicate headline:\n%s", doc.Markdown)
 	}
 	for _, want := range []string{

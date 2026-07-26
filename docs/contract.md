@@ -26,7 +26,7 @@ Useful images are enabled by default. They appear as Markdown image syntax and i
 
 The Markdown uses a restricted CommonMark and GFM dialect. It has no raw HTML. The default URL policy permits HTTP and HTTPS. It rejects credentials and unsafe schemes.
 
-`Document.Text` describes the same selected content as `Document.Markdown`. `Document.Sections` is a view of that content. A quality score describes observable output properties. It is not a trust score.
+The document title is returned separately in `Document.Title`. It is not repeated in `Document.Markdown`, `Document.Text`, or `Document.Sections`, and it does not consume the Markdown output budget. `Document.Text` describes the same selected content as `Document.Markdown`. `Document.Sections` is a view of that content. A quality score describes observable output properties. It is not a trust score.
 
 ## Safety
 

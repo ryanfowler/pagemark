@@ -13,10 +13,10 @@ func ExampleExtract() {
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println(doc.Title)
 	fmt.Println(doc.Markdown)
 	// Output:
-	// # Guide
-	//
+	// Guide
 	// Install the tool.
 }
 
