@@ -70,6 +70,7 @@ type analysis struct {
 
 type metadata struct {
 	title, browserTitle, socialTitle, description, author, site, language, published, canonical, schemaType string
+	descriptionPriority, authorPriority                                                                     uint8
 	articlePublished, articleType, headline, microdataListing, titleFromHeading                             bool
 }
 
@@ -94,11 +95,7 @@ func Extract(input io.Reader, pageURL string, opts ...Option) (*Document, error)
 	// Extract accepts UTF-8. Callers with another encoding must decode it before
 	// extraction; attempting to sniff here can misinterpret UTF-8 as Windows-1252
 	// and can decode input a second time.
-	root, err := html.Parse(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("pagemark: parse HTML: %w", err)
-	}
-	doc, err := extractNode(root, pageURL, o)
+	doc, err := extractBytes(data, pageURL, o)
 	if doc != nil {
 		doc.Stats.InputBytes = len(data)
 	}
@@ -113,15 +110,36 @@ func ExtractBytes(input []byte, pageURL string, opts ...Option) (*Document, erro
 	}
 	// Parse the caller's byte slice directly. Routing through Extract would make
 	// io.ReadAll copy the complete input before parsing it.
-	root, err := html.Parse(bytes.NewReader(input))
-	if err != nil {
-		return nil, fmt.Errorf("pagemark: parse HTML: %w", err)
-	}
-	doc, err := extractNode(root, pageURL, o)
+	doc, err := extractBytes(input, pageURL, o)
 	if doc != nil {
 		doc.Stats.InputBytes = len(input)
 	}
 	return doc, err
+}
+
+func extractBytes(input []byte, pageURL string, o options) (*Document, error) {
+	root, err := html.Parse(bytes.NewReader(input))
+	if err != nil {
+		return nil, fmt.Errorf("pagemark: parse HTML: %w", err)
+	}
+	doc, extractErr := extractNode(root, pageURL, o)
+	// Some script-driven sites put their complete, server-rendered fallback in a
+	// noscript element. The HTML parser follows browser scripting semantics and
+	// therefore exposes that fallback as text. Reparse only when the ordinary
+	// result is empty or tiny; normal pages keep the single-parse fast path and
+	// pages with both versions do not duplicate their content.
+	if (doc == nil || utf8.RuneCountInString(doc.Text) < 120) && bytes.Contains(bytes.ToLower(input), []byte("<noscript")) {
+		fallbackRoot, parseErr := html.ParseWithOptions(bytes.NewReader(input), html.ParseOptionEnableScripting(false))
+		if parseErr == nil {
+			if fallback, fallbackErr := extractNode(fallbackRoot, pageURL, o); fallbackErr == nil &&
+				fallback != nil && utf8.RuneCountInString(fallback.Text) >= 120 &&
+				(doc == nil || utf8.RuneCountInString(fallback.Text) > 2*utf8.RuneCountInString(doc.Text)) {
+				fallback.Warnings = append(fallback.Warnings, Warning{"fallback", "The noscript fallback produced the result."})
+				return fallback, nil
+			}
+		}
+	}
+	return doc, extractErr
 }
 
 // ExtractNode extracts useful content from a parsed HTML tree. It does not change root.
@@ -278,8 +296,34 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 			documentTitle = a.cleanedMetadataTitle(documentTitle)
 		}
 	}
-	if pageType == PageTypeDocumentation {
-		documentTitle = a.visibleH1TitleVariant(documentTitle)
+	cleanBrowserTitle := ""
+	needsVisibleVariant := hasDelimitedTitleSegment(documentTitle)
+	if !needsVisibleVariant && normalizedLabel(documentTitle) != normalizedLabel(a.meta.browserTitle) {
+		cleanBrowserTitle = a.cleanedMetadataTitle(a.meta.browserTitle)
+		needsVisibleVariant = normalizedLabel(documentTitle) != normalizedLabel(cleanBrowserTitle)
+	}
+	if needsVisibleVariant {
+		if cleanBrowserTitle == "" {
+			cleanBrowserTitle = a.cleanedMetadataTitle(a.meta.browserTitle)
+		}
+		documentTitle = a.visibleH1TitleVariant(documentTitle, cleanBrowserTitle)
+	}
+	if a.pageURL != nil && (a.pageURL.Path == "" || a.pageURL.Path == "/") && a.meta.socialTitle != "" {
+		social := a.cleanedMetadataTitle(a.meta.socialTitle)
+		if social == "" {
+			// A social title is document-specific even when it equals the product or
+			// publication name inferred from the host.
+			social = normalizeText(a.meta.socialTitle)
+		}
+		if cleanBrowserTitle == "" {
+			cleanBrowserTitle = a.cleanedMetadataTitle(a.meta.browserTitle)
+			if cleanBrowserTitle == "" {
+				cleanBrowserTitle = normalizeText(a.meta.browserTitle)
+			}
+		}
+		if titlePrefixAtBoundary(social, cleanBrowserTitle) {
+			documentTitle = social
+		}
 	}
 	doc := &Document{URL: rawURL, CanonicalURL: a.meta.canonical, Title: documentTitle, Description: a.meta.description, Author: a.meta.author, SiteName: a.meta.site, Language: a.meta.language, PublishedTime: a.meta.published, PageType: pageType, PageTypeScore: confidence, Markdown: mr.Markdown, Text: mr.Text, Quality: clamp(quality), Diagnostics: a.diag, Stats: Stats{Elements: a.elements, TextBytes: a.textBytes, Blocks: len(a.blocks), OutputBytes: len(mr.Markdown)}}
 	if len(mr.Links) > 0 {
@@ -885,6 +929,13 @@ func (a *analysis) score(pt PageType) {
 		if b.kind == "p" && (pt == PageTypeArticle || pt == PageTypeDocumentation || pt == PageTypeDiscussion || pt == PageTypeProduct || pt == PageTypeService) {
 			score += 0.35
 		}
+		if b.kind == "generic" && hasStatusUpdateContext(b.node) {
+			// Status and changelog systems commonly render each update as direct
+			// text in a generic div next to a heading. The explicit nested update
+			// convention is stronger than generic prose length alone.
+			score += 1
+			a.addReason(b, "structured status update")
+		}
 		if pt == PageTypeDiscussion && isDiscussionBodyContainer(b.node) {
 			score += 3
 			a.addReason(b, "discussion post body")
@@ -1030,6 +1081,32 @@ func (a *analysis) strengthenArticleContinuity(pt PageType) {
 		b.selected = true
 		a.addReason(b, "article prose bridge")
 	}
+}
+
+func hasStatusUpdateContext(n *html.Node) bool {
+	body := false
+	for p := n; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		if hasExactClass(p, "update-body") {
+			body = true
+		}
+		if hasExactClass(p, "update-container") && !body {
+			walk(p, func(x *html.Node) bool {
+				if x.Type == html.ElementNode && hasExactClass(x, "update-body") {
+					body = true
+					return false
+				}
+				return !body
+			})
+		}
+		if body && (hasExactClass(p, "update-container") || hasExactClass(p, "update-row") ||
+			elementContainsAny(p, "incident-updates", "status-updates")) {
+			return true
+		}
+	}
+	return false
 }
 
 func selectedArticleProse(b *block) bool {
@@ -1796,20 +1873,34 @@ func (a *analysis) cleanedMetadataTitle(title string) string {
 	}
 }
 
-// visibleH1TitleVariant prefers a visible h1 when browser metadata is exactly
-// that heading plus a delimited branding segment. This covers documentation
-// systems that omit usable site-name metadata without stripping real subtitles.
-func (a *analysis) visibleH1TitleVariant(title string) string {
+// visibleH1TitleVariant prefers a visible h1 when browser metadata is either
+// exactly that heading or that heading plus a delimited branding segment. The
+// browser-title agreement prevents a masthead or marketing slogan from winning,
+// while allowing a source headline to be more complete than an abbreviated
+// social title.
+func (a *analysis) visibleH1TitleVariant(title, browserTitle string) string {
 	if title == "" {
 		return title
 	}
 	best := ""
 	walk(a.root, func(n *html.Node) bool {
-		if best != "" || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "h1") || hardHidden(n) || a.hasIrrelevantAncestor(n) {
+		if best != "" || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "h1") || hardHidden(n) {
 			return best == ""
 		}
 		heading := normalizeText(articleHeadingText(n))
 		if heading == "" {
+			return true
+		}
+		// Exact browser agreement is safe even when a banner wrapper was classified
+		// as auxiliary because it also contains category controls. An exact social
+		// headline is likewise stronger than a decorated browser title.
+		if (browserTitle != "" && normalizedLabel(browserTitle) == normalizedLabel(heading) &&
+			(titleEquivalent(heading, title, a.meta.site) || metadataTitlePrefix(title, heading))) ||
+			normalizedLabel(a.meta.socialTitle) == normalizedLabel(heading) {
+			best = heading
+			return false
+		}
+		if a.hasIrrelevantAncestor(n) {
 			return true
 		}
 		runes := []rune(title)
@@ -1819,8 +1910,8 @@ func (a *analysis) visibleH1TitleVariant(title string) string {
 			}
 			left := normalizeText(string(runes[:i]))
 			right := normalizeText(string(runes[i+1:]))
-			if normalizedLabel(left) == normalizedLabel(heading) && right != "" ||
-				normalizedLabel(right) == normalizedLabel(heading) && left != "" {
+			if normalizedLabel(left) == normalizedLabel(heading) && a.matchesKnownTitleDecoration(right) ||
+				normalizedLabel(right) == normalizedLabel(heading) && a.matchesKnownTitleDecoration(left) {
 				best = heading
 				return false
 			}
@@ -1831,6 +1922,56 @@ func (a *analysis) visibleH1TitleVariant(title string) string {
 		return best
 	}
 	return title
+}
+
+func hasDelimitedTitleSegment(title string) bool {
+	return strings.Contains(title, " | ") || strings.Contains(title, " - ") ||
+		strings.Contains(title, " — ") || strings.Contains(title, " – ") || strings.Contains(title, " :: ")
+}
+
+func titlePrefixAtBoundary(shorter, longer string) bool {
+	shorter, longer = normalizedLabel(shorter), normalizedLabel(longer)
+	if shorter == "" || !strings.HasPrefix(longer, shorter) {
+		return false
+	}
+	if len(longer) == len(shorter) {
+		return true
+	}
+	next, _ := utf8.DecodeRuneInString(longer[len(shorter):])
+	return unicode.IsSpace(next) || !unicode.IsLetter(next) && !unicode.IsDigit(next)
+}
+
+func metadataTitlePrefix(shorter, longer string) bool {
+	return len(strings.Fields(normalizedLabel(shorter))) >= 4 && titlePrefixAtBoundary(shorter, longer)
+}
+
+func (a *analysis) matchesKnownTitleDecoration(segment string) bool {
+	segment = normalizedLabel(segment)
+	matches := func(label string) bool {
+		label = normalizedLabel(label)
+		return label != "" && (segment == label || segment == "by "+label ||
+			strings.HasPrefix(segment, label+" by ") || strings.HasPrefix(segment, label+",") ||
+			strings.HasSuffix(segment, " by "+label))
+	}
+	if matches(a.meta.site) || matches(a.meta.author) {
+		return true
+	}
+	if a.pageURL == nil {
+		return false
+	}
+	host := strings.TrimPrefix(strings.ToLower(a.pageURL.Hostname()), "www.")
+	if matches(host) {
+		return true
+	}
+	if dot := strings.IndexByte(host, '.'); dot > 0 && matches(host[:dot]) {
+		return true
+	}
+	if registrable, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
+		if label, _, ok := strings.Cut(registrable, "."); ok && matches(label) {
+			return true
+		}
+	}
+	return false
 }
 
 func stripTitleDecorationPreservingCase(title, site string) string {
@@ -3212,6 +3353,20 @@ func appendSchemaType(existing, value string) string {
 	return existing + " | " + value
 }
 
+func plausibleMetadataDescription(description string) string {
+	// Descriptions are summaries, not alternate article bodies. Some CMS themes
+	// incorrectly copy the complete rendered body into description metadata,
+	// which can add tens of kilobytes to an otherwise compact result.
+	if utf8.RuneCountInString(description) > 1000 {
+		return ""
+	}
+	switch normalizedLabel(description) {
+	case "article", "other", "page", "post":
+		return ""
+	}
+	return description
+}
+
 func (a *analysis) extractMetadata() {
 	m := metadata{}
 	microdataEntities, repeatedMicrodataArticles, microdataRecords, dominantMicrodata := a.pageMicrodataEntities(a.root)
@@ -3266,12 +3421,22 @@ func (a *analysis) extractMetadata() {
 			v := normalizeText(attrValue(n, "content"))
 			switch key {
 			case "description", "og:description", "twitter:description":
-				if m.description == "" {
-					m.description = v
+				priority := uint8(1)
+				if key == "og:description" {
+					priority = 2
+				} else if key == "twitter:description" {
+					priority = 3
+				}
+				if v = plausibleMetadataDescription(v); v != "" && priority > m.descriptionPriority {
+					m.description, m.descriptionPriority = v, priority
 				}
 			case "author", "article:author":
-				if m.author == "" {
-					m.author = v
+				priority := uint8(1)
+				if key == "article:author" {
+					priority = 2
+				}
+				if v != "" && priority > m.authorPriority {
+					m.author, m.authorPriority = v, priority
 				}
 			case "og:site_name":
 				m.site = v
@@ -3380,14 +3545,18 @@ func (a *analysis) readJSONLD(raw string, m *metadata) {
 			if pageEntity && articleType {
 				m.articleType = true
 			}
-			if m.author == "" {
+			if m.authorPriority < 2 && pageEntity {
+				author := ""
 				switch au := z["author"].(type) {
 				case string:
-					m.author = normalizeText(au)
+					author = normalizeText(au)
 				case map[string]any:
 					if s, ok := au["name"].(string); ok {
-						m.author = normalizeText(s)
+						author = normalizeText(s)
 					}
+				}
+				if author != "" {
+					m.author, m.authorPriority = author, 2
 				}
 			}
 			if s, ok := z["datePublished"].(string); ok && (m.published == "" || (pageEntity && articleType)) {
@@ -3402,9 +3571,11 @@ func (a *analysis) readJSONLD(raw string, m *metadata) {
 					m.title = normalizeText(s)
 				}
 			}
-			if m.description == "" {
+			if m.descriptionPriority < 2 && pageEntity {
 				if s, ok := z["description"].(string); ok {
-					m.description = normalizeText(s)
+					if description := plausibleMetadataDescription(normalizeText(s)); description != "" {
+						m.description, m.descriptionPriority = description, 2
+					}
 				}
 			}
 			for key, q := range z {
@@ -3711,8 +3882,10 @@ var auxiliaryLabels = map[string]bool{
 	"help us improve gov.uk": true,
 	"more news":              true, "latest news": true, "related news": true,
 	"related articles": true, "related content": true, "related keywords": true,
-	"recommended for you": true,
-	"you may also like":   true, "you may also enjoy": true, "read next": true, "more stories": true,
+	"related projects": true, "related topics": true, "related tags": true, "more publications": true,
+	"follow on social media": true,
+	"recommended for you":    true,
+	"you may also like":      true, "you may also enjoy": true, "read next": true, "more stories": true,
 	"latest stories": true, "see also": true,
 }
 
@@ -3804,6 +3977,13 @@ func irrelevantNode(n *html.Node) bool {
 	}
 	if tag == "div" || tag == "section" || tag == "aside" {
 		if heading := firstRegionHeading(n); auxiliaryLabels[heading] {
+			return true
+		}
+		// Editorial grids sometimes put a short taxonomy kicker (for example,
+		// "News") before the actual "Related News" heading. Inspect only the
+		// heading prefix, before any body block, so a later related section cannot
+		// classify its enclosing article or main element as auxiliary.
+		if elementContainsAny(n, "feature", "listing") && leadingRegionHasAuxiliaryHeading(n, 2) {
 			return true
 		}
 	}
@@ -4635,7 +4815,8 @@ func (a *analysis) articleAuxiliaryNodeUncached(n *html.Node) bool {
 		}
 	}
 	if tag == "div" || tag == "section" || tag == "aside" {
-		if isArticleAuxiliaryLabel(firstRegionHeading(n)) {
+		regionHeading := firstRegionHeading(n)
+		if isArticleAuxiliaryLabel(regionHeading) {
 			return true
 		}
 		tokens := elementTokens(n)
@@ -5854,6 +6035,44 @@ func (a *analysis) hasIrrelevantAncestor(n *html.Node) bool {
 	}
 	a.nodeStates[n] = state
 	return irrelevant
+}
+
+func leadingRegionHasAuxiliaryHeading(n *html.Node, limit int) bool {
+	if n == nil || limit <= 0 {
+		return false
+	}
+	budget, headings, stopped, found := 64, 0, false, false
+	var visit func(*html.Node)
+	visit = func(parent *html.Node) {
+		for ch := parent.FirstChild; ch != nil && budget > 0 && !stopped && headings < limit && !found; ch = ch.NextSibling {
+			if hardHidden(ch) || ch.Type == html.CommentNode {
+				continue
+			}
+			if ch.Type == html.TextNode {
+				if strings.TrimSpace(ch.Data) != "" {
+					stopped = true
+				}
+				continue
+			}
+			if ch.Type != html.ElementNode {
+				continue
+			}
+			budget--
+			tag := strings.ToLower(ch.Data)
+			if isHeadingTag(tag) {
+				headings++
+				found = auxiliaryLabels[normalizedLabel(nodeText(ch))]
+				continue
+			}
+			if isBlockTag(tag) && normalizeText(nodeText(ch)) != "" {
+				stopped = true
+				continue
+			}
+			visit(ch)
+		}
+	}
+	visit(n)
+	return found
 }
 
 func firstRegionHeading(n *html.Node) string {

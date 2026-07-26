@@ -4072,3 +4072,96 @@ func TestContainsWordSequence(t *testing.T) {
 		})
 	}
 }
+
+func TestNoscriptFallbackForScriptDrivenPage(t *testing.T) {
+	source := []byte(`<!doctype html><html><head><title>Forum thread - Example Forum</title></head><body><header><a href="/">Example Forum</a></header><main id="app"></main><noscript><main><h1>Forum thread</h1><article><p>This is the complete server-rendered fallback post, with enough useful prose to be selected instead of the empty application shell.</p><p>A second paragraph makes clear that this fallback is substantive primary content.</p></article></main></noscript></body></html>`)
+	doc, err := ExtractBytes(source, "https://example.com/thread/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Title != "Forum thread" || !strings.Contains(doc.Text, "complete server-rendered fallback post") {
+		t.Fatalf("noscript fallback was not recovered: title=%q text=%q", doc.Title, doc.Text)
+	}
+	if len(doc.Warnings) == 0 || doc.Warnings[len(doc.Warnings)-1].Code != "fallback" {
+		t.Fatalf("noscript fallback warning missing: %+v", doc.Warnings)
+	}
+}
+
+func TestStructuredStatusUpdatesAreContent(t *testing.T) {
+	source := `<html><head><title>Example Status - Elevated errors</title><meta name="description" content="Example status incident"></head><body><div class="status-incident"><h1>Elevated errors</h1><div class="incident-updates-container"><div class="row update-row"><h2>Resolved</h2><div class="update-container"><div class="update-body"><span>This incident has been resolved.</span></div><div class="update-timestamp">Posted July 26, 2026</div></div></div><div class="row update-row"><h2>Investigating</h2><div class="update-container"><div class="update-body">We are currently investigating this issue.</div></div></div></div></div></body></html>`
+	doc, err := Extract(strings.NewReader(source), "https://status.example.com/incidents/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "This incident has been resolved") || !strings.Contains(doc.Text, "currently investigating") {
+		t.Fatalf("status updates missing: %q", doc.Text)
+	}
+}
+
+func TestMetadataPrefersSpecificValues(t *testing.T) {
+	longDescription := strings.Repeat("Complete article body copied into metadata. ", 40)
+	source := `<html><head><title>Post - Forge</title><meta name="author" content="Forge"><meta property="article:author" content="Alice"><meta name="description" content="generic platform"><meta property="og:description" content="` + longDescription + `"><meta name="twitter:description" content="Concise article summary."><meta property="og:title" content="Post"></head><body><main><h1>Post</h1><p>` + strings.Repeat("Useful article prose. ", 40) + `</p></main></body></html>`
+	doc, err := Extract(strings.NewReader(source), "https://forge.example/alice/post")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Author != "Alice" || doc.Description != "Concise article summary." {
+		t.Fatalf("metadata priorities wrong: author=%q description=%q", doc.Author, doc.Description)
+	}
+}
+
+func TestOversizedMetadataDescriptionIsRejected(t *testing.T) {
+	longDescription := strings.Repeat("Complete article body copied into metadata. ", 40)
+	source := `<html><head><title>Post</title><meta property="og:description" content="` + longDescription + `"></head><body><main><h1>Post</h1><p>` + strings.Repeat("Useful article prose. ", 40) + `</p></main></body></html>`
+	doc, err := Extract(strings.NewReader(source), "https://example.com/post")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Description != "" {
+		t.Fatalf("oversized description was retained: %q", doc.Description)
+	}
+}
+
+func TestVisibleH1CanClarifyMetadataTitle(t *testing.T) {
+	tests := []struct{ name, browser, social, site, h1, want, url string }{
+		{"known branding", "Context engineering | Claude by Anthropic", "Context engineering | Claude by Anthropic", "Claude", "Context engineering", "Context engineering", "https://example.com/post"},
+		{"abbreviated social title", "Alien chemistry found inside a New Jersey meteorite", "Alien chemistry found", "", "Alien chemistry found inside a New Jersey meteorite", "Alien chemistry found inside a New Jersey meteorite", "https://example.com/post"},
+		{"root marketing slogan does not replace title", "JetZero", "JetZero", "", "THE FUTURE TAKES SHAPE", "JetZero", "https://example.com/"},
+		{"root social prefix requires boundary", "JetZero", "Jet", "", "JetZero", "JetZero", "https://example.com/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := `<html><head><title>` + tt.browser + `</title><meta property="og:title" content="` + tt.social + `"><meta property="og:site_name" content="` + tt.site + `"></head><body><main><h1>` + tt.h1 + `</h1><p>` + strings.Repeat("Substantive primary prose for this page. ", 20) + `</p></main></body></html>`
+			doc, err := Extract(strings.NewReader(source), tt.url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.Title != tt.want {
+				t.Fatalf("title = %q, want %q", doc.Title, tt.want)
+			}
+		})
+	}
+}
+
+func TestVisibleH1TitleVariantPreservesGenuineSubtitle(t *testing.T) {
+	root, err := html.Parse(strings.NewReader(`<html><body><main><h1>How to Build Reliable Systems</h1></main></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &analysis{root: root, nodeStates: make(map[*html.Node]nodeState)}
+	const title = "How to Build Reliable Systems - Without Guesswork"
+	if got := a.visibleH1TitleVariant(title, title); got != title {
+		t.Fatalf("title = %q, want genuine subtitle %q", got, title)
+	}
+}
+
+func TestAuxiliaryRegionAllowsTaxonomyKicker(t *testing.T) {
+	source := `<html><head><title>Main Story</title><meta property="og:type" content="article"></head><body><main><h1>Main Story</h1><article><p>` + strings.Repeat("The primary report contains substantive useful prose. ", 20) + `</p></article><section class="feature-items"><div><h5>News</h5><h2>Related News</h2></div><div class="card"><h3>Unrelated story</h3><p>This recommendation must not be retained even though it has a full excerpt.</p></div></section><section><h2>Related Projects</h2><p>Unrelated project description.</p></section></main></body></html>`
+	doc, err := Extract(strings.NewReader(source), "https://example.com/news/main-story")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(doc.Text, "Unrelated story") || strings.Contains(doc.Text, "Unrelated project") {
+		t.Fatalf("auxiliary regions retained: %q", doc.Text)
+	}
+}
