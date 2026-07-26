@@ -29,7 +29,7 @@ func TestRunFetchesAndWritesMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertMarkdownOutput(t, stdout.String(), "# Guide\n\nInstall the tool.\n")
+	assertMarkdownOutput(t, stdout.String(), "Install the tool.\n")
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr: %s", &stderr)
 	}
@@ -46,7 +46,7 @@ func TestRunDoesNotDecodeUTF8ResponseTwice(t *testing.T) {
 	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
 		t.Fatal(err)
 	}
-	assertMarkdownOutput(t, stdout.String(), "# The Psychology of Software Teams\n\nYou’ll read “the team’s guide” ↩\n")
+	assertMarkdownOutput(t, stdout.String(), "You’ll read “the team’s guide” ↩\n")
 }
 
 func TestRunPreservesUTF8WhenCharsetDeclarationIsLate(t *testing.T) {
@@ -140,7 +140,7 @@ func TestRunDecodesResponseToUTF8(t *testing.T) {
 	if err := run(context.Background(), []string{server.URL}, &stdout, &bytes.Buffer{}, server.Client()); err != nil {
 		t.Fatal(err)
 	}
-	assertMarkdownOutput(t, stdout.String(), "# Café\n\nCrème brûlée.\n")
+	assertMarkdownOutput(t, stdout.String(), "Crème brûlée.\n")
 }
 
 func TestMarkdownDocumentIncludesMetadataAsYAMLFrontmatter(t *testing.T) {
@@ -153,7 +153,7 @@ func TestMarkdownDocumentIncludesMetadataAsYAMLFrontmatter(t *testing.T) {
 		SiteName:      "Example",
 		Language:      "en",
 		PublishedTime: "2025-01-02T03:04:05Z",
-		Markdown:      "# Article\n\nContent.",
+		Markdown:      "Content.",
 	}
 	want := "---\n" +
 		`url: "https://example.com/article"` + "\n" +
@@ -164,7 +164,7 @@ func TestMarkdownDocumentIncludesMetadataAsYAMLFrontmatter(t *testing.T) {
 		`site_name: "Example"` + "\n" +
 		`language: "en"` + "\n" +
 		`published_time: "2025-01-02T03:04:05Z"` + "\n" +
-		"---\n\n# Article\n\nContent.\n"
+		"---\n\nContent.\n"
 	if got := markdownDocument(doc); got != want {
 		t.Fatalf("output:\n%q\nwant:\n%q", got, want)
 	}

@@ -24,6 +24,7 @@ type realWorldFixture struct {
 	License        string   `json:"license"`
 	SHA256         string   `json:"sha256"`
 	PageType       PageType `json:"page_type"`
+	Title          string   `json:"title"`
 	MinQuality     float64  `json:"min_quality"`
 	MaxOutputBytes int      `json:"max_output_bytes,omitempty"`
 	Required       []string `json:"required"`
@@ -68,6 +69,14 @@ func TestRealWorldFixtures(t *testing.T) {
 			}
 			if doc.PageType != fixture.PageType {
 				t.Errorf("page type = %q, want %q", doc.PageType, fixture.PageType)
+			}
+			if doc.Title != fixture.Title {
+				t.Errorf("title = %q, want %q", doc.Title, fixture.Title)
+			}
+			for line := range strings.Lines(doc.Markdown) {
+				if strings.HasPrefix(line, "#") && strings.TrimSpace(strings.TrimLeft(line, "#")) == fixture.Title {
+					t.Errorf("document title was repeated as a Markdown heading: %q", line)
+				}
 			}
 			if doc.Quality < fixture.MinQuality {
 				t.Errorf("quality = %.2f, want at least %.2f", doc.Quality, fixture.MinQuality)
