@@ -34,6 +34,18 @@ type block struct {
 	reasons    []string
 }
 
+// articleRegionEvidence is a Readability-style, container-level view of the
+// block evidence. It is intentionally derived from blocks rather than from a
+// second text extraction pipeline.
+type articleRegionEvidence struct {
+	node             *html.Node
+	score            float64
+	proseChars       int
+	linkedChars      int
+	strongParagraphs int
+	selectedBlocks   int
+}
+
 // scoringProfile is deliberately internal. Relaxation is an article recovery
 // mechanism, not a general-purpose extraction mode.
 type scoringProfile uint8
@@ -300,6 +312,31 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 			repeatedDropped = 0
 			fallback = "semantic-article"
 			quality = articleQuality
+		}
+	}
+	// Region reconstruction is deliberately a bounded article fallback. Normal
+	// block extraction, non-article page types, and repeated-item limiting keep
+	// their existing paths.
+	if authored == nil && pageType == PageTypeArticle {
+		currentChars, _, _ := a.nodeSetBlockEvidence(selected)
+		unexpectedlyShort := currentChars < 450
+		if quality < .50 || unexpectedlyShort {
+			if region := a.reconstructArticleRegion(); len(region) > 0 {
+				regionChars, regionLinks, regionBlocks := a.nodeSetBlockEvidence(region)
+				regionQuality := qualityFromEvidence(regionChars, regionLinks, regionBlocks)
+				added := regionChars - currentChars
+				material := added >= 80 && regionChars*5 >= max(1, currentChars)*6
+				if unexpectedlyShort {
+					material = added >= 20 && regionChars*25 >= max(1, currentChars)*27
+				}
+				if material && regionLinks*2 < max(1, regionChars) && regionQuality >= quality-.05 {
+					selected = region
+					repeatedExcluded = nil
+					repeatedDropped = 0
+					fallback = "article-region"
+					quality = regionQuality
+				}
+			}
 		}
 	}
 	if len(selected) == 0 {
@@ -3196,6 +3233,351 @@ func (a *analysis) semanticArticleFallback() (*html.Node, float64) {
 		return nil, 0
 	}
 	return best.n, qualityFromEvidence(best.chars, best.links, best.blocks)
+}
+
+// nodeSetBlockEvidence measures only eligible segmented blocks. In particular,
+// auxiliary descendants inside a selected ancestor do not make a reconstructed
+// region appear better than the content the converter will retain.
+func (a *analysis) nodeSetBlockEvidence(nodes []*html.Node) (chars, links, blocks int) {
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		inside := false
+		for _, root := range nodes {
+			if nodeWithin(b.node, root) {
+				inside = true
+				break
+			}
+		}
+		if !inside || !a.plausibleRegionBlock(b) {
+			continue
+		}
+		chars += utf8.RuneCountInString(b.text)
+		links += linkTextLength(b.node)
+		blocks++
+	}
+	return
+}
+
+func (a *analysis) plausibleRegionBlock(b *block) bool {
+	if b == nil || a.hasIrrelevantAncestor(b.node) || controls(b.node) > 2 {
+		return false
+	}
+	switch b.kind {
+	case "p", "blockquote", "generic", "pre":
+	default:
+		return false
+	}
+	length := utf8.RuneCountInString(b.text)
+	if length < 12 || linkTextLength(b.node)*2 >= max(1, length) ||
+		isArticleAuxiliaryLabel(normalizedLabel(b.text)) {
+		return false
+	}
+	for p := b.node; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		if hardHidden(p) || isListingRecordElement(p) || repeatedUnmarkedListingRecord(p) ||
+			elementContainsAny(p, "comment", "reply", "newsletter", "subscribe", "related", "recommended") {
+			return false
+		}
+	}
+	return true
+}
+
+func articleRegionContainer(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	switch strings.ToLower(n.Data) {
+	case "article", "main", "section", "div":
+		return true
+	case "td", "th":
+		return hasNonCardArticleAncestor(n)
+	}
+	return false
+}
+
+func (a *analysis) unsafeArticleRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || hardHidden(n) || a.hasIrrelevantAncestor(n) ||
+		a.inferenceAuxiliaryBlock(n) || isAdvertisementRegion(n) {
+		return true
+	}
+	tag := strings.ToLower(n.Data)
+	if tag == "nav" || tag == "header" || tag == "footer" || tag == "aside" {
+		return true
+	}
+	return elementContainsAny(n, "comment", "reply", "discussion", "newsletter", "subscribe", "related", "recommended") ||
+		isListingRecordElement(n) || repeatedUnmarkedListingRecord(n) || a.articleCardCount(n) >= 2
+}
+
+func regionRank(e *articleRegionEvidence) float64 {
+	if e == nil || e.proseChars == 0 {
+		return 0
+	}
+	rank := e.score + 1.15*float64(e.strongParagraphs) + math.Min(2.5, float64(e.proseChars)/260)
+	rank -= 3 * float64(e.linkedChars) / float64(e.proseChars)
+	if e.node != nil {
+		tag := strings.ToLower(e.node.Data)
+		if tag == "article" {
+			rank += 2
+		} else if tag == "main" || strings.EqualFold(attrValue(e.node, "role"), "main") {
+			rank += 1.25
+		}
+	}
+	return rank
+}
+
+// reconstructArticleRegion propagates prose evidence to a bounded set of
+// ancestors, then optionally joins near-tied sibling regions. It returns source
+// nodes only; no node is detached, cloned, or otherwise changed.
+func (a *analysis) reconstructArticleRegion() []*html.Node {
+	evidence := make(map[*html.Node]*articleRegionEvidence)
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		if !a.plausibleRegionBlock(b) {
+			continue
+		}
+		length, linked := utf8.RuneCountInString(b.text), linkTextLength(b.node)
+		weight := 1.0
+		depth := 0
+		for p := b.node.Parent; p != nil && depth < 4; p = p.Parent {
+			if p.Type != html.ElementNode {
+				continue
+			}
+			tag := strings.ToLower(p.Data)
+			if tag == "body" || tag == "html" || tag == "nav" || tag == "footer" || tag == "header" || tag == "aside" || a.unsafeArticleRegion(p) {
+				break
+			}
+			if articleRegionContainer(p) {
+				e := evidence[p]
+				if e == nil {
+					e = &articleRegionEvidence{node: p}
+					evidence[p] = e
+				}
+				e.score += math.Max(.1, b.score) * weight
+				e.proseChars += int(float64(length) * weight)
+				e.linkedChars += int(float64(linked) * weight)
+				if b.kind == "p" && length >= 60 {
+					e.strongParagraphs++
+				}
+				if b.selected {
+					e.selectedBlocks++
+				}
+			}
+			depth++
+			weight *= .5
+		}
+	}
+	var candidates []*articleRegionEvidence
+	for _, e := range evidence {
+		if e.proseChars >= 40 && !a.unsafeArticleRegion(e.node) {
+			candidates = append(candidates, e)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	order := a.documentOrder()
+	sort.SliceStable(candidates, func(i, j int) bool {
+		ri, rj := regionRank(candidates[i]), regionRank(candidates[j])
+		if ri == rj {
+			return order[candidates[i].node] < order[candidates[j].node]
+		}
+		return ri > rj
+	})
+	primary := candidates[0]
+	root := primary.node
+	bestRank := regionRank(primary)
+	near := nonOverlappingNearCandidates(candidates, bestRank)
+	if len(near) >= 3 {
+		if common := nearestCommonArticleAncestor(near); common != nil && !a.unsafeArticleRegion(common) {
+			prose := a.uniqueRegionProseChars(near)
+			all := utf8.RuneCountInString(normalizeText(nodeText(common)))
+			// Permit modest furniture (bylines and adverts), but not an entire page
+			// shell or a card collection around the candidates. Count each eligible
+			// block once: ancestor/descendant candidates share propagated evidence.
+			if all <= prose*2+500 && a.articleCardCount(common) < 2 {
+				root = common
+			}
+		}
+	}
+
+	roots := []*html.Node{root}
+	primaryEvidence := evidence[root]
+	if primaryEvidence == nil {
+		primaryEvidence = primary
+	}
+	if root.Parent != nil {
+		for sibling := root.Parent.FirstChild; sibling != nil; sibling = sibling.NextSibling {
+			if sibling == root || sibling.Type != html.ElementNode || a.unsafeArticleRegion(sibling) {
+				continue
+			}
+			if a.qualifyingArticleSibling(sibling, root, evidence[sibling], regionRank(primaryEvidence)) {
+				roots = append(roots, sibling)
+			}
+		}
+	}
+	return a.normalizeSourceRoots(roots, order)
+}
+
+// nonOverlappingNearCandidates keeps the highest-ranked candidate from each
+// DOM branch. candidates is already rank ordered by reconstructArticleRegion;
+// accepting an ancestor and its descendant as two regions would manufacture a
+// near tie from the same prose.
+func nonOverlappingNearCandidates(candidates []*articleRegionEvidence, bestRank float64) []*articleRegionEvidence {
+	var near []*articleRegionEvidence
+	accepted := make(map[*html.Node]bool, len(candidates))
+	// acceptedBelow marks ancestors of accepted candidates. Together with the
+	// upward walk below this detects overlap in either direction without comparing
+	// every candidate against every accepted region.
+	acceptedBelow := make(map[*html.Node]bool, len(candidates))
+	for _, candidate := range candidates {
+		if regionRank(candidate) < bestRank*.75 || candidate.node == nil {
+			continue
+		}
+		overlaps := acceptedBelow[candidate.node]
+		for p := candidate.node; p != nil && !overlaps; p = p.Parent {
+			overlaps = accepted[p]
+		}
+		if overlaps {
+			continue
+		}
+		near = append(near, candidate)
+		accepted[candidate.node] = true
+		for p := candidate.node.Parent; p != nil; p = p.Parent {
+			acceptedBelow[p] = true
+		}
+	}
+	return near
+}
+
+func (a *analysis) uniqueRegionProseChars(regions []*articleRegionEvidence) int {
+	regionNodes := make(map[*html.Node]bool, len(regions))
+	for _, region := range regions {
+		if region != nil && region.node != nil {
+			regionNodes[region.node] = true
+		}
+	}
+	chars := 0
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		if !a.plausibleRegionBlock(b) {
+			continue
+		}
+		for p := b.node; p != nil; p = p.Parent {
+			if regionNodes[p] {
+				chars += utf8.RuneCountInString(b.text)
+				break
+			}
+		}
+	}
+	return chars
+}
+
+func nearestCommonArticleAncestor(candidates []*articleRegionEvidence) *html.Node {
+	if len(candidates) == 0 {
+		return nil
+	}
+	for p := candidates[0].node.Parent; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode || strings.EqualFold(p.Data, "body") || !articleRegionContainer(p) {
+			continue
+		}
+		all := true
+		for _, candidate := range candidates[1:] {
+			if !nodeWithin(candidate.node, p) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return p
+		}
+	}
+	return nil
+}
+
+func (a *analysis) qualifyingArticleSibling(sibling, primary *html.Node, e *articleRegionEvidence, primaryRank float64) bool {
+	text := normalizeText(nodeText(sibling))
+	length, links := utf8.RuneCountInString(text), linkTextLength(sibling)
+	if length == 0 || links*2 >= length || controls(sibling) > 2 {
+		return false
+	}
+	if e != nil && regionRank(e) >= primaryRank*.25 {
+		return true
+	}
+	if meaningfulSharedClass(primary, sibling) {
+		return true
+	}
+	if strings.EqualFold(sibling.Data, "p") {
+		return length > 80 || links == 0 && length >= 12 && strings.ContainsAny(text, ".!?;:")
+	}
+	heading, prose := false, 0
+	for i := range a.blocks {
+		b := &a.blocks[i]
+		if !nodeWithin(b.node, sibling) {
+			continue
+		}
+		if isHeadingTag(b.kind) {
+			heading = true
+		} else if a.plausibleRegionBlock(b) {
+			prose += utf8.RuneCountInString(b.text)
+		}
+	}
+	return heading && prose >= 80
+}
+
+func meaningfulSharedClass(aNode, bNode *html.Node) bool {
+	generic := func(s string) bool {
+		s = strings.ToLower(s)
+		return s == "container" || s == "wrapper" || s == "content" || s == "section" || s == "row" || s == "column" || s == "block" ||
+			containsAny(s, "card", "related", "recommended", "comment", "newsletter", "subscribe", "advert")
+	}
+	classes := make(map[string]bool)
+	for class := range strings.FieldsSeq(attrValue(aNode, "class")) {
+		if len(class) >= 4 && !generic(class) {
+			classes[strings.ToLower(class)] = true
+		}
+	}
+	for class := range strings.FieldsSeq(attrValue(bNode, "class")) {
+		if classes[strings.ToLower(class)] && !generic(class) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *analysis) documentOrder() map[*html.Node]int {
+	order := make(map[*html.Node]int, a.elements)
+	i := 0
+	walk(a.root, func(n *html.Node) bool {
+		order[n] = i
+		i++
+		return true
+	})
+	return order
+}
+
+func (a *analysis) normalizeSourceRoots(nodes []*html.Node, order map[*html.Node]int) []*html.Node {
+	sort.SliceStable(nodes, func(i, j int) bool { return order[nodes[i]] < order[nodes[j]] })
+	out := make([]*html.Node, 0, len(nodes))
+	seen := make(map[*html.Node]bool)
+	for _, n := range nodes {
+		if n == nil || seen[n] {
+			continue
+		}
+		covered := false
+		for _, ancestor := range out {
+			if nodeWithin(n, ancestor) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			out = append(out, n)
+			seen[n] = true
+		}
+	}
+	return out
 }
 
 func (a *analysis) highRecall() []*html.Node {
