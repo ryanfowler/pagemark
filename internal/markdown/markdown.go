@@ -2,7 +2,6 @@
 package markdown
 
 import (
-	"fmt"
 	"io"
 	"math/big"
 	"net/url"
@@ -2483,10 +2482,16 @@ func renderBlock(n *Node, depth int) string {
 		var a []string
 		number := n.Start
 		literalOrdinals := n.Kind == OrderedList && needsLiteralOrdinals(n)
-		ordinal := big.NewInt(int64(n.Start))
-		step := big.NewInt(1)
-		if n.Reversed {
-			step.Neg(step)
+		// Arbitrary precision is only needed for literal ordinals that can run
+		// beyond int. Ordinary CommonMark lists should not pay for two big.Int
+		// allocations on every render.
+		var ordinal, step *big.Int
+		if literalOrdinals {
+			ordinal = big.NewInt(int64(n.Start))
+			step = big.NewInt(1)
+			if n.Reversed {
+				step.Neg(step)
+			}
 		}
 		for _, x := range n.Children {
 			mark := "- "
@@ -2496,7 +2501,7 @@ func renderBlock(n *Node, depth int) string {
 					ordinal.SetInt64(int64(x.Level))
 				}
 				if !literalOrdinals {
-					mark = fmt.Sprintf("%d. ", number)
+					mark = strconv.Itoa(number) + ". "
 				}
 			}
 			body := renderBlock(x, depth+1)

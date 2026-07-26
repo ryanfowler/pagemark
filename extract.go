@@ -5013,9 +5013,17 @@ func isCommentRegionHeading(label string) bool {
 		label == "leave a comment" || label == "leave a reply" {
 		return true
 	}
-	fields := strings.Fields(label)
-	return len(fields) >= 2 && allASCIIDigits(fields[0]) &&
-		(fields[1] == "comments" || fields[1] == "responses" || fields[1] == "replies")
+	// Labels are normalized before this check, so the first two fields can be
+	// inspected without allocating the []string produced by strings.Fields.
+	space := strings.IndexByte(label, ' ')
+	if space <= 0 || !allASCIIDigits(label[:space]) {
+		return false
+	}
+	rest := label[space+1:]
+	if next := strings.IndexByte(rest, ' '); next >= 0 {
+		rest = rest[:next]
+	}
+	return rest == "comments" || rest == "responses" || rest == "replies"
 }
 
 // isEmptyCommentControlRegion recognizes comment UI with no visible,
@@ -6083,37 +6091,38 @@ func nodeText(n *html.Node) string {
 	var b strings.Builder
 	var first string
 	texts := 0
-	walk(n, func(x *html.Node) bool {
-		if dom.Hidden(x) {
-			return false
-		}
-		if x.Type == html.ElementNode {
-			switch strings.ToLower(x.Data) {
-			case "script", "style", "template":
-				return false
-			}
-		}
-		if x.Type == html.TextNode {
-			texts++
-			if texts == 1 {
-				// Most prose blocks contain one text node. Return its immutable DOM
-				// string directly rather than copying it into a builder.
-				first = x.Data
-				return true
-			}
-			if texts == 2 {
-				b.Grow(len(first) + 1 + len(x.Data))
-				b.WriteString(first)
-			}
-			b.WriteByte(' ')
-			b.WriteString(x.Data)
-		}
-		return true
-	})
+	appendNodeText(n, &b, &first, &texts)
 	if texts <= 1 {
 		return first
 	}
 	return b.String()
+}
+
+// appendNodeText uses a dedicated traversal instead of the generic callback
+// walker. Text collection is one of the hottest complete-subtree operations,
+// and avoiding an indirect callback for every DOM node is measurable on large
+// pages while retaining the single-text-node allocation fast path.
+func appendNodeText(n *html.Node, b *strings.Builder, first *string, texts *int) {
+	if n == nil || dom.Hidden(n) {
+		return
+	}
+	if n.Type == html.TextNode {
+		(*texts)++
+		if *texts == 1 {
+			*first = n.Data
+		} else {
+			if *texts == 2 {
+				b.Grow(len(*first) + 1 + len(n.Data))
+				b.WriteString(*first)
+			}
+			b.WriteByte(' ')
+			b.WriteString(n.Data)
+		}
+		return
+	}
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		appendNodeText(ch, b, first, texts)
+	}
 }
 func walk(n *html.Node, f func(*html.Node) bool) {
 	if n == nil || !f(n) {
