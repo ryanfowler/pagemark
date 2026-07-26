@@ -67,7 +67,7 @@ type analysis struct {
 
 type metadata struct {
 	title, browserTitle, socialTitle, description, author, site, language, published, canonical, schemaType string
-	articlePublished, articleType, headline, microdataListing                                               bool
+	articlePublished, articleType, headline, microdataListing, titleFromHeading                             bool
 }
 
 // Extract reads UTF-8 HTML and extracts useful content. Callers must decode
@@ -268,7 +268,11 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	if strings.TrimSpace(mr.Text) == "" {
 		return nil, ErrNoContent
 	}
-	doc := &Document{URL: rawURL, CanonicalURL: a.meta.canonical, Title: a.meta.title, Description: a.meta.description, Author: a.meta.author, SiteName: a.meta.site, Language: a.meta.language, PublishedTime: a.meta.published, PageType: pageType, PageTypeScore: confidence, Markdown: mr.Markdown, Text: mr.Text, Quality: clamp(quality), Diagnostics: a.diag, Stats: Stats{Elements: a.elements, TextBytes: a.textBytes, Blocks: len(a.blocks), OutputBytes: len(mr.Markdown)}}
+	documentTitle := normalizeText(a.meta.title)
+	if !a.meta.titleFromHeading {
+		documentTitle = a.cleanedMetadataTitle(documentTitle)
+	}
+	doc := &Document{URL: rawURL, CanonicalURL: a.meta.canonical, Title: documentTitle, Description: a.meta.description, Author: a.meta.author, SiteName: a.meta.site, Language: a.meta.language, PublishedTime: a.meta.published, PageType: pageType, PageTypeScore: confidence, Markdown: mr.Markdown, Text: mr.Text, Quality: clamp(quality), Diagnostics: a.diag, Stats: Stats{Elements: a.elements, TextBytes: a.textBytes, Blocks: len(a.blocks), OutputBytes: len(mr.Markdown)}}
 	if len(mr.Links) > 0 {
 		doc.Links = make([]Link, len(mr.Links))
 		for i, l := range mr.Links {
@@ -1493,43 +1497,18 @@ func hasPublicationMetadataElement(n *html.Node) bool {
 }
 
 // restorationTitle returns a document-specific metadata title. Social titles
-// are preferred because they normally omit browser chrome. For a plain
-// <title>, a site prefix or suffix is removed only when it agrees with explicit
-// site metadata or the page hostname.
+// are preferred because they normally omit browser chrome. Publication and
+// author prefixes or suffixes are removed only when they agree with metadata
+// or the page hostname.
 func (a *analysis) restorationTitle() string {
 	title := firstNonempty(a.meta.socialTitle, a.meta.title)
 	if title == "" {
 		return ""
 	}
-	sites := []string{a.meta.site}
-	if a.pageURL != nil {
-		host := strings.TrimPrefix(strings.ToLower(a.pageURL.Hostname()), "www.")
-		if host != "" {
-			sites = append(sites, host)
-			if dot := strings.IndexByte(host, '.'); dot > 0 {
-				sites = append(sites, host[:dot])
-			}
-			// Subdomains such as en.wikipedia.org use the registrable-domain
-			// label as the visible site name. Consult the public suffix list so
-			// hosts below suffixes such as com.au do not mistake "com" for it.
-			if registrable, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
-				if label, _, ok := strings.Cut(registrable, "."); ok && label != "" {
-					sites = append(sites, label)
-				}
-			}
-		}
-	}
-	for _, site := range sites {
-		if normalizedLabel(site) == "" {
-			continue
-		}
-		if normalizedLabel(title) == normalizedLabel(site) {
-			return ""
-		}
-		if stripped := stripTitleDecorationPreservingCase(title, site); stripped != title {
-			title = stripped
-			break
-		}
+	// A title inferred from visible document structure is authored content, not
+	// browser chrome. Only clean it when a separate social title was selected.
+	if a.meta.socialTitle != "" || !a.meta.titleFromHeading {
+		title = a.cleanedMetadataTitle(title)
 	}
 	normalized := normalizedLabel(title)
 	if normalized == "" || utf8.RuneCountInString(title) > 180 || genericDocumentTitle(normalized) {
@@ -1547,6 +1526,57 @@ func (a *analysis) restorationTitle() string {
 		return ""
 	}
 	return normalizeText(title)
+}
+
+// cleanedMetadataTitle removes browser chrome while preserving separators that
+// are genuinely part of a headline. A suffix is removed only when the complete
+// delimited segment matches the author, publication, or a hostname-derived
+// publication name.
+func (a *analysis) cleanedMetadataTitle(title string) string {
+	type decorationLabel struct {
+		text        string
+		publication bool
+	}
+	// A title that consists only of a publication is browser chrome. An author
+	// name, however, can also be a legitimate document title, so author equality
+	// alone must not erase it.
+	labels := []decorationLabel{{text: a.meta.author}, {text: a.meta.site, publication: true}}
+	if a.pageURL != nil {
+		host := strings.TrimPrefix(strings.ToLower(a.pageURL.Hostname()), "www.")
+		if host != "" {
+			labels = append(labels, decorationLabel{text: host, publication: true})
+			if dot := strings.IndexByte(host, '.'); dot > 0 {
+				labels = append(labels, decorationLabel{text: host[:dot], publication: true})
+			}
+			// Subdomains such as en.wikipedia.org use the registrable-domain
+			// label as the visible site name. Consult the public suffix list so
+			// hosts below suffixes such as com.au do not mistake "com" for it.
+			if registrable, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
+				if label, _, ok := strings.Cut(registrable, "."); ok && label != "" {
+					labels = append(labels, decorationLabel{text: label, publication: true})
+				}
+			}
+		}
+	}
+	for {
+		changed := false
+		for _, label := range labels {
+			if normalizedLabel(label.text) == "" {
+				continue
+			}
+			if label.publication && normalizedLabel(title) == normalizedLabel(label.text) {
+				return ""
+			}
+			if stripped := stripTitleDecorationPreservingCase(title, label.text); stripped != title {
+				title = normalizeText(stripped)
+				changed = true
+				break
+			}
+		}
+		if !changed {
+			return normalizeText(title)
+		}
+	}
 }
 
 func stripTitleDecorationPreservingCase(title, site string) string {
@@ -2855,6 +2885,7 @@ func (a *analysis) extractMetadata() {
 			}
 		} else if tag == "h1" && m.title == "" {
 			m.title = normalizeText(nodeText(n))
+			m.titleFromHeading = m.title != ""
 		}
 		itemprop := strings.ToLower(attrValue(n, "itemprop"))
 		itemtype := strings.ToLower(attrValue(n, "itemtype"))

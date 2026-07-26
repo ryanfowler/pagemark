@@ -2103,6 +2103,79 @@ func TestArticleSiteSuffixRestoresNormalizedTitle(t *testing.T) {
 	}
 }
 
+func TestAuthorSuffixIsRemovedFromDocumentAndRestoredTitles(t *testing.T) {
+	for _, separator := range []string{"|", "-", "—", "–", "·"} {
+		t.Run(separator, func(t *testing.T) {
+			html := `<html><head><title>How to Build Reliable Systems ` + separator + ` Ada Lovelace</title><meta name="author" content="Ada Lovelace"></head><body><article><p>This article has substantial opening prose but deliberately omits a visible source headline from the selected body.</p><p>A second paragraph ensures there is enough article content for normalized metadata title restoration.</p></article></body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.Title != "How to Build Reliable Systems" {
+				t.Fatalf("title = %q, want suffix removed", doc.Title)
+			}
+			if !strings.HasPrefix(doc.Markdown, "# How to Build Reliable Systems\n") || strings.Contains(doc.Markdown, "Ada Lovelace") {
+				t.Fatalf("author suffix was not removed from restored title:\n%s", doc.Markdown)
+			}
+		})
+	}
+}
+
+func TestTitleInferredFromHeadingIsNotCleanedAsBrowserChrome(t *testing.T) {
+	for _, heading := range []string{"Example", "A Structural Heading | Example"} {
+		t.Run(heading, func(t *testing.T) {
+			html := `<html><head><meta property="og:site_name" content="Example"></head><body><main><h1>` + heading + `</h1><p>This page contains enough useful explanatory prose to retain its visible structural heading as the document title.</p></main></body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/page")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.Title != heading {
+				t.Fatalf("title inferred from h1 was cleaned: got %q, want %q", doc.Title, heading)
+			}
+		})
+	}
+}
+
+func TestTitleMatchingAuthorMetadataIsPreserved(t *testing.T) {
+	html := `<html><head><title>Ada Lovelace</title><meta name="author" content="Ada Lovelace"></head><body><article><p>This biographical article contains substantial opening prose but deliberately omits a visible source headline from the selected body.</p><p>A second paragraph ensures there is enough article content for metadata title restoration.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/people/ada-lovelace", WithPageType(PageTypeArticle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Title != "Ada Lovelace" || !strings.HasPrefix(doc.Markdown, "# Ada Lovelace\n") {
+		t.Fatalf("title matching author metadata was erased: title=%q\n%s", doc.Title, doc.Markdown)
+	}
+}
+
+func TestAuthorAndPublicationDecorationsAreBothRemoved(t *testing.T) {
+	for _, title := range []string{
+		"Reliable Systems | Example Publication - Ada Lovelace",
+		"Reliable Systems - Ada Lovelace | Example Publication",
+	} {
+		t.Run(title, func(t *testing.T) {
+			html := `<html><head><title>` + title + `</title><meta name="author" content="Ada Lovelace"><meta property="og:site_name" content="Example Publication"></head><body><article><p>This article has substantial opening prose but deliberately omits a visible source headline from the selected body.</p><p>A second paragraph ensures there is enough article content for normalized metadata title restoration.</p></article></body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://news.test/article", WithPageType(PageTypeArticle))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.Title != "Reliable Systems" || !strings.HasPrefix(doc.Markdown, "# Reliable Systems\n") {
+				t.Fatalf("decorations were not both removed: title=%q\n%s", doc.Title, doc.Markdown)
+			}
+		})
+	}
+}
+
+func TestTitleSeparatorIsPreservedWhenSuffixDoesNotMatchMetadata(t *testing.T) {
+	html := `<html><head><title>How to Build Reliable Systems - Without Guesswork</title><meta name="author" content="Ada Lovelace"></head><body><main><h1>How to Build Reliable Systems - Without Guesswork</h1><p>This guide explains the complete workflow with enough useful detail to retain the main document content.</p></main></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/guide")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Title != "How to Build Reliable Systems - Without Guesswork" {
+		t.Fatalf("title = %q, want genuine separator preserved", doc.Title)
+	}
+}
+
 func TestTitleRestorationUsesRegistrableDomainBelowMultiLabelSuffix(t *testing.T) {
 	body := `<body><article><p>This article has substantial opening prose but deliberately omits a visible source headline from the selected body.</p><p>A second paragraph ensures there is enough article content for metadata title restoration.</p></article></body>`
 	for _, tc := range []struct {
