@@ -111,3 +111,82 @@ func TestOverrideIrrelevantInvalidatesDescendantCache(t *testing.T) {
 		t.Fatal("nested heading retained stale relevant-ancestor result after override")
 	}
 }
+
+func TestSubscriptionTextEvidenceStreamsAcrossElements(t *testing.T) {
+	tests := []struct {
+		name                   string
+		source                 string
+		cta, consent, honeypot bool
+	}{
+		{
+			name:     "split phrases",
+			source:   `<section>Sign<em>up</em><p>Read our privacy<a>policy</a>.</p><span>Leave this field<b>unchanged</b></span></section>`,
+			cta:      true,
+			consent:  true,
+			honeypot: true,
+		},
+		{
+			name:    "punctuation separates words",
+			source:  `<section>Terms-of-use apply</section>`,
+			consent: true,
+		},
+		{
+			name:   "unicode lowercase maps to ASCII",
+			source: `<section>MAİLING LIST</section>`,
+			cta:    true,
+		},
+		{
+			name:    "unicode simple fold maps to ASCII",
+			source:  `<section>termſ of use</section>`,
+			consent: true,
+		},
+		{
+			name:   "word sequence does not match inside word",
+			source: `<section>A proprietarypolicy document</section>`,
+		},
+		{
+			name:   "hidden evidence ignored",
+			source: `<section><span hidden>Subscribe privacy policy do not fill</span>Article text</section>`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root, err := html.Parse(strings.NewReader(tt.source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cta, consent, honeypot := subscriptionTextEvidence(root)
+			if cta != tt.cta || consent != tt.consent || honeypot != tt.honeypot {
+				t.Fatalf("evidence = (%v, %v, %v), want (%v, %v, %v)",
+					cta, consent, honeypot, tt.cta, tt.consent, tt.honeypot)
+			}
+		})
+	}
+}
+
+func TestMarketingInteractionsStreamsNormalizedLabels(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		want   int
+	}{
+		{"long leading space", `<a>` + strings.Repeat(" ", 100) + `Get started</a>`, 1},
+		{"long trailing space", `<a>Learn more` + strings.Repeat(" ", 100) + `</a>`, 1},
+		{"exact label split across elements", `<a>Contact<strong>us</strong></a>`, 1},
+		{"exact label with extra text", `<a>Learn more about this</a>`, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root, err := html.Parse(strings.NewReader(tt.source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			interactions, links := marketingInteractions(root)
+			if interactions != tt.want || links != 1 {
+				t.Fatalf("marketing interactions, links = (%d, %d), want (%d, 1)",
+					interactions, links, tt.want)
+			}
+		})
+	}
+}

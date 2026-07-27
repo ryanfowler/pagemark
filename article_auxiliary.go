@@ -6,6 +6,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/ryanfowler/pagemark/internal/dom"
 	"golang.org/x/net/html"
 )
 
@@ -1479,10 +1480,7 @@ func marketingInteractions(n *html.Node) (interactions, links int) {
 			interactions++
 		case "a":
 			links++
-			label := normalizedLabel(nodeText(x))
-			if strings.HasPrefix(label, "get ") || strings.HasPrefix(label, "start ") ||
-				strings.HasPrefix(label, "connect ") || strings.HasPrefix(label, "apply") || strings.HasPrefix(label, "register") ||
-				strings.HasPrefix(label, "sign up") || label == "learn more" || label == "contact us" {
+			if marketingInteractionLabel(x) {
 				interactions++
 			}
 			return false
@@ -1490,6 +1488,101 @@ func marketingInteractions(n *html.Node) (interactions, links int) {
 		return true
 	})
 	return interactions, links
+}
+
+// marketingInteractionLabel recognizes the short normalized labels used by
+// marketingInteractions without retaining an arbitrarily large linked subtree.
+// Leading and trailing punctuation/space are ignored exactly as normalizedLabel
+// ignores them, including when the label is split across inline elements.
+func marketingInteractionLabel(n *html.Node) bool {
+	s := normalizedLabelScanner{}
+	s.scan(n)
+	label := string(s.prefix[:s.prefixLen])
+	return strings.HasPrefix(label, "get ") || strings.HasPrefix(label, "start ") ||
+		strings.HasPrefix(label, "connect ") || strings.HasPrefix(label, "apply") ||
+		strings.HasPrefix(label, "register") || strings.HasPrefix(label, "sign up") ||
+		s.total == len("learn more") && label == "learn more" ||
+		s.total == len("contact us") && label == "contact us"
+}
+
+type normalizedLabelScanner struct {
+	prefix                   [16]byte
+	prefixLen, total         int
+	pending                  [16]byte
+	pendingLen               int
+	pendingOverflow, started bool
+}
+
+func (s *normalizedLabelScanner) scan(n *html.Node) {
+	if n == nil || dom.Hidden(n) {
+		return
+	}
+	if n.Type == html.TextNode {
+		if s.started {
+			s.queueTrim(' ')
+		}
+		for text := n.Data; text != ""; {
+			r, size := utf8.DecodeRuneInString(text)
+			text = text[size:]
+			if labelTrimRune(r) {
+				if s.started {
+					s.queueTrim(r)
+				}
+				continue
+			}
+			s.flushPending()
+			s.started = true
+			r = unicode.ToLower(r)
+			var encoded [utf8.UTFMax]byte
+			n := utf8.EncodeRune(encoded[:], r)
+			for _, c := range encoded[:n] {
+				s.add(c)
+			}
+		}
+		return
+	}
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		s.scan(ch)
+	}
+}
+
+func labelTrimRune(r rune) bool {
+	return unicode.IsSpace(r) || strings.ContainsRune(".:;!?–—-", r)
+}
+
+func (s *normalizedLabelScanner) queueTrim(r rune) {
+	if unicode.IsSpace(r) {
+		if s.pendingLen > 0 && s.pending[s.pendingLen-1] == ' ' {
+			return
+		}
+		r = ' '
+	}
+	var encoded [utf8.UTFMax]byte
+	n := utf8.EncodeRune(encoded[:], r)
+	if s.pendingLen+n > len(s.pending) {
+		s.pendingOverflow = true
+		return
+	}
+	s.pendingLen += copy(s.pending[s.pendingLen:], encoded[:n])
+}
+
+func (s *normalizedLabelScanner) flushPending() {
+	for _, c := range s.pending[:s.pendingLen] {
+		s.add(c)
+	}
+	if s.pendingOverflow {
+		s.total += len(s.prefix) + 1
+	}
+	s.pendingLen = 0
+	s.pendingOverflow = false
+}
+
+func (s *normalizedLabelScanner) add(c byte) {
+	if s.prefixLen < len(s.prefix) {
+		s.prefix[s.prefixLen] = c
+		s.prefixLen++
+	}
+	s.total++
 }
 
 func (a *analysis) hasLongArticleProseBefore(n *html.Node) bool {
@@ -1611,9 +1704,7 @@ func evaluateSubscriptionRegion(n *html.Node, hasForm, hasEmail, subscriptionFor
 		return false
 	}
 	heading := firstRegionHeading(n)
-	text := strings.ToLower(normalizeText(nodeText(n)))
-	cta := strings.Contains(text, "subscribe") || strings.Contains(text, "sign up") ||
-		strings.Contains(text, "mailing list") || strings.Contains(text, "get updates")
+	cta, consent, honeypot := subscriptionTextEvidence(n)
 
 	if !hasForm && attributeMarker && cta && !substantialArticleScope(n) &&
 		(isSubscriptionPromptHeading(heading) || hasSubscriptionDestination(n)) {
@@ -1632,9 +1723,174 @@ func evaluateSubscriptionRegion(n *html.Node, hasForm, hasEmail, subscriptionFor
 	if !cta && !subscriptionForm && !hasJoinCTA(n) {
 		return false
 	}
-	consent := containsAnyWordSequence(text, "privacy policy", "terms of use", "terms and conditions")
-	honeypot := containsAnyWordSequence(text, "field is for validation", "leave this field unchanged", "do not fill")
 	return consent || honeypot
+}
+
+// subscriptionTextEvidence recognizes the few phrases used by subscription
+// classification without constructing and lowercasing the complete subtree
+// text. Page-wide wrappers often contain a form, causing this check to run at
+// several ancestor levels; materializing each ancestor's text makes that path
+// quadratic in allocated bytes on large pages.
+func subscriptionTextEvidence(n *html.Node) (cta, consent, honeypot bool) {
+	s := subscriptionTextScanner{}
+	s.scan(n)
+	s.endWord()
+	return s.cta, s.consent, s.honeypot
+}
+
+type subscriptionTextScanner struct {
+	contains                   [32]byte
+	containsLen, containsStart int
+	words                      [32]byte
+	wordsLen, wordsStart       int
+	inWord, pendingSpace       bool
+	cta, consent, honeypot     bool
+}
+
+func (s *subscriptionTextScanner) scan(n *html.Node) {
+	if n == nil || dom.Hidden(n) || s.cta && s.consent && s.honeypot {
+		return
+	}
+	if n.Type == html.TextNode {
+		// nodeText inserts a separator between visible text nodes. Delaying it
+		// lets normalization collapse that separator with surrounding whitespace.
+		if s.containsLen > 0 {
+			s.pendingSpace = true
+			s.endWord()
+		}
+		for text := n.Data; text != ""; {
+			r := rune(text[0])
+			size := 1
+			if r >= utf8.RuneSelf {
+				r, size = utf8.DecodeRuneInString(text)
+			}
+			text = text[size:]
+			if r == ' ' || r == '\t' || r == '\n' || r == '\f' || r == '\r' ||
+				r >= utf8.RuneSelf && unicode.IsSpace(r) {
+				s.pendingSpace = s.containsLen > 0
+				s.endWord()
+				continue
+			}
+			if s.pendingSpace {
+				s.pushContains(' ')
+				s.pendingSpace = false
+			}
+			lower := unicode.ToLower(r)
+			if lower <= unicode.MaxASCII {
+				s.pushContains(byte(lower))
+			} else {
+				// None of the phrases is non-ASCII. A sentinel preserves the
+				// substring boundary without retaining the original rune.
+				s.pushContains(0)
+			}
+			word := unicode.IsLetter(lower) || unicode.IsDigit(lower)
+			if word {
+				if !s.inWord && s.wordsLen > 0 {
+					s.pushWordByte(' ')
+				}
+				s.inWord = true
+				if folded, ok := foldedASCII(lower); ok {
+					s.pushWordByte(folded)
+				} else {
+					s.pushWordByte(0)
+				}
+			} else {
+				s.endWord()
+			}
+		}
+		return
+	}
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		s.scan(ch)
+	}
+}
+
+// foldedASCII returns the ASCII member of a rune's Unicode simple-fold orbit.
+// containsWordSequence previously used strings.EqualFold, so characters such
+// as long-s must remain equivalent to their ASCII phrase character.
+func foldedASCII(r rune) (byte, bool) {
+	if r <= unicode.MaxASCII {
+		return byte(r), true
+	}
+	for folded := unicode.SimpleFold(r); folded != r; folded = unicode.SimpleFold(folded) {
+		if folded <= unicode.MaxASCII {
+			return lowerASCII(byte(folded)), true
+		}
+	}
+	return 0, false
+}
+
+func (s *subscriptionTextScanner) pushContains(c byte) {
+	pushTextWindow(&s.contains, &s.containsLen, &s.containsStart, c)
+	if s.cta {
+		return
+	}
+	switch c {
+	case 'e':
+		s.cta = windowHasSuffix(&s.contains, s.containsLen, s.containsStart, "subscribe", false)
+	case 'p':
+		s.cta = windowHasSuffix(&s.contains, s.containsLen, s.containsStart, "sign up", false)
+	case 't':
+		s.cta = windowHasSuffix(&s.contains, s.containsLen, s.containsStart, "mailing list", false)
+	case 's':
+		s.cta = windowHasSuffix(&s.contains, s.containsLen, s.containsStart, "get updates", false)
+	}
+}
+
+func (s *subscriptionTextScanner) pushWordByte(c byte) {
+	pushTextWindow(&s.words, &s.wordsLen, &s.wordsStart, c)
+}
+
+func (s *subscriptionTextScanner) endWord() {
+	if !s.inWord {
+		return
+	}
+	s.inWord = false
+	last := textWindowByte(&s.words, s.wordsLen, s.wordsStart, s.wordsLen-1)
+	switch last {
+	case 'y':
+		s.consent = s.consent || windowHasSuffix(&s.words, s.wordsLen, s.wordsStart, "privacy policy", true)
+	case 'e':
+		s.consent = s.consent || windowHasSuffix(&s.words, s.wordsLen, s.wordsStart, "terms of use", true)
+	case 's':
+		s.consent = s.consent || windowHasSuffix(&s.words, s.wordsLen, s.wordsStart, "terms and conditions", true)
+	case 'n':
+		s.honeypot = s.honeypot || windowHasSuffix(&s.words, s.wordsLen, s.wordsStart, "field is for validation", true)
+	case 'd':
+		s.honeypot = s.honeypot || windowHasSuffix(&s.words, s.wordsLen, s.wordsStart, "leave this field unchanged", true)
+	case 'l':
+		s.honeypot = s.honeypot || windowHasSuffix(&s.words, s.wordsLen, s.wordsStart, "do not fill", true)
+	}
+}
+
+func pushTextWindow(window *[32]byte, length, start *int, c byte) {
+	if *length < len(window) {
+		window[(*start+*length)%len(window)] = c
+		(*length)++
+		return
+	}
+	window[*start] = c
+	*start = (*start + 1) % len(window)
+}
+
+func textWindowByte(window *[32]byte, length, start, index int) byte {
+	if index < 0 || index >= length {
+		return 0
+	}
+	return window[(start+index)%len(window)]
+}
+
+func windowHasSuffix(window *[32]byte, length, start int, phrase string, wholeWord bool) bool {
+	if len(phrase) > length {
+		return false
+	}
+	offset := length - len(phrase)
+	for i := range len(phrase) {
+		if textWindowByte(window, length, start, offset+i) != phrase[i] {
+			return false
+		}
+	}
+	return !wholeWord || offset == 0 || textWindowByte(window, length, start, offset-1) == ' '
 }
 
 func hasSubscriptionDestination(n *html.Node) bool {
