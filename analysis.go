@@ -64,6 +64,7 @@ type analysis struct {
 	articleProseBeforeIndexed                        bool
 	microdataArticleRecords                          map[*html.Node]bool
 	listingWrapperRecords                            map[*html.Node]map[*html.Node]bool
+	listingStates                                    map[*html.Node]uint8
 	dominantMicrodataArticle, textListingPre         *html.Node
 	strongArticleProse                               map[*html.Node]bool
 	strongArticleProseIndexed, hasStrongArticleProse bool
