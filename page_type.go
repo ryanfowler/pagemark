@@ -15,7 +15,6 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 		PageTypeProduct: 0, PageTypeListing: 0, PageTypeCollection: 0,
 		PageTypeService: 0, PageTypeGeneric: 1,
 	}
-	schema := strings.ToLower(a.meta.schemaType)
 	urlPath := ""
 	if a.pageURL != nil {
 		urlPath = strings.ToLower(a.pageURL.Path)
@@ -214,26 +213,27 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 			scores[PageTypeListing]++
 		}
 	}
-	if a.meta.articleType || strings.Contains(schema, "article") || strings.Contains(schema, "news") {
+	if a.meta.articleType {
 		scores[PageTypeArticle] += 5
 	}
-	if strings.Contains(schema, "product") {
+	if a.meta.schemaProduct {
 		scores[PageTypeProduct] += 5
 	}
-	if strings.Contains(schema, "discussion") || strings.Contains(schema, "question") ||
-		strings.Contains(schema, "qapage") || strings.Contains(schema, "forumposting") {
+	if a.meta.schemaDiscussion {
 		scores[PageTypeDiscussion] += 5
 	}
-	if strings.Contains(schema, "searchresultspage") {
-		// SearchResultsPage is explicit page-level evidence and should outweigh
-		// generic Article metadata added by publishing platforms.
+	if a.meta.schemaDocumentation {
+		scores[PageTypeDocumentation] += 5
+	}
+	if a.meta.schemaListing {
+		// Explicit page/listing schema should outweigh generic Article metadata
+		// emitted by publishing platforms.
 		scores[PageTypeListing] += 10
-	} else if strings.Contains(schema, "itemlist") || a.meta.microdataListing {
+	} else if a.meta.microdataListing {
 		scores[PageTypeListing] += 5
 	}
-	if strings.Contains(schema, "governmentservice") || strings.Contains(schema, "service") {
-		// A specialized service entity is more informative than a generic Article
-		// entity when both describe the same page.
+	if a.meta.schemaService {
+		// A specialized service entity is more informative than a generic Article.
 		scores[PageTypeService] += 20
 	}
 	if a.textListingPre != nil {
