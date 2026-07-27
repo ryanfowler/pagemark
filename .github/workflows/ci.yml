@@ -11,11 +11,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
           cache: true
+      - name: Verify Mozilla Readability corpus pin
+        run: |
+          test "$(git -C testdata/readability-js rev-parse HEAD)" = ab4027a8b37669745016869a37a504727992b2ba
+          test "$(git -C testdata/readability-js rev-parse HEAD:test/test-pages)" = 582c0693a5f171d6568c82554dba462f0c44c46b
+      - run: test -z "$(gofmt -l *.go cmd internal)"
       - run: go test ./...
+      - name: Smoke-test Mozilla compatibility benchmarks
+        run: go test . -run='^$' -bench='^BenchmarkExtractMozillaReadability$' -benchtime=1x
       - run: go test -race ./...
       - run: go test . -run='^$' -fuzz=FuzzExtract -fuzztime=5s
       - uses: dominikh/staticcheck-action@v1

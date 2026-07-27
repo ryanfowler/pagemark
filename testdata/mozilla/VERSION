@@ -1,0 +1,5 @@
+repository=https://github.com/mozilla/readability.git
+commit=ab4027a8b37669745016869a37a504727992b2ba
+test_pages_tree=582c0693a5f171d6568c82554dba462f0c44c46b
+fixture_count=130
+license=Apache-2.0

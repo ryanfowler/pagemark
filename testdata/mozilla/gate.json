@@ -1,0 +1,1729 @@
+{
+  "schema_version": 1,
+  "mozilla_commit": "ab4027a8b37669745016869a37a504727992b2ba",
+  "fixture_count": 130,
+  "aggregate": {
+    "precision_min": 0.9439,
+    "recall_min": 0.9198,
+    "f1_min": 0.9317,
+    "extraction_errors_max": 3
+  },
+  "metadata": {
+    "byline": {
+      "matches_min": 74,
+      "compared": 130
+    },
+    "excerpt": {
+      "matches_min": 64,
+      "compared": 128
+    },
+    "lang": {
+      "matches_min": 73,
+      "compared": 74
+    },
+    "publishedTime": {
+      "matches_min": 94,
+      "compared": 130
+    },
+    "siteName": {
+      "matches_min": 120,
+      "compared": 130
+    },
+    "title": {
+      "matches_min": 79,
+      "compared": 130
+    }
+  },
+  "fixtures": {
+    "001": {
+      "precision": 0.9814814814814815,
+      "recall": 1,
+      "f1": 0.9906542056074767,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "002": {
+      "precision": 0.97953216374269,
+      "recall": 0.998297147722435,
+      "f1": 0.9888256377819945,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "003-metadata-preferred": {
+      "precision": 1,
+      "recall": 0.9787234042553191,
+      "f1": 0.989247311827957,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "004-metadata-space-separated-properties": {
+      "precision": 1,
+      "recall": 0.9787234042553191,
+      "f1": 0.989247311827957,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "005-unescape-html-entities": {
+      "precision": 0,
+      "recall": 0,
+      "f1": 0,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "aclu": {
+      "precision": 0.9680638722554891,
+      "recall": 1,
+      "f1": 0.9837728194726166,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "aktualne": {
+      "precision": 0.5984522785898538,
+      "recall": 1,
+      "f1": 0.748789671866595,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": false,
+        "title": true
+      }
+    },
+    "archive-of-our-own": {
+      "precision": 0.9982750123213405,
+      "recall": 1,
+      "f1": 0.9991367616228882,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "ars-1": {
+      "precision": 0.9676375404530745,
+      "recall": 0.9835526315789473,
+      "f1": 0.9755301794453507,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "article-author-tag": {
+      "precision": 0.9859689040576413,
+      "recall": 1,
+      "f1": 0.9929348863853351,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "base-url": {
+      "precision": 1,
+      "recall": 0.935251798561151,
+      "f1": 0.966542750929368,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "base-url-base-element": {
+      "precision": 1,
+      "recall": 0.935251798561151,
+      "f1": 0.966542750929368,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "base-url-base-element-relative": {
+      "precision": 1,
+      "recall": 0.935251798561151,
+      "f1": 0.966542750929368,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "basic-tags-cleaning": {
+      "precision": 0.9921875,
+      "recall": 1,
+      "f1": 0.996078431372549,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "bbc-1": {
+      "precision": 0.8182683158896289,
+      "recall": 0.9873708381171068,
+      "f1": 0.894901144640999,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "blogger": {
+      "precision": 0.9947325769854133,
+      "recall": 0.9839679358717435,
+      "f1": 0.9893209752166029,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "breitbart": {
+      "precision": 0.921875,
+      "recall": 0.9640522875816994,
+      "f1": 0.9424920127795526,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "bug-1255978": {
+      "precision": 0.9911242603550295,
+      "recall": 0.43506493506493504,
+      "f1": 0.6046931407942239,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "buzzfeed-1": {
+      "precision": 0.7932816537467701,
+      "recall": 1,
+      "f1": 0.8847262247838618,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "citylab-1": {
+      "precision": 0.9925140361821585,
+      "recall": 0.9918952618453866,
+      "f1": 0.9922045525413159,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "clean-links": {
+      "precision": 0.9995894066926709,
+      "recall": 1,
+      "f1": 0.999794661190965,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "cnet": {
+      "precision": 0.8002481389578163,
+      "recall": 1,
+      "f1": 0.8890420399724328,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "cnet-svg-classes": {
+      "precision": 0.832258064516129,
+      "recall": 0.9923076923076923,
+      "f1": 0.9052631578947369,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "cnn": {
+      "precision": 0.9422572178477691,
+      "recall": 1,
+      "f1": 0.9702702702702702,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "comment-inside-script-parsing": {
+      "precision": 0.9921875,
+      "recall": 1,
+      "f1": 0.996078431372549,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "daringfireball-1": {
+      "precision": 0.9120370370370371,
+      "recall": 0.9205607476635514,
+      "f1": 0.9162790697674419,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "data-url-image": {
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "dev418": {
+      "precision": 0.8,
+      "recall": 0.3076923076923077,
+      "f1": 0.4444444444444444,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "dropbox-blog": {
+      "precision": 0.9913130638155697,
+      "recall": 0.998653651969034,
+      "f1": 0.9949698189134809,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "ebb-org": {
+      "precision": 0.9868282402528978,
+      "recall": 1,
+      "f1": 0.9933704587642536,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "ehow-1": {
+      "precision": 1,
+      "recall": 0.8957345971563981,
+      "f1": 0.9450000000000001,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "ehow-2": {
+      "precision": 0.8947368421052632,
+      "recall": 0.9210526315789473,
+      "f1": 0.9077040427154843,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "embedded-videos": {
+      "precision": 0.9927007299270073,
+      "recall": 0.9927007299270073,
+      "f1": 0.9927007299270073,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "engadget": {
+      "precision": 0.9208059981255857,
+      "recall": 1,
+      "f1": 0.9587704318126371,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "firefox-nightly-blog": {
+      "precision": 0.9601160261058739,
+      "recall": 0.879734219269103,
+      "f1": 0.9181692094313453,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "folha": {
+      "precision": 0.43733333333333335,
+      "recall": 1,
+      "f1": 0.6085343228200372,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "gitlab-blog": {
+      "precision": 0.9160696008188332,
+      "recall": 1,
+      "f1": 0.9561965811965812,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": false,
+        "title": true
+      }
+    },
+    "gmw": {
+      "precision": 0.8554216867469879,
+      "recall": 0.993006993006993,
+      "f1": 0.9190938511326862,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "google-sre-book-1": {
+      "precision": 0.9351362342415616,
+      "recall": 0.9991310015207473,
+      "f1": 0.9660749921226761,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "guardian-1": {
+      "precision": 0.7763239875389408,
+      "recall": 0.9975980784627703,
+      "f1": 0.8731604765241767,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "heise": {
+      "precision": 0.7342465753424657,
+      "recall": 1,
+      "f1": 0.8467614533965244,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "herald-sun-1": {
+      "precision": 0.9166666666666666,
+      "recall": 0.0547945205479452,
+      "f1": 0.10340775558166862,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "hidden-nodes": {
+      "precision": 1,
+      "recall": 0.974025974025974,
+      "f1": 0.9868421052631579,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "hukumusume": {
+      "precision": 0.9224137931034483,
+      "recall": 0.981651376146789,
+      "f1": 0.951111111111111,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "iab-1": {
+      "precision": 0.9968847352024922,
+      "recall": 1,
+      "f1": 0.9984399375975038,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "ietf-1": {
+      "precision": 1,
+      "recall": 0.9950955521731777,
+      "f1": 0.997541747902009,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "invalid-attributes": {
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "js-link-replacement": {
+      "precision": 1,
+      "recall": 0.6666666666666666,
+      "f1": 0.8,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "keep-images": {
+      "precision": 0.9769094138543517,
+      "recall": 1,
+      "f1": 0.9883198562443846,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "keep-tabular-data": {
+      "precision": 0.9992082343626286,
+      "recall": 0.9937007874015747,
+      "f1": 0.9964469009080141,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "la-nacion": {
+      "precision": 0.9418416801292407,
+      "recall": 1,
+      "f1": 0.9700499168053245,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "lazy-image-1": {
+      "precision": 0.9681490384615384,
+      "recall": 0.9829164124466138,
+      "f1": 0.9754768392370573,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": false,
+        "title": true
+      }
+    },
+    "lazy-image-2": {
+      "precision": 0,
+      "recall": 0,
+      "f1": 0,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": false,
+        "siteName": false,
+        "title": false
+      }
+    },
+    "lazy-image-3": {
+      "precision": 0,
+      "recall": 0,
+      "f1": 0,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "lemonde-1": {
+      "precision": 0.8449023861171366,
+      "recall": 0.9854522454142948,
+      "f1": 0.9097810218978102,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "liberation-1": {
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "lifehacker-post-comment-load": {
+      "precision": 0.8623936816524909,
+      "recall": 1,
+      "f1": 0.9261131952373185,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "lifehacker-working": {
+      "precision": 0.8626557277423276,
+      "recall": 1,
+      "f1": 0.9262642740619903,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "links-in-tables": {
+      "precision": 0.9537892791127541,
+      "recall": 1,
+      "f1": 0.9763481551561021,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "lwn-1": {
+      "precision": 0.9706556625401193,
+      "recall": 1,
+      "f1": 0.9851093531875291,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "mathjax": {
+      "precision": 0.8157894736842105,
+      "recall": 0.12062256809338522,
+      "f1": 0.21016949152542372,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "medicalnewstoday": {
+      "precision": 0.8485947416137806,
+      "recall": 0.9760166840458812,
+      "f1": 0.9078564500484966,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "medium-1": {
+      "precision": 0.9882223040117777,
+      "recall": 0.9981412639405205,
+      "f1": 0.9931570186794896,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "medium-2": {
+      "precision": 0.9340909090909091,
+      "recall": 0.9987849331713244,
+      "f1": 0.9653552554315913,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "medium-3": {
+      "precision": 0.9880830080131497,
+      "recall": 1,
+      "f1": 0.9940057875155023,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "mercurial": {
+      "precision": 0.9033535165346995,
+      "recall": 0.9707207207207207,
+      "f1": 0.935826296743064,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "metadata-content-missing": {
+      "precision": 1,
+      "recall": 0.9787234042553191,
+      "f1": 0.989247311827957,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "missing-paragraphs": {
+      "precision": 1,
+      "recall": 0.3303964757709251,
+      "f1": 0.4966887417218543,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "mozilla-1": {
+      "precision": 0.839622641509434,
+      "recall": 0.898989898989899,
+      "f1": 0.8682926829268292,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "mozilla-2": {
+      "precision": 0.9702602230483272,
+      "recall": 0.925531914893617,
+      "f1": 0.9473684210526315,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "msn": {
+      "precision": 0.604989604989605,
+      "recall": 1,
+      "f1": 0.7538860103626943,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "normalize-spaces": {
+      "precision": 1,
+      "recall": 0.9923076923076923,
+      "f1": 0.9961389961389961,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "nytimes-1": {
+      "precision": 0.9830508474576272,
+      "recall": 0.9938800489596084,
+      "f1": 0.9884357881923312,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "nytimes-2": {
+      "precision": 0.9888089528377298,
+      "recall": 0.9880191693290735,
+      "f1": 0.9884139033160209,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "nytimes-3": {
+      "precision": 0.989321608040201,
+      "recall": 0.9545454545454546,
+      "f1": 0.971622455274522,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "nytimes-4": {
+      "precision": 0.8736786469344608,
+      "recall": 0.9810089020771513,
+      "f1": 0.9242381884260553,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "nytimes-5": {
+      "precision": 0.25347452018530775,
+      "recall": 0.8724373576309795,
+      "f1": 0.39282051282051283,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "ol": {
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "parsely-metadata": {
+      "precision": 1,
+      "recall": 0.9787234042553191,
+      "f1": 0.989247311827957,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "pixnet": {
+      "precision": 0.46203904555314534,
+      "recall": 0.83203125,
+      "f1": 0.5941422594142259,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "qq": {
+      "precision": 0.6901408450704225,
+      "recall": 0.7777777777777778,
+      "f1": 0.7313432835820896,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "quanta-1": {
+      "precision": 0.9634146341463414,
+      "recall": 1,
+      "f1": 0.9813664596273292,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "remove-aria-hidden": {
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "remove-extra-brs": {
+      "precision": 0.9921875,
+      "recall": 1,
+      "f1": 0.996078431372549,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "remove-extra-paragraphs": {
+      "precision": 0.9921875,
+      "recall": 1,
+      "f1": 0.996078431372549,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "remove-script-tags": {
+      "precision": 0.9921875,
+      "recall": 1,
+      "f1": 0.996078431372549,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "reordering-paragraphs": {
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "replace-brs": {
+      "precision": 0.9921875,
+      "recall": 1,
+      "f1": 0.996078431372549,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "replace-font-tags": {
+      "precision": 1,
+      "recall": 0.9922480620155039,
+      "f1": 0.9961089494163424,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "royal-road": {
+      "precision": 0.965467208357516,
+      "recall": 0.6526088662220478,
+      "f1": 0.7787921348314607,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "rtl-1": {
+      "precision": 1,
+      "recall": 0.9924812030075187,
+      "f1": 0.9962264150943396,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "rtl-2": {
+      "precision": 1,
+      "recall": 0.9924812030075187,
+      "f1": 0.9962264150943396,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "rtl-3": {
+      "precision": 1,
+      "recall": 0.9924812030075187,
+      "f1": 0.9962264150943396,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "rtl-4": {
+      "precision": 1,
+      "recall": 0.9924812030075187,
+      "f1": 0.9962264150943396,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "salon-1": {
+      "precision": 0.8374896093100582,
+      "recall": 0.999008428358949,
+      "f1": 0.9111462808048836,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "schema-org-context-object": {
+      "precision": 0.9394654088050315,
+      "recall": 1,
+      "f1": 0.9687880016214026,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "seattletimes-1": {
+      "precision": 0.9412795793163892,
+      "recall": 1,
+      "f1": 0.9697516930022573,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "simplyfound-1": {
+      "precision": 0.8060941828254847,
+      "recall": 0.9238095238095239,
+      "f1": 0.8609467455621302,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "social-buttons": {
+      "precision": 1,
+      "recall": 0.9913793103448276,
+      "f1": 0.9956709956709957,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "spiceworks": {
+      "precision": 0.9738562091503268,
+      "recall": 0.9973226238286479,
+      "f1": 0.9854497354497354,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": false,
+        "title": true
+      }
+    },
+    "style-tags-removal": {
+      "precision": 1,
+      "recall": 0.9922480620155039,
+      "f1": 0.9961089494163424,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "svg-parsing": {
+      "precision": 1,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "table-style-attributes": {
+      "precision": 1,
+      "recall": 0.8927725118483413,
+      "f1": 0.9433489827856024,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "telegraph": {
+      "precision": 0.8835125448028673,
+      "recall": 0.9762376237623762,
+      "f1": 0.9275634995296331,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "theverge": {
+      "precision": 0.896,
+      "recall": 1,
+      "f1": 0.9451476793248946,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "title-and-h1-discrepancy": {
+      "precision": 1,
+      "recall": 0.9006622516556292,
+      "f1": 0.9477351916376306,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "title-en-dash": {
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "tmz-1": {
+      "precision": 0.8540540540540541,
+      "recall": 0.9937106918238994,
+      "f1": 0.9186046511627908,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "toc-missing": {
+      "precision": 0.9651063829787234,
+      "recall": 0.9933426769446391,
+      "f1": 0.979020979020979,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": false,
+        "title": true
+      }
+    },
+    "topicseed-1": {
+      "precision": 0.9938482570061518,
+      "recall": 1,
+      "f1": 0.9969146383270483,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "tumblr": {
+      "precision": 0.9910112359550561,
+      "recall": 0.9887892376681614,
+      "f1": 0.9898989898989898,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "v8-blog": {
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "videos-1": {
+      "precision": 0.9930755914598961,
+      "recall": 0.991073999424129,
+      "f1": 0.9920737858481049,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "videos-2": {
+      "precision": 0.9757763975155279,
+      "recall": 1,
+      "f1": 0.9877397044954417,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": false,
+        "title": true
+      }
+    },
+    "visibility-hidden": {
+      "precision": 0.9830508474576272,
+      "recall": 1,
+      "f1": 0.9914529914529915,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "wapo-1": {
+      "precision": 0.8525506638714185,
+      "recall": 0.9744408945686901,
+      "f1": 0.9094297428251956,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "wapo-2": {
+      "precision": 1,
+      "recall": 0.9819905213270143,
+      "f1": 0.9909134385461502,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "webmd-1": {
+      "precision": 1,
+      "recall": 0.11538461538461539,
+      "f1": 0.20689655172413793,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "webmd-2": {
+      "precision": 0.75,
+      "recall": 0.007556675062972292,
+      "f1": 0.014962593516209474,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "wikia": {
+      "precision": 0.9001426533523538,
+      "recall": 1,
+      "f1": 0.9474474474474475,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "wikipedia": {
+      "precision": 1,
+      "recall": 0.9495998269521956,
+      "f1": 0.9741484522356596,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "wikipedia-2": {
+      "precision": 0.9679970279163571,
+      "recall": 0.9904963614641034,
+      "f1": 0.9791174575907235,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": false,
+        "title": true
+      }
+    },
+    "wikipedia-3": {
+      "precision": 0.9541818181818181,
+      "recall": 0.9661266568483063,
+      "f1": 0.960117087449689,
+      "metadata": {
+        "byline": false,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": false,
+        "title": true
+      }
+    },
+    "wikipedia-4": {
+      "precision": 0.9936739659367396,
+      "recall": 0.9982889269127353,
+      "f1": 0.9959761004755519,
+      "metadata": {
+        "byline": true,
+        "excerpt": false,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": false,
+        "title": false
+      }
+    },
+    "wordpress": {
+      "precision": 0.7418546365914787,
+      "recall": 1,
+      "f1": 0.8517985611510791,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "yahoo-1": {
+      "precision": 0.9658952496954933,
+      "recall": 0.9362455726092089,
+      "f1": 0.9508393285371703,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "yahoo-2": {
+      "precision": 0.9177631578947368,
+      "recall": 0.9858657243816255,
+      "f1": 0.9505962521294719,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "yahoo-3": {
+      "precision": 0.8641304347826086,
+      "recall": 0.9408284023668639,
+      "f1": 0.9008498583569405,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": false,
+        "siteName": true,
+        "title": true
+      }
+    },
+    "yahoo-4": {
+      "precision": 0.5508021390374331,
+      "recall": 1,
+      "f1": 0.7103448275862069,
+      "metadata": {
+        "byline": false,
+        "excerpt": true,
+        "lang": true,
+        "publishedTime": true,
+        "siteName": true,
+        "title": false
+      }
+    },
+    "youth": {
+      "precision": 0.8341463414634146,
+      "recall": 1,
+      "f1": 0.9095744680851064,
+      "metadata": {
+        "byline": true,
+        "excerpt": true,
+        "lang": false,
+        "publishedTime": true,
+        "siteName": true,
+        "title": true
+      }
+    }
+  }
+}

@@ -1,0 +1,3 @@
+[submodule "testdata/readability-js"]
+	path = testdata/readability-js
+	url = https://github.com/mozilla/readability.git
