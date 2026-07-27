@@ -2,6 +2,7 @@ package pagemark
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -3308,6 +3309,108 @@ func TestTimestampedCommentsAreInferredAsDiscussion(t *testing.T) {
 	}
 	if doc.PageType != PageTypeDiscussion {
 		t.Fatalf("page type = %q, want discussion", doc.PageType)
+	}
+}
+
+func TestDominantRepeatedCommentsOutweighGenericArticleMetadata(t *testing.T) {
+	var comments strings.Builder
+	for i := 0; i < 8; i++ {
+		fmt.Fprintf(&comments, `<li class="comments_subtree"><div class="comment"><div class="comment_text"><p>Reply %d contributes a substantive independent response with enough detail to continue the conversation and clarify the proposal.</p></div></div></li>`, i)
+	}
+	html := `<html><head><meta property="og:type" content="article"><meta property="og:title" content="A community proposal"><meta property="article:published_time" content="2026-07-27"></head><body><div class="story_content"><div class="story_text"><p>The opening post introduces a community proposal and briefly explains the question that participants should consider.</p><p>It also gives enough background for each response to address the same concrete subject.</p></div></div><ol class="comments">` + comments.String() + `</ol></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/s/community_proposal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PageType != PageTypeDiscussion {
+		t.Fatalf("page type = %q, want discussion; markdown: %s", doc.PageType, doc.Markdown)
+	}
+	if !strings.Contains(doc.Text, "Reply 0 contributes") || !strings.Contains(doc.Text, "Reply 7 contributes") {
+		t.Fatalf("dominant discussion records were not retained: %s", doc.Text)
+	}
+}
+
+func TestDiscussionWrappersDoNotCountAsConventionalArticleBodies(t *testing.T) {
+	var comments strings.Builder
+	for i := 0; i < 8; i++ {
+		fmt.Fprintf(&comments, `<li class="comments_subtree"><div class="comment"><div class="comment_text"><p>Reply %d contributes a substantive independent response with enough detail to continue the conversation and clarify the proposal.</p></div></div></li>`, i)
+	}
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{
+			name: "tokens split across page-wide wrapper",
+			body: `<main id="post" class="content"><div class="story_text"><p>The opening message introduces a community proposal and explains the question participants should consider.</p></div><ol class="comments">` + comments.String() + `</ol></main>`,
+		},
+		{
+			name: "post-content opening message",
+			body: `<main><div class="post-content"><p>The opening message introduces a community proposal and explains the question participants should consider.</p></div><ol class="comments">` + comments.String() + `</ol></main>`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			html := `<html><head><meta property="og:type" content="article"><meta property="og:title" content="A community proposal"><meta property="article:published_time" content="2026-07-27"></head><body>` + tc.body + `</body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/s/community_proposal")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.PageType != PageTypeDiscussion {
+				t.Fatalf("page type = %q, want discussion; markdown: %s", doc.PageType, doc.Markdown)
+			}
+			if !strings.Contains(doc.Text, "Reply 0 contributes") || !strings.Contains(doc.Text, "Reply 7 contributes") {
+				t.Fatalf("discussion replies were not retained: %s", doc.Text)
+			}
+		})
+	}
+}
+
+func TestConventionalArticleBodyPreventsDominantCommentsFromReclassification(t *testing.T) {
+	paragraphs := `<p>The article opening reports the central observation and explains why the result matters to readers following the project.</p><p>The article conclusion records the verification steps and the limitations that remain after the investigation.</p>`
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{name: "entry-content", body: `<div class="entry-content">` + paragraphs + `</div>`},
+		{name: "articleContent", body: `<div class="articleContent">` + paragraphs + `</div>`},
+		{name: "nested post-body", body: `<div class="entry-content"><div class="post-body">` + paragraphs + `</div></div>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var comments strings.Builder
+			for i := 0; i < 8; i++ {
+				fmt.Fprintf(&comments, `<li class="comments_subtree"><div class="comment"><div class="comment_text"><p>Reader %d adds a long response with enough independent detail to make the comments dominate the total visible prose on this publication page.</p></div></div></li>`, i)
+			}
+			html := `<html><head><meta property="og:type" content="article"><meta property="og:title" content="A published field report"><meta property="article:published_time" content="2026-07-27"></head><body><main>` + tc.body + `<ol class="comments">` + comments.String() + `</ol></main></body></html>`
+			doc, err := ExtractBytes([]byte(html), "https://example.com/2026/07/27/field-report")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.PageType != PageTypeArticle {
+				t.Fatalf("page type = %q, want article; markdown: %s", doc.PageType, doc.Markdown)
+			}
+			if !strings.Contains(doc.Text, "article opening") || !strings.Contains(doc.Text, "article conclusion") {
+				t.Fatalf("conventional article body was not retained: %s", doc.Text)
+			}
+			if strings.Contains(doc.Text, "Reader 0 adds") {
+				t.Fatalf("article comments were retained: %s", doc.Text)
+			}
+		})
+	}
+}
+
+func TestCamelCaseArticleContentProtectsPageWrapperFromSubscriptionForm(t *testing.T) {
+	html := `<html><head><meta property="og:type" content="article"><meta property="og:title" content="Regional payment systems"></head><body><div id="wrapper"><header><form action="/search"><input name="q"></form></header><div role="main"><div class="articleContent"><p>This opening paragraph explains how a regional payment system changes checkout behavior for a large retailer and its customers.</p><p>The second paragraph describes the rollout schedule, operating constraints, and expected effects in enough detail to establish the article body.</p></div></div><section class="relatedArticles"><h2>More from Payments</h2><ul><li><a href="/first">A separate report about payment networks and regional adoption</a></li><li><a href="/second">Another report about checkout systems and retail technology</a></li></ul></section><footer><section class="newsletter"><h2>Subscribe for updates</h2><form action="/newsletter/subscribe"><input type="email"><label><input type="checkbox">I accept the privacy policy</label><button>Subscribe</button></form></section></footer></div></body></html>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/news/regional-payments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"opening paragraph", "second paragraph"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing article text %q: %s", want, doc.Text)
+		}
+	}
+	if strings.Contains(doc.Text, "Subscribe for updates") {
+		t.Errorf("subscription form was retained: %s", doc.Text)
+	}
+	if strings.Contains(doc.Text, "More from Payments") || strings.Contains(doc.Text, "separate report") {
+		t.Errorf("related article region was retained: %s", doc.Text)
 	}
 }
 

@@ -65,6 +65,9 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 		if article == nil && nodeWithin(b.node, a.dominantMicrodataArticle) {
 			article = a.dominantMicrodataArticle
 		}
+		if article == nil {
+			article = a.conventionalArticleBodyAncestor(b.node)
+		}
 		if article != nil {
 			primaryArticles[article] = true
 			if b.kind == "p" {
@@ -150,6 +153,15 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 			// Repeated comment-like records are useful evidence, but are capped so
 			// annotations cannot overwhelm publication and dominant-prose signals.
 			scores[PageTypeDiscussion] += math.Min(4, float64(len(discussionRecords)))
+			// A discussion page may still publish generic Article metadata for
+			// its opening post. When the repeated records dominate the visible
+			// prose and there is no semantic article body, let records beyond
+			// the ordinary cap distinguish a thread from an article with a small
+			// comments section.
+			if len(discussionRecords) > 4 && discussionProse*2 >= inferenceChars &&
+				primaryArticleProse == 0 {
+				scores[PageTypeDiscussion] += math.Min(8, float64(len(discussionRecords)-4))
+			}
 		} else {
 			scores[PageTypeDiscussion] += math.Min(1.5, .5*float64(len(discussionRecords)))
 		}
