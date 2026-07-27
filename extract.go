@@ -32,6 +32,12 @@ type block struct {
 	selected   bool
 	imageOnly  bool
 	reasons    []string
+
+	// Every scoring profile and several article-recovery passes query these
+	// immutable subtree counts. Keep them on the much smaller block set rather
+	// than adding evidence to every DOM node.
+	chars, linkedChars, controlCount int
+	evidenceIndexed                  bool
 }
 
 // articleRegionEvidence is a Readability-style, container-level view of the
@@ -518,7 +524,7 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 		// A visual does not need a paragraph or figure wrapper in HTML. Segment it
 		// directly when no selected wrapper has already stopped traversal above.
 		if a.o.includeImages && isVisualElement(n) && meaningfulVisual(n) {
-			a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: n, kind: "image", imageOnly: true})
+			a.appendBlock(n, "image", "", true)
 			return
 		}
 		// Forum software often puts a post's prose directly in a generic div,
@@ -528,7 +534,7 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 		if isDiscussionBodyContainer(n) && !hasPostBody {
 			text := normalizeText(nodeText(n))
 			if text != "" {
-				a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: n, kind: "generic", text: text})
+				a.appendBlock(n, "generic", text, false)
 				return
 			}
 		}
@@ -536,7 +542,7 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 			text := normalizeText(nodeText(n))
 			imageOnly := text == "" && a.o.includeImages && hasMeaningfulVisual(n)
 			if text != "" || tag == "hr" || imageOnly {
-				a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: n, kind: tag, text: text, imageOnly: imageOnly})
+				a.appendBlock(n, tag, text, imageOnly)
 				return
 			}
 		}
@@ -551,7 +557,7 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 					// as one visual block so its caption does not prevent image selection.
 					kind = "figure"
 				}
-				a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: n, kind: kind, text: text, imageOnly: visual && text == ""})
+				a.appendBlock(n, kind, text, visual && text == "")
 				return
 			}
 		}
@@ -591,7 +597,7 @@ func (a *analysis) segmentDirectFlow(parent *html.Node, excluded bool) {
 		// Synthetic nodes are intentionally not inserted into the caller's DOM,
 		// but this ancestry lets the scorer see the original prose region.
 		p.Parent = parent
-		a.blocks = append(a.blocks, block{id: len(a.blocks) + 1, node: p, kind: "p", text: text})
+		a.appendBlock(p, "p", text, false)
 	}
 	for ch := parent.FirstChild; ch != nil; ch = ch.NextSibling {
 		boundary := hardHidden(ch)
@@ -610,6 +616,126 @@ func (a *analysis) segmentDirectFlow(parent *html.Node, excluded bool) {
 	flush()
 }
 
+func (a *analysis) appendBlock(n *html.Node, kind, text string, imageOnly bool) {
+	b := block{id: len(a.blocks) + 1, node: n, kind: kind, text: text, imageOnly: imageOnly}
+	b.indexEvidence()
+	a.blocks = append(a.blocks, b)
+}
+
+func (b *block) indexEvidence() {
+	if b == nil || b.evidenceIndexed {
+		return
+	}
+	b.chars = utf8.RuneCountInString(b.text)
+	b.linkedChars, b.controlCount = blockSubtreeEvidence(b.node)
+	b.evidenceIndexed = true
+}
+
+func (b *block) textChars() int {
+	b.indexEvidence()
+	return b.chars
+}
+
+func (b *block) linkChars() int {
+	b.indexEvidence()
+	return b.linkedChars
+}
+
+func (b *block) controls() int {
+	b.indexEvidence()
+	return b.controlCount
+}
+
+// normalizedRuneCounter counts normalizeText(nodeText(...)) without building
+// either intermediate string. nodeText inserts one space between visible text
+// nodes, which is represented by pendingSpace.
+type normalizedRuneCounter struct {
+	runes, textNodes      int
+	started, pendingSpace bool
+}
+
+func (c *normalizedRuneCounter) addText(text string) {
+	if c.textNodes > 0 && c.started {
+		c.pendingSpace = true
+	}
+	c.textNodes++
+	for len(text) > 0 {
+		space, size := textRuneSpace(text)
+		if space {
+			if c.started {
+				c.pendingSpace = true
+			}
+		} else {
+			if c.pendingSpace {
+				c.runes++
+				c.pendingSpace = false
+			}
+			c.runes++
+			c.started = true
+		}
+		text = text[size:]
+	}
+}
+
+// blockSubtreeEvidence combines the two complete subtree scans needed by block
+// scoring. An outer link owns all of its descendant text, matching the pruning
+// behavior of linkTextLength even for malformed nested anchors.
+func blockSubtreeEvidence(root *html.Node) (linkedChars, controlCount int) {
+	accumulateBlockSubtreeEvidence(root, root, nil, &linkedChars, &controlCount)
+	return linkedChars, controlCount
+}
+
+func accumulateBlockSubtreeEvidence(n, root *html.Node, linked *normalizedRuneCounter, linkedChars, controlCount *int) {
+	if n == nil || dom.Hidden(n) {
+		return
+	}
+	if n.Type == html.TextNode {
+		if linked != nil {
+			linked.addText(n.Data)
+		}
+		return
+	}
+	if n.Type == html.ElementNode {
+		tag := n.Data
+		switch tag {
+		case "button", "input", "select", "textarea":
+			*controlCount++
+		default:
+			// Preserve ExtractNode support for caller-built mixed-case trees
+			// without putting EqualFold on the parser-lowercase path.
+			for i := 0; i < len(tag); i++ {
+				if tag[i] >= 'A' && tag[i] <= 'Z' {
+					if strings.EqualFold(tag, "button") || strings.EqualFold(tag, "input") ||
+						strings.EqualFold(tag, "select") || strings.EqualFold(tag, "textarea") {
+						*controlCount++
+					}
+					break
+				}
+			}
+		}
+		anchor := tag == "a"
+		if !anchor {
+			for i := 0; i < len(tag); i++ {
+				if tag[i] >= 'A' && tag[i] <= 'Z' {
+					anchor = strings.EqualFold(tag, "a")
+					break
+				}
+			}
+		}
+		if n != root && linked == nil && anchor {
+			var link normalizedRuneCounter
+			for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+				accumulateBlockSubtreeEvidence(ch, root, &link, linkedChars, controlCount)
+			}
+			*linkedChars += link.runes
+			return
+		}
+	}
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		accumulateBlockSubtreeEvidence(ch, root, linked, linkedChars, controlCount)
+	}
+}
+
 func cloneHTMLNode(n *html.Node) *html.Node {
 	clone := &html.Node{Type: n.Type, DataAtom: n.DataAtom, Data: n.Data, Namespace: n.Namespace,
 		Attr: append([]html.Attribute(nil), n.Attr...)}
@@ -625,8 +751,8 @@ func cloneHTMLNode(n *html.Node) *html.Node {
 // must agree before code rendering is disabled.
 func (a *analysis) detectTextListingPre() {
 	total := 0
-	for _, b := range a.blocks {
-		total += utf8.RuneCountInString(b.text)
+	for i := range a.blocks {
+		total += a.blocks[i].textChars()
 	}
 	if total == 0 {
 		return
@@ -637,11 +763,12 @@ func (a *analysis) detectTextListingPre() {
 	}
 	archiveHint := containsAny(hints, "archive", "inbox", "mailing list", "message list")
 
-	for _, b := range a.blocks {
+	for i := range a.blocks {
+		b := &a.blocks[i]
 		if b.kind != "pre" {
 			continue
 		}
-		chars := utf8.RuneCountInString(b.text)
+		chars := b.textChars()
 		if chars < 120 || float64(chars)/float64(total) < .65 || total-chars > max(200, chars/3) {
 			continue
 		}
@@ -959,7 +1086,7 @@ func (a *analysis) score(pt PageType, profile scoringProfile) {
 		b.score = 0
 		b.selected = false
 		b.reasons = nil
-		length := utf8.RuneCountInString(b.text)
+		length := b.textChars()
 		score := 0.0
 		switch b.kind {
 		case "h1", "h2", "h3", "h4", "h5", "h6":
@@ -989,7 +1116,7 @@ func (a *analysis) score(pt PageType, profile scoringProfile) {
 			score -= 8
 			a.addReason(b, "auxiliary content")
 		}
-		links, total := linkTextLength(b.node), max(1, length)
+		links, total := b.linkChars(), max(1, length)
 		density := float64(links) / float64(total)
 		for p := b.node.Parent; p != nil; p = p.Parent {
 			if p.Type != html.ElementNode {
@@ -1061,10 +1188,12 @@ func (a *analysis) score(pt PageType, profile scoringProfile) {
 			score -= 2
 			a.addReason(b, "high link density")
 		}
-		if controls(b.node) > 2 {
+		if b.controls() > 2 {
 			score -= 2
 		}
-		hash := strings.ToLower(normalizeText(b.text))
+		// Segmentation stores normalized text, so normalizing it again only
+		// rescans the complete block string.
+		hash := strings.ToLower(b.text)
 		_, duplicate := seen[hash]
 		if duplicate && len(hash) > 30 {
 			score -= 4
@@ -1080,9 +1209,9 @@ func (a *analysis) score(pt PageType, profile scoringProfile) {
 		b.score = score
 		b.selected = score >= 1.0
 		if profile == scoringRelaxedThreshold && !b.selected && score >= .65 &&
-			b.kind == "p" && utf8.RuneCountInString(b.text) >= 40 &&
+			b.kind == "p" && length >= 40 &&
 			a.strongArticleProseEvidence(b) && !a.hasIrrelevantAncestor(b.node) &&
-			controls(b.node) == 0 && linkTextLength(b.node)*2 < max(1, utf8.RuneCountInString(b.text)) {
+			b.controls() == 0 && links*2 < total {
 			b.selected = true
 			a.addReason(b, "relaxed article prose threshold")
 		}
@@ -1116,9 +1245,9 @@ func (a *analysis) indexStrongArticleProse() {
 	insideArticle := make([]bool, len(a.blocks))
 	for i := range a.blocks {
 		b := &a.blocks[i]
-		length := utf8.RuneCountInString(b.text)
+		length := b.textChars()
 		if b.kind != "p" || length < 40 || a.hasIrrelevantAncestor(b.node) ||
-			controls(b.node) != 0 || linkTextLength(b.node)*2 >= max(1, length) {
+			b.controls() != 0 || b.linkChars()*2 >= max(1, length) {
 			continue
 		}
 		eligible[i] = true
@@ -1178,9 +1307,9 @@ func (a *analysis) makeExtractionAttempt(profile scoringProfile, nodes []*html.N
 			attempt.hardExcluded = true
 			continue
 		}
-		length := utf8.RuneCountInString(b.text)
+		length := b.textChars()
 		attempt.chars += length
-		attempt.links += linkTextLength(b.node)
+		attempt.links += b.linkChars()
 		attempt.blocks++
 	}
 	attempt.quality = qualityFromEvidence(attempt.chars, attempt.links, attempt.blocks)
@@ -1209,8 +1338,8 @@ func (a *analysis) shouldRetryArticle(pt PageType, nodes []*html.Node) bool {
 		if !b.selected || a.hasIrrelevantAncestor(b.node) || hardHidden(b.node) {
 			continue
 		}
-		chars += utf8.RuneCountInString(b.text)
-		links += linkTextLength(b.node)
+		chars += b.textChars()
+		links += b.linkChars()
 		blocks++
 	}
 	if qualityFromEvidence(chars, links, blocks) < .42 {
@@ -1293,8 +1422,8 @@ func (a *analysis) strengthenArticleContinuity(pt PageType) {
 	for i := range a.blocks {
 		b := &a.blocks[i]
 		regions[i] = regionFor(b.node)
-		length := utf8.RuneCountInString(b.text)
-		if b.kind == "p" && b.selected && length >= 60 && linkTextLength(b.node)*2 < max(1, length) {
+		length := b.textChars()
+		if b.kind == "p" && b.selected && length >= 60 && b.linkChars()*2 < max(1, length) {
 			strong[regions[i]]++
 		}
 	}
@@ -1305,7 +1434,7 @@ func (a *analysis) strengthenArticleContinuity(pt PageType) {
 	// present on both sides.
 	for i := range a.blocks {
 		b := &a.blocks[i]
-		if b.selected || b.kind != "p" || utf8.RuneCountInString(b.text) < 40 ||
+		if b.selected || b.kind != "p" || b.textChars() < 40 ||
 			strong[regions[i]] < 2 || !a.plausibleArticleBridge(b, regions[i]) {
 			continue
 		}
@@ -1318,7 +1447,7 @@ func (a *analysis) strengthenArticleContinuity(pt PageType) {
 	for i := range a.blocks {
 		b := &a.blocks[i]
 		region := regions[i]
-		length := utf8.RuneCountInString(b.text)
+		length := b.textChars()
 		if b.selected || b.kind != "p" || length < 12 || strong[region] < 2 ||
 			!a.plausibleArticleBridge(b, region) {
 			continue
@@ -1377,7 +1506,8 @@ func selectedArticleProse(b *block) bool {
 	}
 	switch b.kind {
 	case "p", "blockquote", "generic":
-		return utf8.RuneCountInString(b.text) >= 20 && linkTextLength(b.node)*2 < max(1, utf8.RuneCountInString(b.text))
+		length := b.textChars()
+		return length >= 20 && b.linkChars()*2 < max(1, length)
 	}
 	return false
 }
@@ -1390,9 +1520,10 @@ func (a *analysis) plausibleArticleBridge(b *block, region *html.Node) bool {
 	if b == nil || region == nil || a.hasIrrelevantAncestor(b.node) {
 		return false
 	}
-	length := utf8.RuneCountInString(b.text)
-	if length == 0 || linkTextLength(b.node)*2 >= length || controls(b.node) > 0 ||
-		isArticleAuxiliaryLabel(normalizedLabel(b.text)) || auxiliaryLabels[normalizedLabel(b.text)] {
+	length := b.textChars()
+	label := normalizedLabel(b.text)
+	if length == 0 || b.linkChars()*2 >= length || b.controls() > 0 ||
+		isArticleAuxiliaryLabel(label) || auxiliaryLabels[label] {
 		return false
 	}
 	for p := b.node; p != nil && p != region; p = p.Parent {
@@ -2653,7 +2784,7 @@ func headingPublicationFurniture(n *html.Node) bool {
 func isSubstantiveProseBlock(b *block) bool {
 	switch b.kind {
 	case "p", "blockquote", "generic":
-		return utf8.RuneCountInString(normalizeText(b.text)) >= 40
+		return b.textChars() >= 40
 	}
 	return false
 }
@@ -3219,8 +3350,8 @@ func (a *analysis) semanticArticleFallback() (*html.Node, float64) {
 			indexes[article] = index
 			candidates = append(candidates, candidate{n: article})
 		}
-		candidates[index].chars += utf8.RuneCountInString(b.text)
-		candidates[index].links += linkTextLength(b.node)
+		candidates[index].chars += b.textChars()
+		candidates[index].links += b.linkChars()
 		candidates[index].blocks++
 	}
 	var best candidate
@@ -3251,15 +3382,15 @@ func (a *analysis) nodeSetBlockEvidence(nodes []*html.Node) (chars, links, block
 		if !inside || !a.plausibleRegionBlock(b) {
 			continue
 		}
-		chars += utf8.RuneCountInString(b.text)
-		links += linkTextLength(b.node)
+		chars += b.textChars()
+		links += b.linkChars()
 		blocks++
 	}
 	return
 }
 
 func (a *analysis) plausibleRegionBlock(b *block) bool {
-	if b == nil || a.hasIrrelevantAncestor(b.node) || controls(b.node) > 2 {
+	if b == nil || a.hasIrrelevantAncestor(b.node) || b.controls() > 2 {
 		return false
 	}
 	switch b.kind {
@@ -3267,8 +3398,8 @@ func (a *analysis) plausibleRegionBlock(b *block) bool {
 	default:
 		return false
 	}
-	length := utf8.RuneCountInString(b.text)
-	if length < 12 || linkTextLength(b.node)*2 >= max(1, length) ||
+	length := b.textChars()
+	if length < 12 || b.linkChars()*2 >= max(1, length) ||
 		isArticleAuxiliaryLabel(normalizedLabel(b.text)) {
 		return false
 	}
@@ -3337,7 +3468,7 @@ func (a *analysis) reconstructArticleRegion() []*html.Node {
 		if !a.plausibleRegionBlock(b) {
 			continue
 		}
-		length, linked := utf8.RuneCountInString(b.text), linkTextLength(b.node)
+		length, linked := b.textChars(), b.linkChars()
 		weight := 1.0
 		depth := 0
 		for p := b.node.Parent; p != nil && depth < 4; p = p.Parent {
@@ -3466,7 +3597,7 @@ func (a *analysis) uniqueRegionProseChars(regions []*articleRegionEvidence) int 
 		}
 		for p := b.node; p != nil; p = p.Parent {
 			if regionNodes[p] {
-				chars += utf8.RuneCountInString(b.text)
+				chars += b.textChars()
 				break
 			}
 		}
@@ -3520,7 +3651,7 @@ func (a *analysis) qualifyingArticleSibling(sibling, primary *html.Node, e *arti
 		if isHeadingTag(b.kind) {
 			heading = true
 		} else if a.plausibleRegionBlock(b) {
-			prose += utf8.RuneCountInString(b.text)
+			prose += b.textChars()
 		}
 	}
 	return heading && prose >= 80
@@ -3667,7 +3798,7 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 			continue
 		}
 		counts[b.kind]++
-		blockChars := utf8.RuneCountInString(b.text)
+		blockChars := b.textChars()
 		inferenceChars += blockChars
 		listingRecord := a.inferenceListingRecord(b.node)
 		if listingRecord != nil {
@@ -3685,14 +3816,14 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 		if article != nil {
 			primaryArticles[article] = true
 			if b.kind == "p" {
-				primaryArticleProse += utf8.RuneCountInString(b.text)
+				primaryArticleProse += b.textChars()
 			}
 		}
 		switch b.kind {
 		case "p":
-			proseChars += utf8.RuneCountInString(b.text)
+			proseChars += b.textChars()
 		case "pre":
-			codeChars += utf8.RuneCountInString(b.text)
+			codeChars += b.textChars()
 		}
 		// Attribute vocabulary is only consumed as boolean evidence below. Scan
 		// each ancestor in place instead of repeatedly concatenating and
