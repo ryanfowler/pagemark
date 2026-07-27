@@ -9,6 +9,192 @@ import (
 	"golang.org/x/net/html"
 )
 
+var schemaArticleTypes = map[string]struct{}{
+	"Article": {}, "AdvertiserContentArticle": {}, "NewsArticle": {},
+	"AnalysisNewsArticle": {}, "AskPublicNewsArticle": {}, "BackgroundNewsArticle": {},
+	"OpinionNewsArticle": {}, "ReportageNewsArticle": {}, "ReviewNewsArticle": {},
+	"Report": {}, "SatiricalArticle": {}, "ScholarlyArticle": {},
+	"MedicalScholarlyArticle": {}, "SocialMediaPosting": {}, "BlogPosting": {},
+	"LiveBlogPosting": {}, "DiscussionForumPosting": {}, "TechArticle": {}, "APIReference": {},
+}
+
+// These recognized Article subclasses describe a different Pagemark page shape.
+// Keep schema recognition separate from page-type evidence.
+var schemaNonArticlePageTypes = map[string]PageType{
+	"DiscussionForumPosting": PageTypeDiscussion,
+	"APIReference":           PageTypeDocumentation,
+}
+
+var schemaPageTypes = map[string]PageType{
+	"DiscussionForumPosting": PageTypeDiscussion,
+	"Question":               PageTypeDiscussion, "QAPage": PageTypeDiscussion,
+	"Product": PageTypeProduct, "IndividualProduct": PageTypeProduct,
+	"ProductCollection": PageTypeProduct, "ProductGroup": PageTypeProduct,
+	"ProductModel": PageTypeProduct, "SomeProducts": PageTypeProduct,
+	"Vehicle":  PageTypeProduct,
+	"ItemList": PageTypeListing, "SearchResultsPage": PageTypeListing,
+	"Service": PageTypeService, "BroadcastService": PageTypeService,
+	"CableOrSatelliteService": PageTypeService, "FinancialProduct": PageTypeService,
+	"FoodService": PageTypeService, "GovernmentService": PageTypeService,
+	"TaxiService": PageTypeService, "WebAPI": PageTypeService,
+	"APIReference": PageTypeDocumentation,
+}
+
+type jsonLDContext struct {
+	vocab    string
+	vocabSet bool
+	prefixes map[string]string
+}
+
+func (c jsonLDContext) with(raw any) jsonLDContext {
+	n := jsonLDContext{vocab: c.vocab, vocabSet: c.vocabSet, prefixes: make(map[string]string, len(c.prefixes))}
+	for k, v := range c.prefixes {
+		n.prefixes[k] = v
+	}
+	var apply func(any)
+	apply = func(value any) {
+		switch value := value.(type) {
+		case []any:
+			for _, entry := range value {
+				apply(entry)
+			}
+		case string:
+			// Remote contexts are never fetched. Only Schema.org's canonical context
+			// has a known vocabulary; another URL clears the implicit assumption.
+			n.vocabSet = true
+			if isSchemaVocab(value) {
+				n.vocab = value
+			} else {
+				n.vocab = ""
+			}
+		case nil:
+			n.vocab, n.vocabSet = "", true
+		case map[string]any:
+			if vocab, exists := value["@vocab"]; exists {
+				n.vocabSet = true
+				if s, ok := vocab.(string); ok {
+					n.vocab = s
+				} else {
+					n.vocab = ""
+				}
+			}
+			for term, definition := range value {
+				if strings.HasPrefix(term, "@") {
+					continue
+				}
+				switch definition := definition.(type) {
+				case string:
+					n.prefixes[term] = definition
+				case map[string]any:
+					if id, ok := definition["@id"].(string); ok {
+						n.prefixes[term] = id
+					}
+				}
+			}
+		}
+	}
+	apply(raw)
+	return n
+}
+
+func isSchemaVocab(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") &&
+		(strings.EqualFold(u.Host, "schema.org") || strings.EqualFold(u.Host, "www.schema.org")) &&
+		strings.Trim(u.Path, "/") == "" && u.RawQuery == "" && u.Fragment == ""
+}
+
+func schemaTypeName(raw string, context jsonLDContext) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", false
+	}
+
+	// Compact IRI definitions are untrusted and may be cyclic. Expand them
+	// iteratively, rejecting repeated prefixes and excessively deep chains.
+	seenPrefixes := map[string]bool{}
+	for expansions := 0; expansions <= 16; expansions++ {
+		if u, err := url.Parse(value); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+			if !strings.EqualFold(u.Host, "schema.org") && !strings.EqualFold(u.Host, "www.schema.org") || u.RawQuery != "" {
+				return "", false
+			}
+			name := strings.Trim(strings.TrimSpace(u.Path), "/")
+			if u.Fragment != "" {
+				if name != "" {
+					return "", false
+				}
+				name = u.Fragment
+			}
+			return name, name != "" && !strings.ContainsAny(name, "/#")
+		}
+		if i := strings.IndexByte(value, ':'); i >= 0 {
+			prefix := value[:i]
+			base, ok := context.prefixes[prefix]
+			if !ok || seenPrefixes[prefix] {
+				return "", false
+			}
+			seenPrefixes[prefix] = true
+			value = strings.TrimSpace(base) + value[i+1:]
+			continue
+		}
+		if strings.ContainsAny(value, "/#") {
+			return "", false
+		}
+		if context.vocabSet {
+			if isSchemaVocab(context.vocab) {
+				return value, true
+			}
+			return "", false
+		}
+		// Bare Schema.org names are retained for compatibility with the widespread
+		// context-less form, but remain exact and case-sensitive.
+		return value, true
+	}
+	return "", false
+}
+
+func schemaArticlePageType(raw string, context jsonLDContext) bool {
+	name, schema := schemaTypeName(raw, context)
+	if !schema {
+		return false
+	}
+	_, article := schemaArticleTypes[name]
+	_, specialized := schemaNonArticlePageTypes[name]
+	return article && !specialized
+}
+
+func addSchemaEvidence(m *metadata, raw string, context jsonLDContext) {
+	name, schema := schemaTypeName(raw, context)
+	if !schema {
+		return
+	}
+	m.schemaType = appendSchemaType(m.schemaType, name)
+	if _, recognized := schemaArticleTypes[name]; recognized {
+		if pageType, specialized := schemaNonArticlePageTypes[name]; specialized {
+			if pageType == PageTypeDiscussion {
+				m.schemaDiscussion = true
+			}
+			if pageType == PageTypeDocumentation {
+				m.schemaDocumentation = true
+			}
+		} else {
+			m.articleType = true
+		}
+	}
+	switch schemaPageTypes[name] {
+	case PageTypeDiscussion:
+		m.schemaDiscussion = true
+	case PageTypeDocumentation:
+		m.schemaDocumentation = true
+	case PageTypeProduct:
+		m.schemaProduct = true
+	case PageTypeListing:
+		m.schemaListing = true
+	case PageTypeService:
+		m.schemaService = true
+	}
+}
+
 func appendSchemaType(existing, value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -58,21 +244,21 @@ func (a *analysis) extractMetadata() {
 			if m.browserTitle == "" {
 				m.browserTitle = value
 			}
-			if m.title == "" {
-				m.title = value
+			if value != "" && m.titlePriority < 1 {
+				m.title, m.titlePriority = value, 1
 			}
-		} else if tag == "h1" && m.title == "" {
+		} else if tag == "h1" && m.titlePriority < 1 {
 			m.title = normalizeText(nodeText(n))
+			m.titlePriority = 1
 			m.titleFromHeading = m.title != ""
 		}
 		itemprop := strings.ToLower(attrValue(n, "itemprop"))
-		itemtype := strings.ToLower(attrValue(n, "itemtype"))
+		itemtype := attrValue(n, "itemtype")
 		pageEntity := microdataEntities[n]
 		if itemtype != "" && pageEntity {
-			m.schemaType = appendSchemaType(m.schemaType, itemtype)
-		}
-		if pageEntity && containsAny(itemtype, "article", "newsarticle", "blogposting") {
-			m.articleType = true
+			for _, typ := range strings.Fields(itemtype) {
+				addSchemaEvidence(&m, typ, jsonLDContext{})
+			}
 		}
 		if containsAny(itemprop, "headline") && isPageMicrodataProperty(n, microdataEntities) {
 			m.headline = true
@@ -80,9 +266,9 @@ func (a *analysis) extractMetadata() {
 				m.title = normalizeText(firstNonempty(attrValue(n, "content"), nodeText(n)))
 			}
 		}
-		if itemprop == "name" && hasAncestorItemprop(n, "author") {
+		if itemprop == "name" && hasAncestorItemprop(n, "author") && m.authorPriority < 1 {
 			if visible := normalizeText(nodeText(n)); visible != "" {
-				m.author = visible
+				m.author, m.authorPriority = visible, 1
 			}
 		}
 		if (tag == "time" || itemprop == "datepublished") && m.published == "" {
@@ -94,9 +280,7 @@ func (a *analysis) extractMetadata() {
 			switch key {
 			case "description", "og:description", "twitter:description":
 				priority := uint8(1)
-				if key == "og:description" {
-					priority = 2
-				} else if key == "twitter:description" {
+				if key != "description" {
 					priority = 3
 				}
 				if v = plausibleMetadataDescription(v); v != "" && priority > m.descriptionPriority {
@@ -105,7 +289,7 @@ func (a *analysis) extractMetadata() {
 			case "author", "article:author":
 				priority := uint8(1)
 				if key == "article:author" {
-					priority = 2
+					priority = 3
 				}
 				if v != "" && priority > m.authorPriority {
 					m.author, m.authorPriority = v, priority
@@ -114,23 +298,26 @@ func (a *analysis) extractMetadata() {
 				m.site = v
 			case "article:published_time":
 				if v != "" {
-					m.published = v
 					m.articlePublished = true
+					if m.publishedPriority < 3 {
+						m.published, m.publishedPriority = v, 3
+					}
 				}
 			case "datepublished":
-				if m.published == "" {
-					m.published = v
+				if v != "" && m.publishedPriority < 1 {
+					m.published, m.publishedPriority = v, 1
 				}
 			case "og:title", "twitter:title":
 				if m.socialTitle == "" {
 					m.socialTitle = v
 				}
-				if m.title == "" {
-					m.title = v
+				if v != "" && m.titlePriority < 3 {
+					m.title, m.titlePriority = v, 3
 				}
 			case "og:type":
 				m.schemaType = appendSchemaType(m.schemaType, v)
-				if strings.EqualFold(v, "article") || strings.Contains(strings.ToLower(v), "article") {
+				// Open Graph's article token is case-insensitive, unlike Schema.org names.
+				if strings.EqualFold(strings.TrimSpace(v), "article") {
 					m.articleType = true
 				}
 			}
@@ -138,143 +325,306 @@ func (a *analysis) extractMetadata() {
 		if tag == "link" && containsAny(strings.ToLower(attrValue(n, "rel")), "canonical") {
 			m.canonical = a.resolveMetadataURL(attrValue(n, "href"))
 		}
-		if tag == "script" && strings.Contains(strings.ToLower(attrValue(n, "type")), "ld+json") {
+		if tag == "script" && isJSONLDMIME(attrValue(n, "type")) {
 			a.readJSONLD(rawNodeText(n), &m)
 		}
 		return true
 	})
 	a.meta = m
 }
+func isJSONLDMIME(value string) bool {
+	mediaType := strings.TrimSpace(strings.SplitN(value, ";", 2)[0])
+	return strings.EqualFold(mediaType, "application/ld+json")
+}
+
 func (a *analysis) readJSONLD(raw string, m *metadata) {
-	var v any
-	if json.Unmarshal([]byte(raw), &v) != nil {
+	var document any
+	if json.Unmarshal([]byte(raw), &document) != nil {
 		return
 	}
 
-	// Resolve @id references used by a page entity's mainEntity without treating
-	// every sibling in @graph as page-level metadata.
+	// Build one deterministic @id index. JSON-LD permits an entity to be split
+	// over node objects; complementary properties are merged without allowing a
+	// later duplicate to replace an earlier explicit value.
 	entities := map[string]map[string]any{}
 	var index func(any)
-	index = func(x any) {
-		switch z := x.(type) {
+	index = func(value any) {
+		switch value := value.(type) {
 		case []any:
-			for _, q := range z {
-				index(q)
+			for _, child := range value {
+				index(child)
 			}
 		case map[string]any:
-			if id, ok := z["@id"].(string); ok && id != "" {
-				// JSON-LD permits one entity to be split across several node objects.
-				// Merge complementary properties so resolution is independent of the
-				// order of full entities, partial entities, and @id-only references.
-				if existing := entities[id]; existing == nil {
-					entities[id] = z
+			if id, ok := value["@id"].(string); ok && id != "" {
+				if entity := entities[id]; entity == nil {
+					entities[id] = value
 				} else {
-					for key, value := range z {
-						if _, exists := existing[key]; !exists {
-							existing[key] = value
+					for key, child := range value {
+						if _, exists := entity[key]; !exists {
+							entity[key] = child
 						}
 					}
 				}
 			}
-			for _, q := range z {
-				index(q)
+			// Only indexing traverses arbitrary properties. Metadata traversal below
+			// follows page entities and explicit relationships exclusively.
+			for _, child := range value {
+				index(child)
 			}
 		}
 	}
-	index(v)
+	index(document)
 
-	activeIDs := map[string]bool{}
-	var visit func(any, bool)
-	visit = func(x any, pageEntity bool) {
-		switch z := x.(type) {
+	resolve := func(value any) any {
+		if ref, ok := value.(map[string]any); ok {
+			if id, ok := ref["@id"].(string); ok && entities[id] != nil {
+				return entities[id]
+			}
+		}
+		return value
+	}
+	typeNames := func(entity map[string]any, context jsonLDContext) []string {
+		var raw []string
+		switch value := entity["@type"].(type) {
+		case string:
+			raw = append(raw, value)
 		case []any:
-			for _, q := range z {
-				visit(q, pageEntity)
+			for _, item := range value {
+				if name, ok := item.(string); ok {
+					raw = append(raw, name)
+				}
 			}
-		case map[string]any:
-			var typeNames []string
-			switch types := z["@type"].(type) {
+		}
+		var names []string
+		for _, value := range raw {
+			if name, ok := schemaTypeName(value, context); ok {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+	isPageType := func(name string) bool {
+		switch name {
+		case "WebPage", "AboutPage", "CheckoutPage", "CollectionPage", "ContactPage",
+			"FAQPage", "ItemPage", "MedicalWebPage", "ProfilePage", "QAPage",
+			"RealEstateListing", "SearchResultsPage":
+			return true
+		}
+		return false
+	}
+
+	active := map[string]bool{}
+	var apply func(map[string]any, jsonLDContext, uint8)
+	apply = func(entity map[string]any, inherited jsonLDContext, priority uint8) {
+		context := inherited
+		if rawContext, exists := entity["@context"]; exists {
+			context = context.with(rawContext)
+		}
+		id, _ := entity["@id"].(string)
+		if id != "" {
+			if active[id] {
+				return
+			}
+			active[id] = true
+			defer delete(active, id)
+		}
+		article := false
+		for _, name := range typeNames(entity, context) {
+			addSchemaEvidence(m, name, jsonLDContext{})
+			if _, ok := schemaArticleTypes[name]; ok {
+				_, specialized := schemaNonArticlePageTypes[name]
+				article = article || !specialized
+			}
+		}
+		if author := resolve(entity["author"]); priority > m.authorPriority {
+			var name string
+			switch author := author.(type) {
 			case string:
-				typeNames = append(typeNames, types)
+				name = normalizeText(author)
+			case map[string]any:
+				if value, ok := author["name"].(string); ok {
+					name = normalizeText(value)
+				}
 			case []any:
-				for _, value := range types {
-					if name, ok := value.(string); ok {
-						typeNames = append(typeNames, name)
+				for _, item := range author {
+					if person, ok := resolve(item).(map[string]any); ok {
+						if value, ok := person["name"].(string); ok {
+							name = normalizeText(value)
+							break
+						}
 					}
 				}
 			}
-			articleType := false
-			for _, typeName := range typeNames {
-				if strings.Contains(strings.ToLower(typeName), "article") || strings.EqualFold(typeName, "BlogPosting") {
-					articleType = true
-				}
+			if name != "" {
+				m.author, m.authorPriority = name, priority
 			}
-			if pageEntity {
-				for _, typeName := range typeNames {
-					m.schemaType = appendSchemaType(m.schemaType, typeName)
-				}
+		}
+		if value, ok := entity["datePublished"].(string); ok && value != "" {
+			if article {
+				m.articlePublished = true
 			}
-			if pageEntity && articleType {
-				m.articleType = true
+			if priority > m.publishedPriority {
+				m.published, m.publishedPriority = value, priority
 			}
-			if m.authorPriority < 2 && pageEntity {
-				author := ""
-				switch au := z["author"].(type) {
-				case string:
-					author = normalizeText(au)
-				case map[string]any:
-					if s, ok := au["name"].(string); ok {
-						author = normalizeText(s)
-					}
-				}
-				if author != "" {
-					m.author, m.authorPriority = author, 2
-				}
-			}
-			if s, ok := z["datePublished"].(string); ok && (m.published == "" || (pageEntity && articleType)) {
-				m.published = s
-				if pageEntity && articleType {
-					m.articlePublished = true
-				}
-			}
-			if s, ok := z["headline"].(string); pageEntity && ok && normalizeText(s) != "" {
+		}
+		if value, ok := entity["headline"].(string); ok {
+			value = normalizeText(value)
+			if value != "" {
 				m.headline = true
-				if m.title == "" {
-					m.title = normalizeText(s)
+				if priority > m.titlePriority {
+					m.title, m.titlePriority = value, priority
 				}
 			}
-			if m.descriptionPriority < 2 && pageEntity {
-				if s, ok := z["description"].(string); ok {
-					if description := plausibleMetadataDescription(normalizeText(s)); description != "" {
-						m.description, m.descriptionPriority = description, 2
+		} else if value, ok := entity["name"].(string); ok && priority > m.titlePriority {
+			if value = normalizeText(value); value != "" {
+				m.title, m.titlePriority = value, priority
+			}
+		}
+		if value, ok := entity["description"].(string); ok && priority > m.descriptionPriority {
+			if value = plausibleMetadataDescription(normalizeText(value)); value != "" {
+				m.description, m.descriptionPriority = value, priority
+			}
+		}
+		if main, exists := entity["mainEntity"]; exists {
+			switch main := main.(type) {
+			case []any:
+				for _, item := range main {
+					if child, ok := resolve(item).(map[string]any); ok {
+						apply(child, context, 4)
 					}
 				}
-			}
-			for key, q := range z {
-				if key == "@graph" {
-					visit(q, false)
-					continue
+			default:
+				if child, ok := resolve(main).(map[string]any); ok {
+					apply(child, context, 4)
 				}
-				mainEntity := strings.EqualFold(key, "mainEntity")
-				if mainEntity {
-					if ref, ok := q.(map[string]any); ok {
-						id, hasID := ref["@id"].(string)
-						currentID, _ := z["@id"].(string)
-						if hasID && entities[id] != nil && id != currentID {
-							if !activeIDs[id] {
-								activeIDs[id] = true
-								visit(entities[id], true)
-								delete(activeIDs, id)
-							}
+			}
+		}
+	}
+
+	// A graph is a container, not a declaration that all of its nodes describe
+	// the page. Prefer an explicit page node, then a node tied to the page by
+	// mainEntityOfPage, and accept an unambiguous single-node graph.
+	normalizeID := func(id string) string {
+		id = strings.TrimSpace(id)
+		if id == "" || a.pageURL == nil {
+			return id
+		}
+		if parsed, err := url.Parse(id); err == nil {
+			return a.pageURL.ResolveReference(parsed).String()
+		}
+		return id
+	}
+	linkedToPage := func(node, page map[string]any) bool {
+		var target string
+		switch relation := node["mainEntityOfPage"].(type) {
+		case string:
+			target = relation
+		case map[string]any:
+			target, _ = relation["@id"].(string)
+		}
+		if target == "" {
+			return false
+		}
+		target = normalizeID(target)
+		if pageID, _ := page["@id"].(string); pageID != "" && target == normalizeID(pageID) {
+			return true
+		}
+		return a.pageURL != nil && target == a.pageURL.String()
+	}
+	selectEntities := func(values []any, context jsonLDContext, allowRootEntity bool) []map[string]any {
+		var nodes, pages, linked, typedRoots []map[string]any
+		seenIDs := map[string]bool{}
+		for _, value := range values {
+			if node, ok := resolve(value).(map[string]any); ok {
+				if rawID, _ := node["@id"].(string); rawID != "" {
+					if id := normalizeID(rawID); id != "" {
+						if seenIDs[id] {
 							continue
 						}
+						seenIDs[id] = true
 					}
 				}
-				visit(q, mainEntity)
+				nodes = append(nodes, node)
+				childContext := context
+				if rawContext, exists := node["@context"]; exists {
+					childContext = childContext.with(rawContext)
+				}
+				for _, name := range typeNames(node, childContext) {
+					if isPageType(name) {
+						pages = append(pages, node)
+						break
+					}
+					if _, article := schemaArticleTypes[name]; article {
+						typedRoots = append(typedRoots, node)
+						break
+					}
+					if _, recognizedPageShape := schemaPageTypes[name]; recognizedPageShape {
+						typedRoots = append(typedRoots, node)
+						break
+					}
+				}
+				if _, exists := node["mainEntityOfPage"]; exists {
+					linked = append(linked, node)
+				}
+			}
+		}
+		if len(pages) > 0 {
+			selected := pages[:1]
+			var matching []map[string]any
+			for _, candidate := range linked {
+				if linkedToPage(candidate, selected[0]) {
+					matching = append(matching, candidate)
+				}
+			}
+			if len(matching) == 1 {
+				selected = append(selected, matching[0])
+			}
+			return selected
+		}
+		if len(linked) == 1 {
+			return linked
+		}
+		if allowRootEntity && len(typedRoots) == 1 {
+			return typedRoots
+		}
+		if len(nodes) == 1 {
+			return nodes
+		}
+		return nil
+	}
+
+	base := jsonLDContext{}
+	switch root := document.(type) {
+	case []any:
+		for i, entity := range selectEntities(root, base, true) {
+			priority := uint8(5)
+			if i > 0 {
+				priority = 4
+			}
+			apply(entity, base, priority)
+		}
+	case map[string]any:
+		context := base
+		if rawContext, exists := root["@context"]; exists {
+			context = context.with(rawContext)
+		}
+		_, hasType := root["@type"]
+		_, hasMain := root["mainEntity"]
+		_, hasHeadline := root["headline"]
+		if hasType || hasMain || hasHeadline {
+			apply(root, base, 5)
+			return
+		}
+		if graph, ok := root["@graph"].([]any); ok {
+			for i, entity := range selectEntities(graph, context, true) {
+				priority := uint8(5)
+				if i > 0 {
+					priority = 4
+				}
+				apply(entity, context, priority)
 			}
 		}
 	}
-	visit(v, true)
 }
 func (a *analysis) pageMicrodataEntities(root *html.Node) (map[*html.Node]bool, bool, map[*html.Node]bool, *html.Node) {
 	entities := map[*html.Node]bool{}
@@ -288,9 +638,12 @@ func (a *analysis) pageMicrodataEntities(root *html.Node) (map[*html.Node]bool, 
 			return true
 		}
 		entities[n] = true
-		itemtype := strings.ToLower(attrValue(n, "itemtype"))
-		if containsAny(itemtype, "article", "newsarticle", "blogposting") {
-			articleEntities = append(articleEntities, n)
+		itemtype := attrValue(n, "itemtype")
+		for _, typ := range strings.Fields(itemtype) {
+			if schemaArticlePageType(typ, jsonLDContext{}) {
+				articleEntities = append(articleEntities, n)
+				break
+			}
 		}
 		return true
 	})

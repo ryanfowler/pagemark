@@ -231,8 +231,7 @@ func (a *analysis) indexStrongArticleProse() {
 			insideArticle[i] = insideArticle[i] || tag == "article"
 		}
 	}
-	metadataEvidence := a.meta.articlePublished || a.meta.articleType || a.meta.headline ||
-		containsAny(strings.ToLower(a.meta.schemaType), "article", "newsarticle", "blogposting")
+	metadataEvidence := a.meta.articlePublished || a.meta.articleType || a.meta.headline
 	for i := range a.blocks {
 		if !eligible[i] {
 			continue
@@ -312,8 +311,7 @@ func (a *analysis) shouldRetryArticle(pt PageType, nodes []*html.Node) bool {
 	if qualityFromEvidence(chars, links, blocks) < .42 {
 		return true
 	}
-	metadataEvidence := a.meta.articlePublished || a.meta.articleType || a.meta.headline ||
-		containsAny(strings.ToLower(a.meta.schemaType), "article", "newsarticle", "blogposting")
+	metadataEvidence := a.meta.articlePublished || a.meta.articleType || a.meta.headline
 	return metadataEvidence && chars < 120 && a.hasStrongArticleEvidence()
 }
 

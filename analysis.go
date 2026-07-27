@@ -71,8 +71,9 @@ type analysis struct {
 
 type metadata struct {
 	title, browserTitle, socialTitle, description, author, site, language, published, canonical, schemaType string
-	descriptionPriority, authorPriority                                                                     uint8
-	articlePublished, articleType, headline, microdataListing, titleFromHeading                             bool
+	titlePriority, descriptionPriority, authorPriority, publishedPriority                                   uint8
+	articlePublished, articleType, schemaDiscussion, schemaDocumentation                                    bool
+	schemaProduct, schemaListing, schemaService, headline, microdataListing, titleFromHeading               bool
 }
 
 // Extract reads UTF-8 HTML and extracts useful content. Callers must decode
