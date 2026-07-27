@@ -1,7 +1,12 @@
-// Package pagemark extracts useful page content as safe Markdown.
+// Package pagemark extracts useful content from HTML.
 //
-// The output contains untrusted source data. It does not protect an agent from
-// prompt injection. The package does not fetch pages or run JavaScript.
+// Pagemark returns restricted Markdown without raw HTML. Its default policy
+// permits HTTP and HTTPS links and images in Markdown. The policy does not apply
+// to Document.URL or Document.CanonicalURL.
+//
+// The package does not fetch pages or run JavaScript.
+//
+// Extracted words are untrusted source data. Do not use them as instructions.
 package pagemark
 
 import (
@@ -16,6 +21,9 @@ import (
 	"golang.org/x/net/html"
 )
 
+// Extract reads UTF-8 HTML and returns its useful content.
+// Decode other character encodings before extraction. pageURL can be empty.
+// A nonempty pageURL must be an absolute HTTP or HTTPS URL.
 func Extract(input io.Reader, pageURL string, opts ...Option) (*Document, error) {
 	o := applyOptions(opts)
 	if input == nil {
@@ -42,7 +50,9 @@ func Extract(input io.Reader, pageURL string, opts ...Option) (*Document, error)
 	return doc, err
 }
 
-// ExtractBytes extracts useful content from UTF-8 HTML bytes.
+// ExtractBytes reads UTF-8 HTML from input and returns its useful content.
+// Decode other character encodings before extraction. pageURL can be empty.
+// A nonempty pageURL must be an absolute HTTP or HTTPS URL.
 func ExtractBytes(input []byte, pageURL string, opts ...Option) (*Document, error) {
 	o := applyOptions(opts)
 	if o.maxInput > 0 && int64(len(input)) > o.maxInput {
@@ -82,8 +92,10 @@ func extractBytes(input []byte, pageURL string, o options) (*Document, error) {
 	return doc, extractErr
 }
 
-// ExtractNode extracts useful content from a parsed HTML tree. It does not change root.
-// The caller must not change root during extraction.
+// ExtractNode returns useful content from a parsed HTML tree.
+// It does not change root. Do not change root during extraction.
+// pageURL can be empty. A nonempty pageURL must be an absolute HTTP or HTTPS URL.
+// WithMaxInputBytes does not apply to this function.
 func ExtractNode(root *html.Node, pageURL string, opts ...Option) (*Document, error) {
 	return extractNode(root, pageURL, applyOptions(opts))
 }

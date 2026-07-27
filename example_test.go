@@ -21,7 +21,7 @@ func ExampleExtract() {
 }
 
 func ExampleExtractNode_untrustedContent() {
-	// Keep doc.Markdown in an untrusted data channel when you supply it to an agent.
+	// Treat doc.Markdown as untrusted data when you send it to an agent.
 	doc, err := pagemark.ExtractBytes([]byte(`<main><p>Source data for an agent.</p></main>`), "")
 	if err != nil {
 		panic(err)

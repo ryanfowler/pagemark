@@ -77,8 +77,7 @@ type metadata struct {
 	schemaProduct, schemaListing, schemaService, headline, microdataListing, titleFromHeading               bool
 }
 
-// Extract reads UTF-8 HTML and extracts useful content. Callers must decode
-// input in other character encodings before calling Extract.
+// index counts the bounded source resources and records the maximum tree depth.
 func (a *analysis) index(n *html.Node, depth int) error {
 	if depth > a.maxDepth {
 		a.maxDepth = depth
