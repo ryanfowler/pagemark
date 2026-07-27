@@ -115,7 +115,7 @@ func (a *analysis) plausibleRegionBlock(b *block) bool {
 		if p.Type != html.ElementNode {
 			continue
 		}
-		if hardHidden(p) || isListingRecordElement(p) || repeatedUnmarkedListingRecord(p) ||
+		if hardHidden(p) || isListingRecordElement(p) || a.repeatedUnmarkedListingRecord(p) ||
 			elementContainsAny(p, "comment", "reply", "newsletter", "subscribe", "related", "recommended") {
 			return false
 		}
@@ -146,7 +146,7 @@ func (a *analysis) unsafeArticleRegion(n *html.Node) bool {
 		return true
 	}
 	return elementContainsAny(n, "comment", "reply", "discussion", "newsletter", "subscribe", "related", "recommended") ||
-		isListingRecordElement(n) || repeatedUnmarkedListingRecord(n) || a.articleCardCount(n) >= 2
+		isListingRecordElement(n) || a.repeatedUnmarkedListingRecord(n) || a.articleCardCount(n) >= 2
 }
 
 func regionRank(e *articleRegionEvidence) float64 {

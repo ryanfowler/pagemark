@@ -6,6 +6,13 @@ import (
 	"golang.org/x/net/html"
 )
 
+const (
+	listingShapeKnown uint8 = 1 << iota
+	listingShapeMatched
+	repeatedListingKnown
+	repeatedListingMatched
+)
+
 func listingRecord(n *html.Node) *html.Node {
 	for p := n; p != nil; p = p.Parent {
 		if isListingRecordElement(p) {
@@ -36,7 +43,7 @@ func (a *analysis) listingHeadingIsRecord(n *html.Node) bool {
 		// sibling div/section records only when each has a compatible card shape.
 		// Merely having two generic layout children is insufficient: a wrapped page
 		// heading next to a grid is a common heterogeneous layout.
-		if repeatedUnmarkedListingRecord(p) {
+		if a.repeatedUnmarkedListingRecord(p) {
 			return true
 		}
 		switch strings.ToLower(p.Data) {
@@ -49,25 +56,37 @@ func (a *analysis) listingHeadingIsRecord(n *html.Node) bool {
 	return false
 }
 
-func repeatedUnmarkedListingRecord(n *html.Node) bool {
+func (a *analysis) repeatedUnmarkedListingRecord(n *html.Node) bool {
 	if n == nil || n.Parent == nil || n.Type != html.ElementNode {
 		return false
 	}
-	tag := strings.ToLower(n.Data)
-	if tag != "div" && tag != "section" || listingCohortFurniture(n) || !unmarkedListingRecordShape(n) {
-		return false
+	if state := a.listingStates[n]; state&repeatedListingKnown != 0 {
+		return state&repeatedListingMatched != 0
 	}
-	matches := 0
-	for sibling := n.Parent.FirstChild; sibling != nil; sibling = sibling.NextSibling {
-		if sibling.Type == html.ElementNode && strings.EqualFold(sibling.Data, tag) &&
-			!listingCohortFurniture(sibling) && unmarkedListingRecordShape(sibling) {
-			matches++
-			if matches >= 2 {
-				return true
+	tag := strings.ToLower(n.Data)
+	matched := false
+	if (tag == "div" || tag == "section") && !listingCohortFurniture(n) && a.unmarkedListingRecordShape(n) {
+		matches := 0
+		for sibling := n.Parent.FirstChild; sibling != nil; sibling = sibling.NextSibling {
+			if sibling.Type == html.ElementNode && strings.EqualFold(sibling.Data, tag) &&
+				!listingCohortFurniture(sibling) && a.unmarkedListingRecordShape(sibling) {
+				matches++
+				if matches >= 2 {
+					matched = true
+					break
+				}
 			}
 		}
 	}
-	return false
+	if a.listingStates == nil {
+		a.listingStates = make(map[*html.Node]uint8)
+	}
+	state := a.listingStates[n] | repeatedListingKnown
+	if matched {
+		state |= repeatedListingMatched
+	}
+	a.listingStates[n] = state
+	return matched
 }
 
 // listingCohortFurniture identifies heterogeneous page-level panels that often
@@ -94,7 +113,10 @@ func listingCohortFurniture(n *html.Node) bool {
 // unmarkedListingRecordShape requires one record heading plus body or link
 // evidence. Requiring exactly one heading prevents a grid wrapper containing
 // several cards from looking compatible with a separate page-title wrapper.
-func unmarkedListingRecordShape(n *html.Node) bool {
+func (a *analysis) unmarkedListingRecordShape(n *html.Node) bool {
+	if state := a.listingStates[n]; state&listingShapeKnown != 0 {
+		return state&listingShapeMatched != 0
+	}
 	headings, proseOrLink := 0, false
 	walk(n, func(current *html.Node) bool {
 		if current != n && (hardHidden(current) || irrelevantNode(current) || isAdvertisementRegion(current)) {
@@ -116,7 +138,16 @@ func unmarkedListingRecordShape(n *html.Node) bool {
 		}
 		return headings <= 1
 	})
-	return headings == 1 && proseOrLink
+	matched := headings == 1 && proseOrLink
+	if a.listingStates == nil {
+		a.listingStates = make(map[*html.Node]uint8)
+	}
+	state := a.listingStates[n] | listingShapeKnown
+	if matched {
+		state |= listingShapeMatched
+	}
+	a.listingStates[n] = state
+	return matched
 }
 
 func isListingRecordElement(n *html.Node) bool {
