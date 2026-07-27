@@ -2,17 +2,23 @@
 
 ## Purpose
 
-Pagemark extracts useful content from supplied HTML. It returns deterministic Markdown and plain text. It supports articles, documentation, discussions, product pages, listings, collections, service pages, and other pages.
+Pagemark extracts useful content from supplied HTML. It returns deterministic Markdown, plain text, and metadata.
+
+Pagemark supports articles, documentation, discussions, products, listings, collections, services, and generic pages.
 
 ## Input
 
-The caller supplies HTML as bytes, a reader, or an `html.Node`. The caller can also supply an absolute HTTP or HTTPS source URL. Pagemark does not fetch a URL. Pagemark does not run JavaScript. For a rendered page, the caller must supply the rendered HTML.
+Supply HTML with a byte slice, an `io.Reader`, or an `html.Node` tree. You can also supply an absolute HTTP or HTTPS page URL. The page URL is optional.
 
-The default limits apply to input bytes, DOM elements, DOM depth, attributes, text, links, images, table cells, repeated items, and output bytes. A limit failure returns a `LimitError`.
+Pagemark does not fetch the page. It does not run JavaScript. Supply rendered HTML when a page needs JavaScript.
+
+Decode non-UTF-8 input before extraction.
+
+Pagemark limits input bytes, tree size, tree depth, attributes, text, links, images, table cells, repeated items, and output bytes. A tree or input limit returns a `LimitError`.
 
 ## Output
 
-Pagemark can preserve these structures:
+Pagemark can keep these structures:
 
 - headings and paragraphs;
 - ordered and unordered lists;
@@ -22,30 +28,45 @@ Pagemark can preserve these structures:
 - safe links;
 - useful images and image text.
 
-Useful images are enabled by default. They appear as Markdown image syntax and in `Document.Images`; extraction records their safe source URLs but does not fetch those resources. Callers that require text-only output can pass `WithIncludeImages(false)`.
+Images are enabled by default. Images occur in `Document.Markdown` and `Document.Images`. Pagemark records their source URLs, but it does not fetch them. Use `WithIncludeImages(false)` for text-only output.
 
-The Markdown uses a restricted CommonMark and GFM dialect. It has no raw HTML. The default URL policy permits HTTP and HTTPS. It rejects credentials and unsafe schemes.
+The Markdown uses a restricted CommonMark and GitHub Flavored Markdown format. It has no raw HTML.
 
-The document title is returned separately in `Document.Title`. It is not repeated in `Document.Markdown`, `Document.Text`, or `Document.Sections`, and it does not consume the Markdown output budget. `Document.Text` describes the same selected content as `Document.Markdown`. `Document.Sections` is a view of that content. A quality score describes observable output properties. It is not a trust score.
+The default URL policy permits HTTP and HTTPS links and images. It rejects credentials and unsafe schemes for these URLs. The policy applies to Markdown links and images. It also applies to `Document.Links` and `Document.Images`.
+
+The policy does not apply to `Document.URL` or `Document.CanonicalURL`. `Document.URL` preserves the supplied page URL, including credentials. `Document.CanonicalURL` permits HTTP and HTTPS and removes credentials. Validate these metadata fields separately if you use them.
+
+`Document.Title` contains the document title. The title does not occur again in `Document.Markdown`, `Document.Text`, or `Document.Sections`. It does not use the Markdown byte limit.
+
+`Document.Text` and `Document.Markdown` contain the same selected content. `Document.Sections` is a view of that content.
+
+`Document.Quality` measures observable output properties. It does not measure trust or factual accuracy.
 
 ## Safety
 
-Pagemark gives syntactic safety. It removes executable HTML and unsafe link schemes. It does not make source words trustworthy. A hostile page can contain prompt injection. Treat all returned content as untrusted data. Do not put it in a privileged instruction channel.
+Pagemark removes executable HTML. It removes unsafe schemes from Markdown links and images. It does not make the source words safe or true.
 
-Pagemark does not remove phrases such as “ignore previous instructions.” Such removal can damage valid source text and cannot give prompt-injection protection.
+A hostile page can contain prompt injection. Treat all returned content as untrusted data. Do not put it in a system instruction or a developer instruction.
+
+Pagemark does not remove phrases such as "ignore previous instructions." This type of removal can damage valid text. It cannot prevent prompt injection.
 
 ## Determinism and concurrency
 
-The same input and options give the same content. Diagnostic timing is not part of the content contract. Public options do not use mutable global state. Concurrent extraction calls are safe. The caller must not change an `html.Node` tree during extraction.
+The same input and options produce the same content. Diagnostic timing is not part of this contract.
 
-## Non-goals
+Public options do not use mutable global state. Concurrent extraction calls are safe.
+
+Do not change an `html.Node` tree during extraction.
+
+## Exclusions
 
 Pagemark does not:
 
-- fetch pages or run scripts;
-- reconstruct absent content;
+- fetch pages;
+- run scripts;
+- restore absent content;
 - bypass authentication or paywalls;
-- reproduce page layout;
-- preserve forms, scripts, widgets, or raw HTML;
-- provide semantic prompt-injection protection;
-- provide a universal product or entity schema.
+- reproduce the page layout;
+- keep forms, scripts, widgets, or raw HTML;
+- prevent semantic prompt injection;
+- supply a universal product or entity schema.
