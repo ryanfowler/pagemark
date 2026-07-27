@@ -217,13 +217,12 @@ func containsAnyFold(s string, values ...string) bool {
 	// case once; only restart with Unicode tokenization when a non-ASCII byte is
 	// actually encountered.
 	start := -1
-	for end := 0; end <= len(s); end++ {
-		if end < len(s) && s[end] >= utf8.RuneSelf {
+	for end := 0; end < len(s); end++ {
+		c := s[end]
+		if c >= utf8.RuneSelf {
 			return containsAnyFoldUnicode(s, values)
 		}
-		alnum := end < len(s) && (s[end] >= 'a' && s[end] <= 'z' ||
-			s[end] >= 'A' && s[end] <= 'Z' || s[end] >= '0' && s[end] <= '9')
-		if alnum {
+		if asciiAlnum[c] {
 			if start < 0 {
 				start = end
 			}
@@ -239,6 +238,14 @@ func containsAnyFold(s string, values ...string) bool {
 				}
 			}
 			start = -1
+		}
+	}
+	if start >= 0 {
+		token := s[start:]
+		for _, value := range values {
+			if len(token) == len(value) && lowerASCII(token[0]) == lowerASCII(value[0]) && equalFoldASCII(token, value) {
+				return true
+			}
 		}
 	}
 	return false
@@ -323,13 +330,12 @@ func containsAny(s string, values ...string) bool {
 	// DOM tokens are almost always ASCII. Avoid rune decoding and Unicode table
 	// lookups on that hot path, falling back only when a non-ASCII byte occurs.
 	start := -1
-	for end := 0; end <= len(s); end++ {
-		if end < len(s) && s[end] >= utf8.RuneSelf {
+	for end := 0; end < len(s); end++ {
+		c := s[end]
+		if c >= utf8.RuneSelf {
 			return containsAnyUnicode(s, values)
 		}
-		alnum := end < len(s) && (s[end] >= 'a' && s[end] <= 'z' ||
-			s[end] >= 'A' && s[end] <= 'Z' || s[end] >= '0' && s[end] <= '9')
-		if alnum {
+		if asciiAlnum[c] {
 			if start < 0 {
 				start = end
 			}
@@ -344,8 +350,30 @@ func containsAny(s string, values ...string) bool {
 			start = -1
 		}
 	}
+	if start >= 0 {
+		token := s[start:]
+		for _, value := range values {
+			if token == value {
+				return true
+			}
+		}
+	}
 	return false
 }
+
+var asciiAlnum = func() [utf8.RuneSelf]bool {
+	var table [utf8.RuneSelf]bool
+	for c := byte('0'); c <= '9'; c++ {
+		table[c] = true
+	}
+	for c := byte('A'); c <= 'Z'; c++ {
+		table[c] = true
+	}
+	for c := byte('a'); c <= 'z'; c++ {
+		table[c] = true
+	}
+	return table
+}()
 
 func containsAnyUnicode(s string, values []string) bool {
 	start := -1

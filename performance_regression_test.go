@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 func TestBlockSubtreeEvidenceMatchesIndependentScans(t *testing.T) {
@@ -61,6 +62,29 @@ func TestExtractNodeAcceptsMixedCaseManualTree(t *testing.T) {
 	}
 	if !strings.Contains(doc.Text, "manually constructed mixed-case article") {
 		t.Fatalf("mixed-case manual tree content was not extracted: %q", doc.Text)
+	}
+}
+
+func TestAtomizedManualTreeRetainsMixedCaseAttributeSupport(t *testing.T) {
+	n := &html.Node{
+		Type:     html.ElementNode,
+		Data:     "DIV",
+		DataAtom: atom.Div,
+		Attr: []html.Attribute{
+			{Key: "ID", Val: "Article"},
+			{Key: "ClAsS", Val: "Post Content"},
+			{Key: "RoLe", Val: "MAIN"},
+		},
+	}
+
+	if got := attrValue(n, "class"); got != "Post Content" {
+		t.Fatalf("mixed-case attribute value = %q, want %q", got, "Post Content")
+	}
+	if !elementContainsAny(n, "article") {
+		t.Fatal("mixed-case token attribute was not recognized")
+	}
+	if got := elementTokens(n); got != "article post content main" {
+		t.Fatalf("element tokens = %q, want %q", got, "article post content main")
 	}
 }
 

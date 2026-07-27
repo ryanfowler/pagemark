@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 func TestHiddenStyleCascade(t *testing.T) {
@@ -88,5 +89,38 @@ func TestDialogVisibilityFollowsOpenAttribute(t *testing.T) {
 	}
 	if Hidden(dialogs[1]) {
 		t.Fatal("open dialog reported hidden")
+	}
+}
+
+func TestHiddenAcceptsAtomizedMixedCaseManualNodes(t *testing.T) {
+	tests := []struct {
+		name string
+		node *html.Node
+	}{
+		{
+			name: "mixed-case hidden attribute",
+			node: &html.Node{
+				Type:     html.ElementNode,
+				Data:     "div",
+				DataAtom: atom.Div,
+				Attr:     []html.Attribute{{Key: "HiDdEn"}},
+			},
+		},
+		{
+			name: "mixed-case excluded element",
+			node: &html.Node{
+				Type:     html.ElementNode,
+				Data:     "SCRIPT",
+				DataAtom: atom.Script,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if !Hidden(test.node) {
+				t.Fatal("atomized mixed-case manual node reported visible")
+			}
+		})
 	}
 }
