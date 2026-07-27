@@ -356,6 +356,32 @@ func hasExactClass(n *html.Node, want string) bool {
 	return false
 }
 
+func hasCompactClass(n *html.Node, wants ...string) bool {
+	for class := range strings.FieldsSeq(attrValue(n, "class")) {
+		for _, want := range wants {
+			if compactClassEqual(class, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func compactClassEqual(class, want string) bool {
+	at := 0
+	for i := 0; i < len(class); i++ {
+		c := class[i]
+		if c == '-' || c == '_' {
+			continue
+		}
+		if at == len(want) || lowerASCII(c) != want[at] {
+			return false
+		}
+		at++
+	}
+	return at == len(want)
+}
+
 // HTML class, id, and role tokenization uses the five ASCII whitespace bytes.
 func htmlSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r'
@@ -532,6 +558,27 @@ func (a *analysis) primaryArticleAncestor(n *html.Node) *html.Node {
 	return nil
 }
 
+func (a *analysis) conventionalArticleBodyAncestor(n *html.Node) *html.Node {
+	for p := n; p != nil; p = p.Parent {
+		// Classification needs a narrower signal than structural article-body
+		// protection. Generic post/content tokens are common on forum wrappers,
+		// and post-content commonly names an opening message.
+		publicationBody := hasCompactClass(p, "entrycontent", "articlecontent")
+		if publicationBody && a.commentRecordCount(p) < 2 && !a.inferenceAuxiliaryBlock(p) {
+			return p
+		}
+	}
+	return nil
+}
+
+func isConventionalArticleBody(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || elementContainsAny(n, "comment", "reply") {
+		return false
+	}
+	return elementContainsAny(n, "entry", "post", "article") && elementContainsAny(n, "content") ||
+		hasCompactClass(n, "entrycontent", "postcontent", "articlecontent")
+}
+
 // isTrailingSocialCardRegion identifies social/profile furniture and preview
 // cards placed after the primary article. Social vocabulary alone is not
 // enough: posts embedded within the semantic article can be authored content.
@@ -695,6 +742,9 @@ func isRelatedCardRegion(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
+	if hasCompactClass(n, "relatedarticles", "recommendedarticles", "relatedcontent") {
+		return countLinkedRecords(n, 2) >= 2
+	}
 	return elementContainsAny(n, "related", "recommended", "recommendations") && countMarkedCards(n, 2) >= 2
 }
 
@@ -707,7 +757,8 @@ func hasAuxiliaryHeading(n *html.Node) bool {
 	}
 	return isAmbiguousRecommendationsHeading(heading) ||
 		strings.HasPrefix(heading, "related ") || strings.HasPrefix(heading, "recommended ") ||
-		strings.HasPrefix(heading, "more stories ") || strings.HasPrefix(heading, "you may also ")
+		strings.HasPrefix(heading, "more stories ") || strings.HasPrefix(heading, "more from ") ||
+		strings.HasPrefix(heading, "you may also ")
 }
 
 // hasDeepLeadingAuxiliaryHeading handles presentation wrappers which put a
@@ -2000,9 +2051,9 @@ func (a *analysis) hasArticleBodyDescendant(root *html.Node) bool {
 		// of <article>. Their conventional *-content wrappers are equivalent
 		// evidence that this subtree contains the primary article body. Inspect
 		// attributes in place to avoid constructing a token string for every node.
-		conventionalArticleBody := elementContainsAny(ch, "entry", "post", "article") &&
-			elementContainsAny(ch, "content") &&
-			!elementContainsAny(ch, "comment", "reply")
+		// Older and server-rendered templates often use entry-content or
+		// camelCase articleContent wrappers instead of semantic article markup.
+		conventionalArticleBody := isConventionalArticleBody(ch)
 		if semanticArticle || conventionalArticleBody {
 			found = true
 			break
