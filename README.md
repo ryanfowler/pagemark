@@ -82,11 +82,19 @@ The project includes synthetic safety and structure tests. It also keeps a small
 
 The full WCXB data is not in this repository because it is large. WCXB uses the CC BY 4.0 license.
 
+A secondary [Mozilla Readability compatibility lane](testdata/mozilla/README.md) runs Readability's 130 frozen article fixtures with an explicit article page type. It compares normalized multiset-word content and supported metadata against an observed Pagemark baseline. This lane checks single-article compatibility only; it does not redefine expected behavior for documentation, discussions, products, listings, collections, services, or generic structured pages. WCXB and the real-world regression corpus remain the primary product-quality gates.
+
 ## Difference from Readability
 
 Readability is an article specialist that usually selects one prose region. Pagemark uses its own page-type-aware extraction pipeline and can keep distributed sections, discussion posts, code, tables, specifications, and linked records.
 
 ## Development
+
+Initialize the optional frozen compatibility corpus after cloning:
+
+```sh
+git submodule update --init --recursive
+```
 
 ```sh
 gofmt -w .
@@ -101,6 +109,6 @@ Run the end-to-end benchmarks against the frozen real-world corpus with:
 go test -run '^$' -bench '^BenchmarkExtractRealWorld$' -benchmem
 ```
 
-The benchmark includes HTML parsing and reports time, throughput, bytes, and allocations for representative articles, documentation, discussions, products, listings, services, and generic pages. CPU and allocation profiles can be captured by adding `-cpuprofile cpu.out -memprofile mem.out` and inspected with `go tool pprof`.
+The benchmark includes HTML parsing and reports time, throughput, bytes, and allocations for representative articles, documentation, discussions, products, listings, services, and generic pages. Run the secondary article-compatibility benchmark subset with `go test -run '^$' -bench '^BenchmarkExtractMozillaReadability$' -benchmem`. CPU and allocation profiles can be captured by adding `-cpuprofile cpu.out -memprofile mem.out` and inspected with `go tool pprof`.
 
 The package has no mutable global extraction state. Concurrent calls are safe.
