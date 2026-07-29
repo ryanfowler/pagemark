@@ -49,6 +49,87 @@ func TestDocumentTitleIsSeparatedFromEveryContentView(t *testing.T) {
 	}
 }
 
+func TestSparseHomepageRecoversAccessibleHero(t *testing.T) {
+	source := `<html><head><title>Paper Reader</title></head><body><header><h1><picture><img src="/logo.png" alt="Paper Reader"></picture></h1><p>Paper Reader is a document viewer for electronic paper devices, with support for common book, document, archive, and plain-text formats.</p></header><ul><li><a href="/guide">User guide</a></li><li><a href="/download">Download</a></li></ul></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://paper-reader.example/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Title != "Paper Reader" {
+		t.Fatalf("title = %q, want accessible homepage h1", doc.Title)
+	}
+	if !strings.Contains(doc.Text, "document viewer for electronic paper") || !strings.Contains(doc.Text, "User guide") {
+		t.Fatalf("homepage hero or links missing: %q", doc.Text)
+	}
+}
+
+func TestHomepageBrowserTitleRequiresMatchingH1(t *testing.T) {
+	for _, test := range []struct {
+		name, heading string
+	}{
+		{name: "no h1"},
+		{name: "different h1", heading: "<h1>Product dashboard</h1>"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := `<html><head><title>Example Site</title></head><body><main>` + test.heading + `<p>This substantive homepage paragraph explains the available product clearly without presenting the browser title as an authored page heading.</p></main></body></html>`
+			doc, err := ExtractBytes([]byte(source), "https://example.com/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.Title == "Example Site" {
+				t.Fatalf("browser-only homepage title was restored without a matching h1")
+			}
+		})
+	}
+}
+
+func TestLongIrrelevantProseDoesNotSuppressMetadataFallback(t *testing.T) {
+	source := `<html><head><meta name="description" content="A concise description supplied by page metadata."></head><body><div class="advertisement"><p>This long promotional placement contains more than enough prose to resemble a content block, but it remains an advertisement and must not displace the safe metadata fallback result.</p></div></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/product")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Text != "A concise description supplied by page metadata." {
+		t.Fatalf("metadata fallback was displaced: %q", doc.Text)
+	}
+}
+
+func TestHyphenatedHostnameDecorationIsRemovedFromTitle(t *testing.T) {
+	source := `<html><head><title>Half-Life ported to Mac OS 9 | Mac Classic</title></head><body><header><h1>Mac Classic</h1></header><main><h1>News</h1><div class="post-content"><h1>Half-Life ported to Mac OS 9</h1><p>The port now runs on PowerPC Macintosh computers and includes enough implementation detail to identify the page as useful content.</p></div><section class="comments"><div class="comment"><p>A reader asked whether the port works on an early model.</p></div><div class="comment"><p>The author explained the relevant graphics memory requirement.</p></div></section></main></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://mac-classic.example/news/half-life", WithPageType(PageTypeDiscussion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Title != "Half-Life ported to Mac OS 9" {
+		t.Fatalf("title = %q, want hostname decoration removed", doc.Title)
+	}
+}
+
+func TestAcademicHeadlineDescriptorDoesNotPromoteBreadcrumb(t *testing.T) {
+	source := `<html><head><title>[1234.5678] Reliable Systems</title><meta property="og:title" content="Reliable Systems"></head><body><main><h1>Computer Science &gt; Systems</h1><h1 class="title"><span class="descriptor">Title:</span>Reliable Systems</h1><p class="abstract">The paper describes a reliable systems technique with enough detail to identify its primary contribution and evaluation.</p></main></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://papers.example/abs/1234.5678", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Title != "Reliable Systems" {
+		t.Fatalf("title = %q, want paper headline", doc.Title)
+	}
+	if strings.Contains(doc.Text, "Title:Reliable Systems") {
+		t.Fatalf("paper headline repeated in content: %q", doc.Text)
+	}
+}
+
+func TestAuthoredDescriptorHeadingTextIsPreserved(t *testing.T) {
+	source := `<html><head><meta property="og:title" content="Different metadata title"></head><body><main><h1><span class="descriptor">Headline</span></h1><p>The authored heading names this document and must remain authoritative despite its presentational class name.</p></main></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/report", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Title != "Headline" {
+		t.Fatalf("title = %q, want authored descriptor heading", doc.Title)
+	}
+}
+
 func TestMetadataLessListingSeparatesOnlyPageLevelTitle(t *testing.T) {
 	t.Run("page heading", func(t *testing.T) {
 		source := `<main><h1>Catalog</h1><div class="card"><h2>First product</h2><p>The first product has useful listing details.</p></div><div class="card"><h2>Second product</h2><p>The second product has useful listing details.</p></div></main>`
