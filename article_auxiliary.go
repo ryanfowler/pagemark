@@ -1454,8 +1454,15 @@ func (a *analysis) isTrailingMarketingRegion(n *html.Node) bool {
 		return false
 	}
 	heading := firstRegionHeading(n)
+	// Most broad layout containers either have no heading or contain ordinary
+	// article prose. Reject them before walking every descendant interaction:
+	// link-label normalization is substantially more expensive than either
+	// disqualifying check on pages with large navigation or product trees.
+	if heading == "" || regionHasLongProse(n, 180) {
+		return false
+	}
 	interactions, links := marketingInteractions(n)
-	if heading == "" || interactions == 0 || regionHasLongProse(n, 180) {
+	if interactions == 0 {
 		return false
 	}
 	text := normalizedLabel(nodeText(n))
@@ -1608,7 +1615,7 @@ func (a *analysis) hasLongArticleProseBefore(n *html.Node) bool {
 				a.nodeStates[x] = state
 			}
 			if strings.EqualFold(x.Data, "p") &&
-				utf8.RuneCountInString(normalizeText(nodeText(x))) >= 100 {
+				normalizedTextAtLeast(x, 100) {
 				seen = true
 			}
 			return true
@@ -1624,7 +1631,7 @@ func regionHasLongProse(n *html.Node, limit int) bool {
 			return false
 		}
 		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "p") &&
-			utf8.RuneCountInString(normalizeText(nodeText(x))) >= limit {
+			normalizedTextAtLeast(x, limit) {
 			found = true
 			return false
 		}
