@@ -30,6 +30,19 @@ func (a *analysis) separateDocumentTitle(nodes []*html.Node, cfg markdown.Config
 			// also removes browser branding when metadata lacks a site-name field.
 			heading = sourceH1
 		}
+		// A discussion classification can include both an article and its reader
+		// responses. When the browser title identifies a later selected h1 after
+		// removing hostname-derived branding, prefer that document heading over
+		// an earlier site masthead.
+		if pageType == PageTypeDiscussion && a.meta.socialTitle == "" {
+			browserContentTitle := a.cleanedMetadataTitle(a.meta.browserTitle)
+			if browserContentTitle != "" && normalizedLabel(browserContentTitle) != normalizedLabel(a.meta.browserTitle) {
+				if sourceH1 := a.firstSelectedEquivalentHeading(resolved, cfg, browserContentTitle); sourceH1 != nil {
+					heading = sourceH1
+					metadataTitle = browserContentTitle
+				}
+			}
+		}
 	}
 	if heading != nil && pageType != PageTypeArticle && !authored {
 		headingTitle := articleHeadingText(heading)
@@ -702,6 +715,9 @@ func (a *analysis) cleanedMetadataTitle(title string) string {
 			labels = append(labels, decorationLabel{text: host, publication: true})
 			if dot := strings.IndexByte(host, '.'); dot > 0 {
 				labels = append(labels, decorationLabel{text: host[:dot], publication: true})
+				if humanized := humanizedHostLabel(host[:dot]); humanized != host[:dot] {
+					labels = append(labels, decorationLabel{text: humanized, publication: true})
+				}
 			}
 			// Subdomains such as en.wikipedia.org use the registrable-domain
 			// label as the visible site name. Consult the public suffix list so
@@ -709,6 +725,9 @@ func (a *analysis) cleanedMetadataTitle(title string) string {
 			if registrable, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
 				if label, _, ok := strings.Cut(registrable, "."); ok && label != "" {
 					labels = append(labels, decorationLabel{text: label, publication: true})
+					if humanized := humanizedHostLabel(label); humanized != label {
+						labels = append(labels, decorationLabel{text: humanized, publication: true})
+					}
 				}
 			}
 		}
@@ -785,6 +804,28 @@ func (a *analysis) visibleH1TitleVariant(title, browserTitle string) string {
 	return title
 }
 
+func (a *analysis) exactVisibleH1Title(title string) (string, bool) {
+	want := normalizedLabel(title)
+	if want == "" {
+		return "", false
+	}
+	found := ""
+	walk(a.root, func(n *html.Node) bool {
+		if found != "" || hardHidden(n) {
+			return false
+		}
+		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "h1") {
+			heading := normalizeText(articleHeadingText(n))
+			if normalizedLabel(heading) == want {
+				found = heading
+				return false
+			}
+		}
+		return true
+	})
+	return found, found != ""
+}
+
 func hasDelimitedTitleSegment(title string) bool {
 	return strings.Contains(title, " | ") || strings.Contains(title, " - ") ||
 		strings.Contains(title, " — ") || strings.Contains(title, " – ") || strings.Contains(title, " :: ")
@@ -827,12 +868,29 @@ func (a *analysis) matchesKnownTitleDecoration(segment string) bool {
 	if dot := strings.IndexByte(host, '.'); dot > 0 && matches(host[:dot]) {
 		return true
 	}
+	if dot := strings.IndexByte(host, '.'); dot > 0 && matches(humanizedHostLabel(host[:dot])) {
+		return true
+	}
 	if registrable, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
-		if label, _, ok := strings.Cut(registrable, "."); ok && matches(label) {
-			return true
+		if label, _, ok := strings.Cut(registrable, "."); ok {
+			if matches(label) || matches(humanizedHostLabel(label)) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func humanizedHostLabel(label string) string {
+	if !strings.ContainsAny(label, "-_") {
+		return label
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '-' || r == '_' {
+			return ' '
+		}
+		return r
+	}, label)
 }
 
 func stripTitleDecorationPreservingCase(title, site string) string {
@@ -1183,6 +1241,7 @@ func primaryHeadingRegion(n *html.Node) *html.Node {
 // to discard its text.
 func articleHeadingText(heading *html.Node) string {
 	var text strings.Builder
+	imageAlt := ""
 	var visit func(*html.Node)
 	visit = func(n *html.Node) {
 		if n.Type == html.TextNode {
@@ -1193,13 +1252,31 @@ func articleHeadingText(heading *html.Node) string {
 			if isExplicitHeadingPublicationMetadata(n) || strings.EqualFold(n.Data, "small") && headingPublicationFurniture(n) {
 				return
 			}
+			if hasExactClass(n, "descriptor") {
+				label := normalizeText(nodeText(n))
+				if strings.HasSuffix(label, ":") {
+					switch normalizedLabel(label) {
+					case "title", "headline":
+						return
+					}
+				}
+			}
+			if strings.EqualFold(n.Data, "img") && imageAlt == "" {
+				imageAlt = normalizeText(attrValue(n, "alt"))
+			}
 		}
 		for child := n.FirstChild; child != nil; child = child.NextSibling {
 			visit(child)
 		}
 	}
 	visit(heading)
-	return normalizeText(text.String())
+	if visible := normalizeText(text.String()); visible != "" {
+		return visible
+	}
+	// An image-only h1 can be the accessible product or publication name. Use
+	// its alternative text only when the heading has no authored text, so an
+	// illustration beside a textual headline cannot change that headline.
+	return imageAlt
 }
 
 // isExplicitHeadingPublicationMetadata is narrower than the general metadata

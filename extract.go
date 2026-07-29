@@ -289,6 +289,18 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		documentTitle = normalizeText(a.meta.title)
 		if !a.meta.titleFromHeading {
 			documentTitle = a.cleanedMetadataTitle(documentTitle)
+			// A browser-only title at the origin root is normally chrome, but an
+			// exactly matching visible h1 makes it authored page content. This
+			// also covers accessible image-only product wordmarks.
+			browserOnlyRootTitle := a.meta.socialTitle == "" && a.meta.title == a.meta.browserTitle &&
+				a.pageURL != nil && (a.pageURL.Path == "" || a.pageURL.Path == "/")
+			if browserOnlyRootTitle {
+				if visible, found := a.exactVisibleH1Title(a.meta.browserTitle); found {
+					documentTitle = visible
+				} else {
+					documentTitle = ""
+				}
+			}
 		}
 	}
 	cleanBrowserTitle := ""

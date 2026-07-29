@@ -423,11 +423,18 @@ func (a *analysis) highRecall() []*html.Node {
 	var out []*html.Node
 	for i := range a.blocks {
 		b := &a.blocks[i]
+		heroHeader := recoverableHeaderProse(b)
+		if heroHeader != nil {
+			// A clean, non-interactive header can be a homepage hero rather than
+			// a masthead. Reclassify that exact region so normal exclusion checks
+			// remain authoritative for every other irrelevant ancestor.
+			a.overrideIrrelevant(heroHeader, false)
+		}
 		bad := a.hasIrrelevantAncestor(b.node)
 		for p := b.node; p != nil; p = p.Parent {
 			if p.Type == html.ElementNode {
 				t := strings.ToLower(p.Data)
-				if t == "header" || t == "footer" || t == "nav" || hasBoilerplateToken(p) {
+				if t == "footer" || t == "nav" || t == "header" && p != heroHeader || hasBoilerplateToken(p) {
 					bad = true
 					break
 				}
@@ -438,6 +445,39 @@ func (a *analysis) highRecall() []*html.Node {
 		}
 	}
 	return out
+}
+
+// recoverableHeaderProse admits a descriptive homepage hero only after normal
+// selection and semantic fallbacks have failed. Navigation labels, linked
+// promos, controls, and short slogans remain excluded.
+func recoverableHeaderProse(b *block) *html.Node {
+	if b == nil || (b.kind != "p" && b.kind != "blockquote" && b.kind != "generic") {
+		return nil
+	}
+	chars := b.textChars()
+	if chars < 80 || b.linkChars()*3 >= chars || b.controls() != 0 ||
+		isArticleAuxiliaryLabel(normalizedLabel(b.text)) {
+		return nil
+	}
+	for p := b.node.Parent; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		tag := strings.ToLower(p.Data)
+		if tag == "nav" || tag == "footer" || hasBoilerplateToken(p) || isAdvertisementRegion(p) {
+			return nil
+		}
+		if tag == "header" {
+			if controls(p) != 0 || hasBoilerplateToken(p) || isAdvertisementRegion(p) {
+				return nil
+			}
+			return p
+		}
+		if tag == "body" || tag == "html" {
+			return nil
+		}
+	}
+	return nil
 }
 func (a *analysis) quality(nodes []*html.Node) float64 {
 	if len(nodes) == 0 {

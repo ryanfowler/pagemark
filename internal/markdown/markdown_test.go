@@ -225,6 +225,7 @@ func TestEmptyHeadingsArePrunedAfterConversion(t *testing.T) {
 	}{
 		{"empty section", `<section><h2>Web mentions</h2></section>`, ""},
 		{"empty dynamic container", `<section><h2>Web mentions</h2><div id="webmentions"></div></section>`, ""},
+		{"unlabeled heading before content", `<h2 style="background-image:url(hero.png)"></h2><p>Visible content.</p>`, "Visible content."},
 		{"paragraph sibling", `<h2>Installation</h2><p>Run the installer.</p>`, "## Installation\n\nRun the installer."},
 		{"nested content", `<h2>Installation</h2><div><p>Run the installer.</p></div>`, "## Installation\n\nRun the installer."},
 		{"direct section text", `<section><h2>Introduction</h2>Useful introductory text.</section>`, "## Introduction\n\nUseful introductory text."},

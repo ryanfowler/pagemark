@@ -2356,6 +2356,12 @@ func pruneStandaloneHeadings(blocks []*Node) []*Node {
 			kept = append(kept, block)
 			continue
 		}
+		// A source heading with no rendered label is presentation, even when
+		// substantive content follows it. Keeping it would emit a bare ATX
+		// marker such as "##".
+		if len(block.Children) == 0 {
+			continue
+		}
 		hasContent := false
 		for _, following := range blocks[i+1:] {
 			if following.Kind == Heading && following.Level <= block.Level {
