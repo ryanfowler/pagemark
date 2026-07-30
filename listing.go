@@ -13,6 +13,166 @@ const (
 	repeatedListingMatched
 )
 
+const (
+	inferenceTokensKnown uint16 = 1 << iota
+	inferenceTokenCard
+	inferenceTokenItem
+	inferenceTokenRecord
+	inferenceTokenListing
+	inferenceTokenListings
+	inferenceTokenResult
+	inferenceTokenResults
+	inferenceTokenProduct
+	inferenceTokenPrice
+	inferenceTokenSKU
+	inferenceTokenDocs
+	inferenceTokenDocumentation
+	inferenceTokenAPI
+	inferenceTokenReference
+	inferenceTokenDoc
+)
+
+// inferenceTokenFlags tokenizes the classification vocabulary once per DOM
+// element. Page-type and listing inference used to rescan the same id, class,
+// and role values for several overlapping token sets for every descendant
+// block.
+func (a *analysis) inferenceTokenFlags(n *html.Node) uint16 {
+	if n == nil || n.Type != html.ElementNode {
+		return inferenceTokensKnown
+	}
+	if flags := a.nodeStates[n].inferenceTokens; flags != 0 {
+		return flags
+	}
+	flags := inferenceTokensKnown
+	for _, attr := range n.Attr {
+		key := attr.Key
+		tokenAttribute := key == "id" || key == "class" || key == "role"
+		if !tokenAttribute {
+			switch len(key) {
+			case len("id"):
+				tokenAttribute = strings.EqualFold(key, "id")
+			case len("role"):
+				tokenAttribute = strings.EqualFold(key, "role")
+			case len("class"):
+				tokenAttribute = strings.EqualFold(key, "class")
+			}
+			if !tokenAttribute {
+				continue
+			}
+		}
+		start := -1
+		for end := 0; end <= len(attr.Val); end++ {
+			if end < len(attr.Val) && attr.Val[end] < 0x80 && asciiAlnum[attr.Val[end]] {
+				if start < 0 {
+					start = end
+				}
+				continue
+			}
+			if end < len(attr.Val) && attr.Val[end] >= 0x80 {
+				// Unicode identifiers are uncommon in structural attributes.
+				// Preserve their case-folding behavior through the established
+				// matcher while keeping parsed HTML on the single-pass path.
+				for _, vocabulary := range inferenceVocabulary {
+					if containsAnyFold(attr.Val, vocabulary.token) {
+						flags |= vocabulary.flag
+					}
+				}
+				start = -1
+				break
+			}
+			if start >= 0 {
+				flags |= inferenceTokenFlag(attr.Val[start:end])
+				start = -1
+			}
+		}
+	}
+	state := a.nodeStates[n]
+	state.inferenceTokens = flags
+	a.nodeStates[n] = state
+	return flags
+}
+
+var inferenceVocabulary = [...]struct {
+	token string
+	flag  uint16
+}{
+	{"card", inferenceTokenCard}, {"item", inferenceTokenItem}, {"record", inferenceTokenRecord},
+	{"listing", inferenceTokenListing}, {"listings", inferenceTokenListings},
+	{"result", inferenceTokenResult}, {"results", inferenceTokenResults},
+	{"product", inferenceTokenProduct}, {"price", inferenceTokenPrice}, {"sku", inferenceTokenSKU},
+	{"docs", inferenceTokenDocs}, {"documentation", inferenceTokenDocumentation},
+	{"api", inferenceTokenAPI}, {"reference", inferenceTokenReference}, {"doc", inferenceTokenDoc},
+}
+
+func inferenceTokenFlag(token string) uint16 {
+	switch len(token) {
+	case 3:
+		switch lowerASCII(token[0]) {
+		case 'a':
+			if equalFoldASCII(token, "api") {
+				return inferenceTokenAPI
+			}
+		case 'd':
+			if equalFoldASCII(token, "doc") {
+				return inferenceTokenDoc
+			}
+		case 's':
+			if equalFoldASCII(token, "sku") {
+				return inferenceTokenSKU
+			}
+		}
+	case 4:
+		switch lowerASCII(token[0]) {
+		case 'c':
+			if equalFoldASCII(token, "card") {
+				return inferenceTokenCard
+			}
+		case 'd':
+			if equalFoldASCII(token, "docs") {
+				return inferenceTokenDocs
+			}
+		case 'i':
+			if equalFoldASCII(token, "item") {
+				return inferenceTokenItem
+			}
+		}
+	case 5:
+		if lowerASCII(token[0]) == 'p' && equalFoldASCII(token, "price") {
+			return inferenceTokenPrice
+		}
+	case 6:
+		if lowerASCII(token[0]) == 'r' && equalFoldASCII(token, "record") {
+			return inferenceTokenRecord
+		}
+		if lowerASCII(token[0]) == 'r' && equalFoldASCII(token, "result") {
+			return inferenceTokenResult
+		}
+	case 7:
+		if lowerASCII(token[0]) == 'l' && equalFoldASCII(token, "listing") {
+			return inferenceTokenListing
+		}
+		if lowerASCII(token[0]) == 'p' && equalFoldASCII(token, "product") {
+			return inferenceTokenProduct
+		}
+		if lowerASCII(token[0]) == 'r' && equalFoldASCII(token, "results") {
+			return inferenceTokenResults
+		}
+	case 8:
+		if lowerASCII(token[0]) == 'l' && equalFoldASCII(token, "listings") {
+			return inferenceTokenListings
+		}
+	case 9:
+		if lowerASCII(token[0]) == 'r' && equalFoldASCII(token, "reference") {
+			return inferenceTokenReference
+		}
+	case 13:
+		if lowerASCII(token[0]) == 'd' && equalFoldASCII(token, "documentation") {
+			return inferenceTokenDocumentation
+		}
+	}
+	return 0
+}
+
 func listingRecord(n *html.Node) *html.Node {
 	for p := n; p != nil; p = p.Parent {
 		if isListingRecordElement(p) {
@@ -173,11 +333,12 @@ func (a *analysis) inferenceListingRecord(n *html.Node) *html.Node {
 		// Test token-bearing attributes directly. This lookup runs for every block
 		// ancestor during type inference; building a normalized token string here
 		// made listing-heavy pages spend much of their time copying attributes.
-		if elementContainsAny(p, "card", "item", "record") {
+		flags := a.inferenceTokenFlags(p)
+		if flags&(inferenceTokenCard|inferenceTokenItem|inferenceTokenRecord) != 0 {
 			return p
 		}
-		wrapper := elementContainsAny(p, "listing", "listings", "results")
-		if wrapper || elementContainsAny(p, "result") {
+		wrapper := flags&(inferenceTokenListing|inferenceTokenListings|inferenceTokenResults) != 0
+		if wrapper || flags&inferenceTokenResult != 0 {
 			for q := n; q != nil && q != p; q = q.Parent {
 				if a.inferenceListingWrapperRecords(p)[q] {
 					return q

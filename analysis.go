@@ -44,6 +44,7 @@ type nodeState struct {
 	articleDescendant, semanticBefore, semanticAfter uint8
 	articleProseBefore, selfReference                uint8
 	articleCardCount, substantialArticle             uint8
+	inferenceTokens                                  uint16
 }
 
 type analysis struct {

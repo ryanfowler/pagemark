@@ -107,6 +107,15 @@ func TestHiddenAcceptsAtomizedMixedCaseManualNodes(t *testing.T) {
 			},
 		},
 		{
+			name: "mixed-case modal attribute",
+			node: &html.Node{
+				Type:     html.ElementNode,
+				Data:     "div",
+				DataAtom: atom.Div,
+				Attr:     []html.Attribute{{Key: "ArIa-MoDaL", Val: "true"}},
+			},
+		},
+		{
 			name: "mixed-case excluded element",
 			node: &html.Node{
 				Type:     html.ElementNode,

@@ -2703,15 +2703,6 @@ func allASCIIDigits(s string) bool {
 	return s != ""
 }
 
-func nearestTokenAncestor(n *html.Node, values ...string) *html.Node {
-	for p := n; p != nil; p = p.Parent {
-		if p.Type == html.ElementNode && elementContainsAny(p, values...) {
-			return p
-		}
-	}
-	return nil
-}
-
 // primaryDiscussionContext recognizes explicit page-level thread structure.
 // It intentionally examines only the main container (or body when no main is
 // present), rather than inheriting tokens from every block ancestor.

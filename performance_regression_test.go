@@ -111,6 +111,26 @@ func TestAtomizedManualTreeRetainsMixedCaseAttributeSupport(t *testing.T) {
 	}
 }
 
+func TestInferenceTokenFlagsRetainMixedCaseAndUnicodeSupport(t *testing.T) {
+	n := &html.Node{
+		Type: html.ElementNode,
+		Data: "DIV",
+		Attr: []html.Attribute{
+			{Key: "ClAsS", Val: "Featured-CARD product"},
+			{Key: "RoLe", Val: "préface RESULTS"},
+		},
+	}
+	a := &analysis{nodeStates: make(map[*html.Node]nodeState)}
+	got := a.inferenceTokenFlags(n)
+	want := inferenceTokensKnown | inferenceTokenCard | inferenceTokenProduct | inferenceTokenResults
+	if got != want {
+		t.Fatalf("inference token flags = %#x, want %#x", got, want)
+	}
+	if cached := a.nodeStates[n].inferenceTokens; cached != want {
+		t.Fatalf("cached inference token flags = %#x, want %#x", cached, want)
+	}
+}
+
 func TestOverrideIrrelevantInvalidatesDescendantCache(t *testing.T) {
 	root := &html.Node{Type: html.DocumentNode}
 	parent := &html.Node{Type: html.ElementNode, Data: "div"}
