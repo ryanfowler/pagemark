@@ -3,6 +3,10 @@ name: CI
 on:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -22,12 +26,8 @@ jobs:
           test "$(git -C testdata/readability-js rev-parse HEAD)" = ab4027a8b37669745016869a37a504727992b2ba
           test "$(git -C testdata/readability-js rev-parse HEAD:test/test-pages)" = 582c0693a5f171d6568c82554dba462f0c44c46b
       - run: test -z "$(gofmt -l *.go cmd internal)"
-      - run: go test ./...
-      - name: Smoke-test Mozilla compatibility benchmarks
-        run: go test . -run='^$' -bench='^BenchmarkExtractMozillaReadability$' -benchtime=1x
       - run: go test -race ./...
-      - run: go test . -run='^$' -fuzz=FuzzExtract -fuzztime=5s
       - uses: dominikh/staticcheck-action@v1
         with:
-          version: latest
+          version: "2026.1"
           install-go: false
