@@ -96,6 +96,14 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 		switch key {
 		case "hidden", "inert", "open", "aria-hidden", "aria-modal", "style":
 		default:
+			// A mixed-case spelling can only match one of the visibility keys
+			// when its length matches. Reject the many class, data, href, and
+			// framework attributes before scanning their bytes for uppercase.
+			switch len(key) {
+			case len("open"), len("inert"), len("hidden"), len("aria-modal"), len("aria-hidden"):
+			default:
+				continue
+			}
 			mixedCase := false
 			for i := 0; i < len(key); i++ {
 				if key[i] >= 'A' && key[i] <= 'Z' {

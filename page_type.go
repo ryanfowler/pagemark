@@ -83,18 +83,22 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 		// Attribute vocabulary is only consumed as boolean evidence below. Scan
 		// each ancestor in place instead of repeatedly concatenating and
 		// lowercasing a growing token string for every block.
-		productVocabulary, documentationVocabulary := false, false
-		for p := b.node; p != nil && (!productVocabulary || !documentationVocabulary); p = p.Parent {
+		var productRegion, productRecord *html.Node
+		documentationVocabulary := false
+		for p := b.node; p != nil; p = p.Parent {
 			if p.Type != html.ElementNode {
 				continue
 			}
-			if !productVocabulary {
-				productVocabulary = elementContainsAny(p, "product", "price", "sku")
+			flags := a.inferenceTokenFlags(p)
+			if productRegion == nil && flags&(inferenceTokenProduct|inferenceTokenPrice|inferenceTokenSKU) != 0 {
+				productRegion = p
 			}
-			if !documentationVocabulary {
-				documentationVocabulary = elementContainsAny(p, "docs", "documentation", "api", "reference") ||
-					(documentationPath && elementContainsAny(p, "doc"))
+			if productRecord == nil && flags&(inferenceTokenProduct|inferenceTokenSKU) != 0 {
+				productRecord = p
 			}
+			documentationVocabulary = documentationVocabulary ||
+				flags&(inferenceTokenDocs|inferenceTokenDocumentation|inferenceTokenAPI|inferenceTokenReference) != 0 ||
+				documentationPath && flags&inferenceTokenDoc != 0
 		}
 		// Count substantive records independently, but do not promote vocabulary
 		// inherited from their enclosing widget to page-level context. In
@@ -113,13 +117,11 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 			// separate so one neutral article cannot turn an ordinary page into a
 			// discussion merely because an ancestor happens to say “thread”.
 		}
-		if productVocabulary {
-			if region := nearestTokenAncestor(b.node, "product", "price", "sku"); region != nil {
-				productRegionChars[region] += blockChars
-			}
-			if record := nearestTokenAncestor(b.node, "product", "sku"); record != nil {
-				productRecords[record] = true
-			}
+		if productRegion != nil {
+			productRegionChars[productRegion] += blockChars
+		}
+		if productRecord != nil {
+			productRecords[productRecord] = true
 		}
 		if documentationVocabulary {
 			documentationContext = true

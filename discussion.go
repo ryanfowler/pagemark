@@ -202,8 +202,15 @@ func elementContainsAny(n *html.Node, values ...string) bool {
 		// the uncommon fallback for caller-built trees passed to ExtractNode.
 		key := attr.Key
 		tokenAttribute := key == "id" || key == "class" || key == "role"
-		if !tokenAttribute && (strings.EqualFold(key, "id") || strings.EqualFold(key, "class") || strings.EqualFold(key, "role")) {
-			tokenAttribute = true
+		if !tokenAttribute {
+			switch len(key) {
+			case len("id"):
+				tokenAttribute = strings.EqualFold(key, "id")
+			case len("role"):
+				tokenAttribute = strings.EqualFold(key, "role")
+			case len("class"):
+				tokenAttribute = strings.EqualFold(key, "class")
+			}
 		}
 		if tokenAttribute && containsAnyFold(attr.Val, values...) {
 			return true
