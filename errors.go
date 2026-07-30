@@ -13,12 +13,26 @@ var (
 	// ErrLimit means that the input or HTML tree exceeded a resource limit.
 	// Use errors.As to get the related *LimitError.
 	ErrLimit = errors.New("pagemark: resource limit exceeded")
+	// ErrInvalidOption means that one or more extraction options are invalid.
+	ErrInvalidOption = errors.New("pagemark: invalid option")
+)
+
+// LimitResource identifies a resource that can trigger ErrLimit.
+type LimitResource string
+
+const (
+	LimitInputBytes     LimitResource = "input-bytes"
+	LimitElements       LimitResource = "elements"
+	LimitDepth          LimitResource = "depth"
+	LimitAttributes     LimitResource = "attributes"
+	LimitAttributeBytes LimitResource = "attribute-bytes"
+	LimitTextBytes      LimitResource = "text-bytes"
 )
 
 // LimitError reports a resource limit. Use errors.Is(err, ErrLimit) to test it.
 type LimitError struct {
 	// Resource identifies the limited resource.
-	Resource string
+	Resource LimitResource
 	// Count is the observed resource count.
 	Count int64
 	// Max is the configured maximum.

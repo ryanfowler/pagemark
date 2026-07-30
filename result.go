@@ -26,7 +26,7 @@ const (
 // Markdown has no raw HTML, but its words are untrusted source data.
 // The title does not occur again in Markdown, Text, or Sections.
 type Document struct {
-	// URL is the page URL that the caller supplied. Pagemark preserves credentials.
+	// URL is the page URL that the caller supplied, with credentials removed.
 	// URLPolicy does not apply to this field.
 	URL string `json:"url,omitempty"`
 	// CanonicalURL is the HTTP or HTTPS canonical URL from page metadata.
@@ -42,12 +42,15 @@ type Document struct {
 	SiteName string `json:"site_name,omitempty"`
 	// Language is the language value from the HTML lang attribute.
 	Language string `json:"language,omitempty"`
-	// PublishedTime is the publication value from page metadata.
+	// PublishedTime is the unparsed publication value from page metadata. It is
+	// not guaranteed to be RFC 3339 or any other timestamp format.
 	PublishedTime string `json:"published_time,omitempty"`
 	// PageType is the detected or specified page shape.
 	PageType PageType `json:"page_type"`
 	// PageTypeScore is the page-type confidence from 0 through 1.
 	// An explicit page type has a score of 1.
+	//
+	// Deprecated: use DiagnosticReport.PageTypeScore from ExtractDetailedBytes.
 	PageTypeScore float64 `json:"page_type_score"`
 	// Markdown is the selected content as restricted Markdown.
 	Markdown string `json:"markdown"`
@@ -61,12 +64,18 @@ type Document struct {
 	Images []Image `json:"images,omitempty"`
 	// Quality measures observable output properties from 0 through 1.
 	// It does not measure trust or factual accuracy.
+	//
+	// Deprecated: use DiagnosticReport.Quality from ExtractDetailedBytes.
 	Quality float64 `json:"quality"`
 	// Diagnostics contains selection details when diagnostics are enabled.
+	//
+	// Deprecated: use ExtractDetailedBytes.
 	Diagnostics *Diagnostics `json:"diagnostics,omitempty"`
 	// Warnings contains nonfatal extraction conditions.
 	Warnings []Warning `json:"warnings,omitempty"`
 	// Stats contains extraction counts.
+	//
+	// Deprecated: use DiagnosticReport.Stats from ExtractDetailedBytes.
 	Stats Stats `json:"stats"`
 }
 
@@ -94,10 +103,20 @@ type Image struct {
 	URL string `json:"url,omitempty"`
 }
 
+// WarningCode identifies a nonfatal extraction condition.
+type WarningCode string
+
+const (
+	WarningOutputTruncated        WarningCode = "output-truncated"
+	WarningRepeatedItemsTruncated WarningCode = "repeated-items-truncated"
+	WarningFallbackUsed           WarningCode = "fallback"
+	WarningRelaxedExtraction      WarningCode = "relaxed-article-extraction"
+)
+
 // Warning reports a nonfatal extraction condition.
 type Warning struct {
 	// Code is a short machine-readable identifier.
-	Code string `json:"code"`
+	Code WarningCode `json:"code"`
 	// Message describes the condition.
 	Message string `json:"message"`
 }
@@ -119,8 +138,9 @@ type Stats struct {
 	OutputBytes int `json:"output_bytes"`
 }
 
-// Diagnostics explains selection decisions. Enable it with WithDiagnostics.
-// Fields can change in a minor release.
+// Diagnostics explains selection decisions. Fields can change in a minor release.
+//
+// Deprecated: use DiagnosticReport from ExtractDetailedBytes.
 type Diagnostics struct {
 	// ProfileVersion identifies the diagnostic scoring format.
 	ProfileVersion string `json:"profile_version"`
@@ -156,4 +176,17 @@ type BlockDiagnostic struct {
 	Selected bool `json:"selected"`
 	// Reasons contains human-readable score reasons.
 	Reasons []string `json:"reasons,omitempty"`
+}
+
+// DiagnosticReport contains experimental, algorithm-specific extraction data.
+// Its fields may change in a minor release.
+type DiagnosticReport struct {
+	ProfileVersion string            `json:"profile_version"`
+	Fallback       string            `json:"fallback"`
+	PageCandidates []PageCandidate   `json:"page_candidates,omitempty"`
+	Blocks         []BlockDiagnostic `json:"blocks,omitempty"`
+	RejectedLinks  []string          `json:"rejected_links,omitempty"`
+	Stats          Stats             `json:"stats"`
+	Quality        float64           `json:"quality"`
+	PageTypeScore  float64           `json:"page_type_score"`
 }

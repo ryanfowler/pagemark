@@ -91,7 +91,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, client *h
 		return fmt.Errorf("pagemark: read response body: %w", err)
 	}
 	if int64(len(body)) > *maxBytes {
-		return &pagemark.LimitError{Resource: "input bytes", Count: int64(len(body)), Max: *maxBytes}
+		return &pagemark.LimitError{Resource: pagemark.LimitInputBytes, Count: int64(len(body)), Max: *maxBytes}
 	}
 	utf8Body, err := decodeHTML(body, contentType)
 	if err != nil {

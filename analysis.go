@@ -84,28 +84,28 @@ func (a *analysis) index(n *html.Node, depth int) error {
 		a.maxDepth = depth
 	}
 	if a.o.maxDepth > 0 && depth > a.o.maxDepth {
-		return &LimitError{"DOM depth", int64(depth), int64(a.o.maxDepth)}
+		return &LimitError{Resource: LimitDepth, Count: int64(depth), Max: int64(a.o.maxDepth)}
 	}
 	if n.Type == html.ElementNode {
 		a.elements++
 		if a.o.maxElements > 0 && a.elements > a.o.maxElements {
-			return &LimitError{"elements", int64(a.elements), int64(a.o.maxElements)}
+			return &LimitError{Resource: LimitElements, Count: int64(a.elements), Max: int64(a.o.maxElements)}
 		}
 		a.attrs += len(n.Attr)
 		for _, x := range n.Attr {
 			a.attrBytes += len(x.Key) + len(x.Val)
 		}
 		if a.o.maxAttributes > 0 && a.attrs > a.o.maxAttributes {
-			return &LimitError{"attributes", int64(a.attrs), int64(a.o.maxAttributes)}
+			return &LimitError{Resource: LimitAttributes, Count: int64(a.attrs), Max: int64(a.o.maxAttributes)}
 		}
 		if a.o.maxAttributeBytes > 0 && a.attrBytes > a.o.maxAttributeBytes {
-			return &LimitError{"attribute bytes", int64(a.attrBytes), int64(a.o.maxAttributeBytes)}
+			return &LimitError{Resource: LimitAttributeBytes, Count: int64(a.attrBytes), Max: int64(a.o.maxAttributeBytes)}
 		}
 	}
 	if n.Type == html.TextNode {
 		a.textBytes += len(n.Data)
 		if a.o.maxText > 0 && a.textBytes > a.o.maxText {
-			return &LimitError{"text bytes", int64(a.textBytes), int64(a.o.maxText)}
+			return &LimitError{Resource: LimitTextBytes, Count: int64(a.textBytes), Max: int64(a.o.maxText)}
 		}
 	}
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {

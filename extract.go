@@ -2,7 +2,10 @@
 //
 // Pagemark returns restricted Markdown without raw HTML. Its default policy
 // permits HTTP and HTTPS links and images in Markdown. The policy does not apply
-// to Document.URL or Document.CanonicalURL.
+// to Document.URL or Document.CanonicalURL; credentials are removed from both.
+//
+// Extract, ExtractBytes, and ExtractNode return the stable content result.
+// ExtractDetailedBytes also returns experimental algorithm diagnostics.
 //
 // The package does not fetch pages or run JavaScript.
 //
@@ -13,6 +16,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"strings"
 	"unicode/utf8"
@@ -25,12 +29,15 @@ import (
 // Decode other character encodings before extraction. pageURL can be empty.
 // A nonempty pageURL must be an absolute HTTP or HTTPS URL.
 func Extract(input io.Reader, pageURL string, opts ...Option) (*Document, error) {
-	o := applyOptions(opts)
+	o, err := applyOptions(opts)
+	if err != nil {
+		return nil, err
+	}
 	if input == nil {
 		return nil, fmt.Errorf("pagemark: read input: %w", io.ErrUnexpectedEOF)
 	}
 	var source io.Reader = input
-	if o.maxInput > 0 {
+	if o.maxInput > 0 && o.maxInput < math.MaxInt64 {
 		source = io.LimitReader(input, o.maxInput+1)
 	}
 	data, err := io.ReadAll(source)
@@ -38,7 +45,7 @@ func Extract(input io.Reader, pageURL string, opts ...Option) (*Document, error)
 		return nil, err
 	}
 	if o.maxInput > 0 && int64(len(data)) > o.maxInput {
-		return nil, &LimitError{"input bytes", int64(len(data)), o.maxInput}
+		return nil, &LimitError{Resource: LimitInputBytes, Count: int64(len(data)), Max: o.maxInput}
 	}
 	// Extract accepts UTF-8. Callers with another encoding must decode it before
 	// extraction; attempting to sniff here can misinterpret UTF-8 as Windows-1252
@@ -54,9 +61,12 @@ func Extract(input io.Reader, pageURL string, opts ...Option) (*Document, error)
 // Decode other character encodings before extraction. pageURL can be empty.
 // A nonempty pageURL must be an absolute HTTP or HTTPS URL.
 func ExtractBytes(input []byte, pageURL string, opts ...Option) (*Document, error) {
-	o := applyOptions(opts)
+	o, err := applyOptions(opts)
+	if err != nil {
+		return nil, err
+	}
 	if o.maxInput > 0 && int64(len(input)) > o.maxInput {
-		return nil, &LimitError{"input bytes", int64(len(input)), o.maxInput}
+		return nil, &LimitError{Resource: LimitInputBytes, Count: int64(len(input)), Max: o.maxInput}
 	}
 	// Parse the caller's byte slice directly. Routing through Extract would make
 	// io.ReadAll copy the complete input before parsing it.
@@ -84,7 +94,7 @@ func extractBytes(input []byte, pageURL string, o options) (*Document, error) {
 			if fallback, fallbackErr := extractNode(fallbackRoot, pageURL, o); fallbackErr == nil &&
 				fallback != nil && utf8.RuneCountInString(fallback.Text) >= 120 &&
 				(doc == nil || utf8.RuneCountInString(fallback.Text) > 2*utf8.RuneCountInString(doc.Text)) {
-				fallback.Warnings = append(fallback.Warnings, Warning{"fallback", "The noscript fallback produced the result."})
+				fallback.Warnings = append(fallback.Warnings, Warning{WarningFallbackUsed, "The noscript fallback produced the result."})
 				return fallback, nil
 			}
 		}
@@ -95,25 +105,27 @@ func extractBytes(input []byte, pageURL string, o options) (*Document, error) {
 // ExtractNode returns useful content from a parsed HTML tree.
 // It does not change root. Do not change root during extraction.
 // pageURL can be empty. A nonempty pageURL must be an absolute HTTP or HTTPS URL.
-// WithMaxInputBytes does not apply to this function.
+// WithMaxInputBytes and Limits.InputBytes do not apply to this function.
 func ExtractNode(root *html.Node, pageURL string, opts ...Option) (*Document, error) {
-	return extractNode(root, pageURL, applyOptions(opts))
+	o, err := applyOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	return extractNode(root, pageURL, o)
 }
 
-func applyOptions(opts []Option) options {
+func applyOptions(opts []Option) (options, error) {
 	o := defaultOptions()
 	for _, f := range opts {
 		if f != nil {
 			f(&o)
 		}
 	}
-	if o.maxInput < 0 {
-		o.maxInput = 0
+	if err := o.validate(); err != nil {
+		return options{}, err
 	}
-	if o.maxOutput < 0 {
-		o.maxOutput = 0
-	}
-	return o
+	o.normalizeUnlimited()
+	return o, nil
 }
 
 func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
@@ -126,6 +138,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			return nil, ErrInvalidURL
 		}
+		u.User = nil
 		page = u
 	}
 	a := &analysis{o: o, root: root, pageURL: page, base: page}
@@ -272,7 +285,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 			(titleEquivalent(articleHeadingText(n), a.contentTitle, a.meta.site) || titleEquivalent(nodeText(n), a.contentTitle, a.meta.site))
 		return titleHeading || a.titleExcluded[n] || a.hasIrrelevantAncestor(n) || repeatedExcluded[n] || discussionAuxiliary || visualAuxiliary
 	}
-	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: o.urlPolicy.Schemes, AllowMailto: o.urlPolicy.AllowMailto, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude, PruneEmptyHeadings: true}
+	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: o.urlPolicy.AllowedSchemes, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude, PruneEmptyHeadings: true}
 	if a.textListingPre != nil {
 		cfg.TextPreformatted = func(n *html.Node) bool { return n == a.textListingPre }
 	}
@@ -332,7 +345,11 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 			documentTitle = social
 		}
 	}
-	doc := &Document{URL: rawURL, CanonicalURL: a.meta.canonical, Title: documentTitle, Description: a.meta.description, Author: a.meta.author, SiteName: a.meta.site, Language: a.meta.language, PublishedTime: a.meta.published, PageType: pageType, PageTypeScore: confidence, Markdown: mr.Markdown, Text: mr.Text, Quality: clamp(quality), Diagnostics: a.diag, Stats: Stats{Elements: a.elements, TextBytes: a.textBytes, Blocks: len(a.blocks), OutputBytes: len(mr.Markdown)}}
+	sourceURL := ""
+	if page != nil {
+		sourceURL = page.String()
+	}
+	doc := &Document{URL: sourceURL, CanonicalURL: a.meta.canonical, Title: documentTitle, Description: a.meta.description, Author: a.meta.author, SiteName: a.meta.site, Language: a.meta.language, PublishedTime: a.meta.published, PageType: pageType, PageTypeScore: confidence, Markdown: mr.Markdown, Text: mr.Text, Quality: clamp(quality), Diagnostics: a.diag, Stats: Stats{Elements: a.elements, TextBytes: a.textBytes, Blocks: len(a.blocks), OutputBytes: len(mr.Markdown)}}
 	if len(mr.Links) > 0 {
 		doc.Links = make([]Link, len(mr.Links))
 		for i, l := range mr.Links {
@@ -347,15 +364,15 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	}
 	doc.Stats.SelectedBlocks = mr.EmittedBlocks
 	if repeatedDropped > 0 {
-		doc.Warnings = append(doc.Warnings, Warning{"repeated-items-truncated", fmt.Sprintf("The repeated-item limit dropped %d selected content items.", repeatedDropped)})
+		doc.Warnings = append(doc.Warnings, Warning{WarningRepeatedItemsTruncated, fmt.Sprintf("The repeated-item limit dropped %d selected content items.", repeatedDropped)})
 	}
 	if mr.Truncated {
-		doc.Warnings = append(doc.Warnings, Warning{"output-truncated", "The output reached the configured byte limit."})
+		doc.Warnings = append(doc.Warnings, Warning{WarningOutputTruncated, "The output reached the configured byte limit."})
 	}
 	if strings.HasPrefix(fallback, "relaxed-") {
-		doc.Warnings = append(doc.Warnings, Warning{"relaxed-article-extraction", "A relaxed article extraction profile produced the result."})
+		doc.Warnings = append(doc.Warnings, Warning{WarningRelaxedExtraction, "A relaxed article extraction profile produced the result."})
 	} else if fallback != "primary" {
-		doc.Warnings = append(doc.Warnings, Warning{"fallback", "The " + fallback + " fallback produced the result."})
+		doc.Warnings = append(doc.Warnings, Warning{WarningFallbackUsed, "The " + fallback + " fallback produced the result."})
 	}
 	if a.diag != nil {
 		a.diag.Fallback = fallback
@@ -367,17 +384,39 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 			doc.Sections[i] = Section{Heading: section.Heading, Text: section.Text}
 		}
 	}
-	if !o.includeMetadata {
-		doc.Title = ""
-		doc.Description = ""
-		doc.Author = ""
-		doc.SiteName = ""
-		doc.Language = ""
-		doc.PublishedTime = ""
-		doc.CanonicalURL = ""
-	}
 	if o.logger != nil {
 		o.logger.Debug("extracted page", "type", pageType, "quality", doc.Quality, "blocks", len(a.blocks), "selected", doc.Stats.SelectedBlocks)
 	}
 	return doc, nil
+}
+
+// ExtractDetailedBytes extracts content and returns an experimental diagnostic
+// report from the same extraction pass. Report fields may change in a minor
+// release. Ordinary callers should use ExtractBytes.
+func ExtractDetailedBytes(input []byte, pageURL string, opts ...Option) (*Document, *DiagnosticReport, error) {
+	detailed := func(o *options) { o.diagnostics = true }
+	detailedOptions := make([]Option, len(opts)+1)
+	copy(detailedOptions, opts)
+	detailedOptions[len(opts)] = detailed
+	doc, err := ExtractBytes(input, pageURL, detailedOptions...)
+	if doc == nil {
+		return nil, nil, err
+	}
+	report := diagnosticReport(doc)
+	doc.Diagnostics = nil
+	return doc, report, err
+}
+
+func diagnosticReport(doc *Document) *DiagnosticReport {
+	report := &DiagnosticReport{
+		Stats: doc.Stats, Quality: doc.Quality, PageTypeScore: doc.PageTypeScore,
+	}
+	if doc.Diagnostics != nil {
+		report.ProfileVersion = doc.Diagnostics.ProfileVersion
+		report.Fallback = doc.Diagnostics.Fallback
+		report.PageCandidates = doc.Diagnostics.PageCandidates
+		report.Blocks = doc.Diagnostics.Blocks
+		report.RejectedLinks = doc.Diagnostics.RejectedLinks
+	}
+	return report
 }
