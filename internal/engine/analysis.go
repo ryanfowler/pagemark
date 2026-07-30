@@ -1,4 +1,4 @@
-package pagemark
+package engine
 
 import (
 	"net/url"
@@ -56,7 +56,7 @@ type analysis struct {
 	meta                                             metadata
 	pageType                                         PageType
 	pageTypeExplicit                                 bool
-	diag                                             *Diagnostics
+	diag                                             *diagnosticState
 	nodeStates                                       map[*html.Node]nodeState
 	titleExcluded                                    map[*html.Node]bool
 	contentTitle                                     string

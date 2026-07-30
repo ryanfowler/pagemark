@@ -1,4 +1,4 @@
-package pagemark
+package engine
 
 import (
 	"crypto/sha256"
@@ -32,7 +32,7 @@ type realWorldFixture struct {
 }
 
 func TestRealWorldFixtures(t *testing.T) {
-	const directory = "testdata/real-world"
+	const directory = "../../testdata/real-world"
 	manifestData, err := os.ReadFile(filepath.Join(directory, "fixtures.json"))
 	if err != nil {
 		t.Fatal(err)

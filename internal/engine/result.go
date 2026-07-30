@@ -1,4 +1,4 @@
-package pagemark
+package engine
 
 // PageType identifies the main shape of a page.
 type PageType string
@@ -67,12 +67,12 @@ type Document struct {
 	//
 	// Deprecated: use DiagnosticReport.Quality from ExtractDetailedBytes.
 	Quality float64 `json:"quality"`
-	// Diagnostics contains selection details when diagnostics are enabled.
-	//
-	// Deprecated: use ExtractDetailedBytes.
-	Diagnostics *Diagnostics `json:"diagnostics,omitempty"`
 	// Warnings contains nonfatal extraction conditions.
 	Warnings []Warning `json:"warnings,omitempty"`
+
+	// diagnostic is populated only during ExtractDetailedBytes and is never
+	// exposed through the public result.
+	diagnostic *diagnosticState
 	// Stats contains extraction counts.
 	//
 	// Deprecated: use DiagnosticReport.Stats from ExtractDetailedBytes.
@@ -138,20 +138,14 @@ type Stats struct {
 	OutputBytes int `json:"output_bytes"`
 }
 
-// Diagnostics explains selection decisions. Fields can change in a minor release.
-//
-// Deprecated: use DiagnosticReport from ExtractDetailedBytes.
-type Diagnostics struct {
-	// ProfileVersion identifies the diagnostic scoring format.
-	ProfileVersion string `json:"profile_version"`
-	// Fallback identifies the extraction path that produced the result.
-	Fallback string `json:"fallback"`
-	// PageCandidates contains the page types in score order.
-	PageCandidates []PageCandidate `json:"page_candidates,omitempty"`
-	// Blocks contains score details for content blocks.
-	Blocks []BlockDiagnostic `json:"blocks,omitempty"`
-	// RejectedLinks contains source link URLs that failed URLPolicy.
-	RejectedLinks []string `json:"rejected_links,omitempty"`
+// diagnosticState is the internal diagnostic data collected for a detailed
+// extraction. It is kept off the public Document result.
+type diagnosticState struct {
+	ProfileVersion string
+	Fallback       string
+	PageCandidates []PageCandidate
+	Blocks         []BlockDiagnostic
+	RejectedLinks  []string
 }
 
 // PageCandidate contains one possible page type and its raw score.

@@ -91,8 +91,9 @@ doc, report, err := pagemark.ExtractDetailedBytes(source, pageURL)
 
 `report` contains page-type and quality scores, block details, fallback names,
 rejected links, and extraction counters. Its shape may change in a minor
-release. `WithDiagnostics` and the algorithm-sensitive fields on `Document`
-are deprecated temporarily so existing pre-1.0 diagnostic tooling can migrate.
+release. Diagnostic details are available only through `DiagnosticReport`;
+the legacy `WithDiagnostics` option and diagnostics pointer are not part of the
+current API.
 
 ## Implementation decisions
 
@@ -104,12 +105,11 @@ are deprecated temporarily so existing pre-1.0 diagnostic tooling can migrate.
   values are explicit limits, and `-1` is unlimited. Values below `-1` fail
   validation. Later functional options win.
 - `ExtractDetailedBytes` enables diagnostics inside the existing extraction
-  pass, builds `DiagnosticReport`, and removes the legacy diagnostics pointer
-  from the returned document. This avoids a second extraction pipeline and
-  import-cycle workarounds.
-- `Quality`, `PageTypeScore`, and `Stats` remain temporarily on `Document` as
-  deprecated fields. The repository's regression tests use them extensively;
-  moving consumers to `DiagnosticReport` can occur before their final removal.
+  pass and builds `DiagnosticReport`. Diagnostic state remains internal to the
+  extraction engine, avoiding a second extraction pipeline and import-cycle
+  workarounds.
+- `Quality`, `PageTypeScore`, and `Stats` remain on `Document` for the stable
+  result contract; the detailed report also includes their diagnostic view.
 - The `URLPolicy` field rename and `AllowMailto` removal are included now.
   Mailto has the same scheme-policy behavior as other allowed schemes.
 - A complete repository search found old-option usage only in this module's

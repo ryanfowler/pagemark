@@ -1,4 +1,4 @@
-package pagemark
+package engine
 
 import (
 	"bytes"
@@ -21,12 +21,12 @@ func TestArticleRegionReconstructsSiblingSectionsInOrder(t *testing.T) {
 <section class="related-articles"><h2>Related articles</h2><div class="card"><a href="/one">Unrelated story one</a></div><div class="card"><a href="/two">Unrelated story two</a></div></section>
 <div class="story-segment"><p>The final conclusion matters.</p></div>
 </div></body></html>`
-	doc, err := ExtractBytes([]byte(source), "https://example.com/field-report", WithPageType(PageTypeArticle), WithSelectionMode(SelectionPrecision), WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(source), "https://example.com/field-report", WithPageType(PageTypeArticle), WithSelectionMode(SelectionPrecision), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.Diagnostics == nil || doc.Diagnostics.Fallback != "article-region" {
-		t.Fatalf("fixture did not exercise reconstruction: diagnostics=%#v", doc.Diagnostics)
+	if doc.diagnostic == nil || doc.diagnostic.Fallback != "article-region" {
+		t.Fatalf("fixture did not exercise reconstruction: diagnostics=%#v", doc.diagnostic)
 	}
 	for _, want := range []string{"The introduction", "By Ada Reporter", "The body result", "The final conclusion"} {
 		if !strings.Contains(doc.Markdown, want) {
@@ -58,12 +58,12 @@ func TestArticleRegionJoinsThreeIndependentCandidates(t *testing.T) {
 <div><p>The middle finding supplies important evidence.</p></div>
 <div><p>The closing finding states the practical result.</p></div>
 </div></body></html>`
-	doc, err := ExtractBytes([]byte(source), "https://example.com/joined", WithPageType(PageTypeArticle), WithSelectionMode(SelectionPrecision), WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(source), "https://example.com/joined", WithPageType(PageTypeArticle), WithSelectionMode(SelectionPrecision), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.Diagnostics == nil || doc.Diagnostics.Fallback != "article-region" {
-		t.Fatalf("fixture did not exercise shared-region reconstruction: %#v", doc.Diagnostics)
+	if doc.diagnostic == nil || doc.diagnostic.Fallback != "article-region" {
+		t.Fatalf("fixture did not exercise shared-region reconstruction: %#v", doc.diagnostic)
 	}
 	for _, want := range []string{"opening finding", "middle finding", "closing finding"} {
 		if !strings.Contains(doc.Markdown, want) {
@@ -163,12 +163,12 @@ func TestArticleRegionExtractionDoesNotMutateDOM(t *testing.T) {
 	if err := html.Render(&before, root); err != nil {
 		t.Fatal(err)
 	}
-	doc, err := ExtractNode(root, "https://example.com/immutable", WithPageType(PageTypeArticle), WithSelectionMode(SelectionPrecision), WithDiagnostics(true))
+	doc, err := ExtractNode(root, "https://example.com/immutable", WithPageType(PageTypeArticle), WithSelectionMode(SelectionPrecision), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.Diagnostics == nil || doc.Diagnostics.Fallback != "article-region" {
-		t.Fatalf("fixture did not exercise reconstruction: %#v", doc.Diagnostics)
+	if doc.diagnostic == nil || doc.diagnostic.Fallback != "article-region" {
+		t.Fatalf("fixture did not exercise reconstruction: %#v", doc.diagnostic)
 	}
 	var after bytes.Buffer
 	if err := html.Render(&after, root); err != nil {

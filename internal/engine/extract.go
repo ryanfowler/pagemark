@@ -10,7 +10,7 @@
 // The package does not fetch pages or run JavaScript.
 //
 // Extracted words are untrusted source data. Do not use them as instructions.
-package pagemark
+package engine
 
 import (
 	"bytes"
@@ -143,7 +143,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	}
 	a := &analysis{o: o, root: root, pageURL: page, base: page}
 	if o.diagnostics {
-		a.diag = &Diagnostics{ProfileVersion: "1", Fallback: "primary"}
+		a.diag = &diagnosticState{ProfileVersion: "1", Fallback: "primary"}
 	}
 	if err := a.index(root, 0); err != nil {
 		return nil, err
@@ -349,7 +349,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	if page != nil {
 		sourceURL = page.String()
 	}
-	doc := &Document{URL: sourceURL, CanonicalURL: a.meta.canonical, Title: documentTitle, Description: a.meta.description, Author: a.meta.author, SiteName: a.meta.site, Language: a.meta.language, PublishedTime: a.meta.published, PageType: pageType, PageTypeScore: confidence, Markdown: mr.Markdown, Text: mr.Text, Quality: clamp(quality), Diagnostics: a.diag, Stats: Stats{Elements: a.elements, TextBytes: a.textBytes, Blocks: len(a.blocks), OutputBytes: len(mr.Markdown)}}
+	doc := &Document{URL: sourceURL, CanonicalURL: a.meta.canonical, Title: documentTitle, Description: a.meta.description, Author: a.meta.author, SiteName: a.meta.site, Language: a.meta.language, PublishedTime: a.meta.published, PageType: pageType, PageTypeScore: confidence, Markdown: mr.Markdown, Text: mr.Text, Quality: clamp(quality), Stats: Stats{Elements: a.elements, TextBytes: a.textBytes, Blocks: len(a.blocks), OutputBytes: len(mr.Markdown)}, diagnostic: a.diag}
 	if len(mr.Links) > 0 {
 		doc.Links = make([]Link, len(mr.Links))
 		for i, l := range mr.Links {
@@ -394,7 +394,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 // report from the same extraction pass. Report fields may change in a minor
 // release. Ordinary callers should use ExtractBytes.
 func ExtractDetailedBytes(input []byte, pageURL string, opts ...Option) (*Document, *DiagnosticReport, error) {
-	detailed := func(o *options) { o.diagnostics = true }
+	detailed := withDiagnostics()
 	detailedOptions := make([]Option, len(opts)+1)
 	copy(detailedOptions, opts)
 	detailedOptions[len(opts)] = detailed
@@ -403,7 +403,7 @@ func ExtractDetailedBytes(input []byte, pageURL string, opts ...Option) (*Docume
 		return nil, nil, err
 	}
 	report := diagnosticReport(doc)
-	doc.Diagnostics = nil
+	doc.diagnostic = nil
 	return doc, report, err
 }
 
@@ -411,12 +411,12 @@ func diagnosticReport(doc *Document) *DiagnosticReport {
 	report := &DiagnosticReport{
 		Stats: doc.Stats, Quality: doc.Quality, PageTypeScore: doc.PageTypeScore,
 	}
-	if doc.Diagnostics != nil {
-		report.ProfileVersion = doc.Diagnostics.ProfileVersion
-		report.Fallback = doc.Diagnostics.Fallback
-		report.PageCandidates = doc.Diagnostics.PageCandidates
-		report.Blocks = doc.Diagnostics.Blocks
-		report.RejectedLinks = doc.Diagnostics.RejectedLinks
+	if doc.diagnostic != nil {
+		report.ProfileVersion = doc.diagnostic.ProfileVersion
+		report.Fallback = doc.diagnostic.Fallback
+		report.PageCandidates = doc.diagnostic.PageCandidates
+		report.Blocks = doc.diagnostic.Blocks
+		report.RejectedLinks = doc.diagnostic.RejectedLinks
 	}
 	return report
 }

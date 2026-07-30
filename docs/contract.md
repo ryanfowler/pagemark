@@ -54,8 +54,7 @@ The durable result contract consists of source and canonical URLs, metadata,
 page type, Markdown, text, sections, links, images, and warnings. Page-type
 scores, quality heuristics, block scores, fallback names, and detailed counters
 are experimental diagnostics. Request them with `ExtractDetailedBytes`;
-`DiagnosticReport` may change in a minor release. Legacy diagnostic fields on
-`Document` are deprecated during the pre-1.0 migration.
+`DiagnosticReport` may change in a minor release.
 
 ## Safety
 

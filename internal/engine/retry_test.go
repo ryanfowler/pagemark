@@ -1,4 +1,4 @@
-package pagemark
+package engine
 
 import (
 	"strconv"
@@ -10,15 +10,15 @@ func TestRelaxedArticleLabelsRecoverProse(t *testing.T) {
 	html := `<html><head><meta property="article:published_time" content="2025-01-02"><title>Recovered story</title></head><body>
 	<div class="newsletter-layout"><p>This is the first substantial paragraph of the report, with enough ordinary prose to establish the local editorial body.</p>
 	<p>This is the second substantial paragraph, continuing the report without links, controls, promotions, or other page furniture.</p></div></body></html>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/story", WithPageType(PageTypeArticle), WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/story", WithPageType(PageTypeArticle), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(doc.Text, "first substantial paragraph") || !strings.Contains(doc.Text, "second substantial paragraph") {
 		t.Fatalf("article prose was not recovered: %q", doc.Text)
 	}
-	if doc.Diagnostics == nil || doc.Diagnostics.Fallback != "relaxed-labels" {
-		t.Fatalf("fallback = %#v, want relaxed-labels", doc.Diagnostics)
+	if doc.diagnostic == nil || doc.diagnostic.Fallback != "relaxed-labels" {
+		t.Fatalf("fallback = %#v, want relaxed-labels", doc.diagnostic)
 	}
 	if len(doc.Warnings) == 0 || doc.Warnings[0].Code != "relaxed-article-extraction" {
 		t.Fatalf("warnings = %#v", doc.Warnings)
@@ -35,15 +35,15 @@ func TestRelaxedArticleLabelsRecoverLongEmptyPrimary(t *testing.T) {
 	}
 	source.WriteString(`</div></body></html>`)
 
-	doc, err := ExtractBytes([]byte(source.String()), "https://example.com/long-story", WithPageType(PageTypeArticle), WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(source.String()), "https://example.com/long-story", WithPageType(PageTypeArticle), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(doc.Text, "Unique paragraph number 1 ") || !strings.Contains(doc.Text, "Unique paragraph number 13 ") {
 		t.Fatalf("long relaxed article was truncated or not recovered: %q", doc.Text)
 	}
-	if doc.Diagnostics == nil || doc.Diagnostics.Fallback != "relaxed-labels" {
-		t.Fatalf("fallback = %#v, want relaxed-labels", doc.Diagnostics)
+	if doc.diagnostic == nil || doc.diagnostic.Fallback != "relaxed-labels" {
+		t.Fatalf("fallback = %#v, want relaxed-labels", doc.diagnostic)
 	}
 }
 
@@ -52,15 +52,15 @@ func TestRelaxedArticleThresholdIsProseOnly(t *testing.T) {
 	<p>One concise paragraph narrowly misses strict scoring.</p><p>Another concise paragraph supplies the rest of the report.</p>
 	<nav><p>This deliberately long navigation label looks rather like prose but must always remain excluded from article output.</p></nav>
 	</div></body></html>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/brief", WithPageType(PageTypeArticle), WithSelectionMode(SelectionPrecision), WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/brief", WithPageType(PageTypeArticle), WithSelectionMode(SelectionPrecision), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(doc.Text, "One concise paragraph") || strings.Contains(doc.Text, "navigation label") {
-		t.Fatalf("unexpected output: %q (diagnostics: %#v)", doc.Text, doc.Diagnostics)
+		t.Fatalf("unexpected output: %q (diagnostics: %#v)", doc.Text, doc.diagnostic)
 	}
-	if doc.Diagnostics.Fallback != "relaxed-threshold" {
-		t.Fatalf("fallback = %q, want relaxed-threshold", doc.Diagnostics.Fallback)
+	if doc.diagnostic.Fallback != "relaxed-threshold" {
+		t.Fatalf("fallback = %q, want relaxed-threshold", doc.diagnostic.Fallback)
 	}
 }
 
@@ -89,12 +89,12 @@ func TestArticleRetriesDoNotApplyToExplicitNonArticleType(t *testing.T) {
 	html := `<html><head><meta property="article:published_time" content="2025-01-02"><title>Not an article</title></head><body>
 	<pre>const retained = "documentation"</pre><div class="newsletter-layout"><p>This substantial paragraph would be eligible under relaxed article labels if retries were incorrectly enabled.</p>
 	<p>This second substantial paragraph supplies enough local prose evidence for an article-specific retry.</p></div></body></html>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/docs", WithPageType(PageTypeDocumentation), WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/docs", WithPageType(PageTypeDocumentation), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.Diagnostics != nil && strings.HasPrefix(doc.Diagnostics.Fallback, "relaxed-") {
-		t.Fatalf("non-article used retry: %q", doc.Diagnostics.Fallback)
+	if doc.diagnostic != nil && strings.HasPrefix(doc.diagnostic.Fallback, "relaxed-") {
+		t.Fatalf("non-article used retry: %q", doc.diagnostic.Fallback)
 	}
 }
 
@@ -106,7 +106,7 @@ func TestRelaxedArticleDeterministicWithoutDiagnostics(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if doc.Diagnostics != nil {
+		if doc.diagnostic != nil {
 			t.Fatal("diagnostics allocated while disabled")
 		}
 		if i == 0 {
