@@ -180,11 +180,9 @@ func WithURLPolicy(v URLPolicy) Option {
 // WithLogger sets a logger for extraction debug messages. A nil logger disables messages.
 func WithLogger(v *slog.Logger) Option { return func(o *options) { o.logger = v } }
 
-// WithDiagnostics enables legacy diagnostics on Document.
-//
-// Deprecated: use ExtractDetailedBytes. This option and Document.Diagnostics
-// are retained temporarily for diagnostic tooling during the pre-1.0 migration.
-func WithDiagnostics(v bool) Option { return func(o *options) { o.diagnostics = v } }
+// withDiagnostics enables diagnostic collection for the detailed extraction
+// path. It is intentionally not part of the public option set.
+func withDiagnostics() Option { return func(o *options) { o.diagnostics = true } }
 
 func (o *options) validate() error {
 	if !validPageType(o.pageType) {

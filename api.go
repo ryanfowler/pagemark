@@ -24,7 +24,6 @@ type (
 	WarningCode      = engine.WarningCode
 	Warning          = engine.Warning
 	Stats            = engine.Stats
-	Diagnostics      = engine.Diagnostics
 	PageCandidate    = engine.PageCandidate
 	BlockDiagnostic  = engine.BlockDiagnostic
 	DiagnosticReport = engine.DiagnosticReport
@@ -103,4 +102,3 @@ func WithIncludeImages(v bool) Option          { return engine.WithIncludeImages
 func WithIncludeTables(v bool) Option          { return engine.WithIncludeTables(v) }
 func WithURLPolicy(v URLPolicy) Option         { return engine.WithURLPolicy(v) }
 func WithLogger(v *slog.Logger) Option         { return engine.WithLogger(v) }
-func WithDiagnostics(v bool) Option            { return engine.WithDiagnostics(v) }

@@ -243,7 +243,7 @@ func TestExtractStructuresAndSafety(t *testing.T) {
 	html := `<!doctype html><html lang="en"><head><title>API Guide</title><base href="https://example.com/docs/"><meta name="author" content="Ada"><link rel="canonical" href="guide"></head><body>
 <header><nav><a href="/">Home</a></nav></header><main><h1>API Guide</h1><p>Use <strong>this API</strong> safely.</p><pre>go test
 ` + "```" + `</pre><ul><li>First</li><li>Second</li></ul><table><tr><th>Name</th><th>Value</th></tr><tr><td>Mode</td><td>Fast</td></tr></table><p><a href="next?utm_source=x">Next page</a> <a href="javascript:alert(1)">bad</a></p></main><footer>Copyright</footer></body></html>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/start", WithPageType(PageTypeDocumentation), WithDiagnostics(true), WithURLPolicy(URLPolicy{AllowedSchemes: []string{"https"}, MaxLength: 1000, StripTracking: true}))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/start", WithPageType(PageTypeDocumentation), withDiagnostics(), WithURLPolicy(URLPolicy{AllowedSchemes: []string{"https"}, MaxLength: 1000, StripTracking: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestExtractStructuresAndSafety(t *testing.T) {
 	if doc.Title != "API Guide" || doc.Author != "Ada" || doc.CanonicalURL != "https://example.com/docs/guide" {
 		t.Fatalf("bad metadata: %#v", doc)
 	}
-	if doc.Diagnostics == nil || len(doc.Diagnostics.RejectedLinks) == 0 {
+	if doc.diagnostic == nil || len(doc.diagnostic.RejectedLinks) == 0 {
 		t.Fatal("missing rejected-link diagnostic")
 	}
 }
@@ -535,16 +535,16 @@ func TestRenderedMarkdownDiagnosticsReflectAuthoritativeSelection(t *testing.T) 
 <main><p>Outside repository chrome has enough ordinary prose to pass block scoring before the authored document boundary is applied.</p></main>
 <article class="markdown-body" itemprop="text"><h1>Project docs</h1><p><a href="/acme/project/wiki">Read the documentation</a></p></article>
 </body></html>`
-	doc, err := ExtractBytes([]byte(html), "https://github.com/acme/project/", WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(html), "https://github.com/acme/project/", withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.Diagnostics == nil {
+	if doc.diagnostic == nil {
 		t.Fatal("missing diagnostics")
 	}
 	var outside, authored *BlockDiagnostic
-	for i := range doc.Diagnostics.Blocks {
-		block := &doc.Diagnostics.Blocks[i]
+	for i := range doc.diagnostic.Blocks {
+		block := &doc.diagnostic.Blocks[i]
 		if strings.Contains(block.Text, "Outside repository chrome") {
 			outside = block
 		}
@@ -1112,7 +1112,7 @@ func TestShortLinkedSemanticArticleFallback(t *testing.T) {
 <p><a href="/one">The first update fixes startup failures for existing users.</a></p>
 <p><a href="/two">The second update restores saved settings after migration.</a></p>
 </article>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/releases", WithPageType(PageTypeArticle), WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/releases", WithPageType(PageTypeArticle), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1121,8 +1121,8 @@ func TestShortLinkedSemanticArticleFallback(t *testing.T) {
 			t.Errorf("short linked article missing %q:\n%s", want, doc.Markdown)
 		}
 	}
-	if doc.Diagnostics.Fallback != "semantic-article" {
-		t.Fatalf("fallback = %q, want semantic-article", doc.Diagnostics.Fallback)
+	if doc.diagnostic.Fallback != "semantic-article" {
+		t.Fatalf("fallback = %q, want semantic-article", doc.diagnostic.Fallback)
 	}
 }
 
@@ -1137,7 +1137,7 @@ func TestSemanticArticleFallbackKeepsOuterArticleAroundNestedArticle(t *testing.
 </article>
 <p><a href="/main-two">The main release also restores saved settings after migration.</a></p>
 </article>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/releases", WithPageType(PageTypeArticle), WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/releases", WithPageType(PageTypeArticle), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1146,8 +1146,8 @@ func TestSemanticArticleFallbackKeepsOuterArticleAroundNestedArticle(t *testing.
 			t.Errorf("nested article fallback missing %q:\n%s", want, doc.Markdown)
 		}
 	}
-	if doc.Diagnostics.Fallback != "semantic-article" {
-		t.Fatalf("fallback = %q, want semantic-article", doc.Diagnostics.Fallback)
+	if doc.diagnostic.Fallback != "semantic-article" {
+		t.Fatalf("fallback = %q, want semantic-article", doc.diagnostic.Fallback)
 	}
 }
 
@@ -1159,12 +1159,12 @@ func TestSemanticArticleFallbackQualityIgnoresExcludedComments(t *testing.T) {
 <p><a href="/one">The first update fixes startup failures for existing users.</a></p>` + extra + `
 <p><a href="/two">The second update restores saved settings after migration.</a></p>
 </article>`
-		doc, err := ExtractBytes([]byte(html), "https://example.com/releases", WithPageType(PageTypeArticle), WithDiagnostics(true))
+		doc, err := ExtractBytes([]byte(html), "https://example.com/releases", WithPageType(PageTypeArticle), withDiagnostics())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if doc.Diagnostics.Fallback != "semantic-article" {
-			t.Fatalf("fallback = %q, want semantic-article", doc.Diagnostics.Fallback)
+		if doc.diagnostic.Fallback != "semantic-article" {
+			t.Fatalf("fallback = %q, want semantic-article", doc.diagnostic.Fallback)
 		}
 		return doc
 	}
@@ -1327,7 +1327,7 @@ func TestJellyfinDiscussionPostBodies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := ExtractBytes(source, "https://forum.jellyfin.org/t-project-leadership-changes", WithDiagnostics(true))
+	doc, err := ExtractBytes(source, "https://forum.jellyfin.org/t-project-leadership-changes", withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1359,7 +1359,7 @@ func TestJellyfinDiscussionPostBodies(t *testing.T) {
 		}
 	}
 	postBodies := 0
-	for _, block := range doc.Diagnostics.Blocks {
+	for _, block := range doc.diagnostic.Blocks {
 		for _, reason := range block.Reasons {
 			if reason == "discussion post body" && block.Selected {
 				postBodies++
@@ -1416,7 +1416,7 @@ func TestInlineStyleOverridePreservesArticleProse(t *testing.T) {
 
 func TestHiddenDescendantsNeverAppear(t *testing.T) {
 	html := `<main><h1>Visibility</h1><p>Visible <span hidden>INLINE_SECRET</span><span aria-hidden="true">ARIA_SECRET</span><span inert>INERT_SECRET</span><span style="display: none">DISPLAY_SECRET</span><span style="visibility: hidden">VISIBILITY_SECRET</span> text.</p><ul><li>Shown</li><li hidden>LIST_SECRET</li><li>Item <span hidden>LIST_INLINE_SECRET</span>end</li></ul><table><tr><th>Name</th><th>Value</th></tr><tr><td>Shown</td><td><span hidden>TABLE_SECRET</span>Safe</td></tr><tr hidden><td>ROW_SECRET</td><td>Bad</td></tr></table></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com", WithPageType(PageTypeDocumentation), WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(html), "https://example.com", WithPageType(PageTypeDocumentation), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3658,15 +3658,15 @@ func TestMalformedHTTPDestinationIsPlainText(t *testing.T) {
 
 func TestURLControlCharactersAreRejected(t *testing.T) {
 	html := `<main><p><a href="java&#10;script:bad">scheme</a> <a href="https://exa&#9;mple.com/path">host</a> <a href="https://example.com/a&#10;b">path</a> <a href="https://example.com/?a=one&#13;two">query</a> <a href="/safe">safe</a></p></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/base", WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/base", withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(doc.Links) != 1 || doc.Links[0].URL != "https://example.com/safe" {
 		t.Fatalf("unsafe links were retained: %#v", doc.Links)
 	}
-	if len(doc.Diagnostics.RejectedLinks) < 4 {
-		t.Fatalf("missing rejected links: %#v", doc.Diagnostics.RejectedLinks)
+	if len(doc.diagnostic.RejectedLinks) < 4 {
+		t.Fatalf("missing rejected links: %#v", doc.diagnostic.RejectedLinks)
 	}
 	for _, label := range []string{"scheme", "host", "path", "query", "safe"} {
 		if !strings.Contains(doc.Text, label) {
@@ -3966,14 +3966,14 @@ func TestDetailedExtractionMatchesOrdinaryExtraction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ordinary.Diagnostics != nil {
+	if ordinary.diagnostic != nil {
 		t.Fatal("ordinary extraction populated detailed block diagnostics")
 	}
 	detailed, report, err := ExtractDetailedBytes(source, "https://example.com/report")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report == nil || report.ProfileVersion == "" || detailed.Diagnostics != nil {
+	if report == nil || report.ProfileVersion == "" || detailed.diagnostic != nil {
 		t.Fatalf("missing detailed report: doc=%#v report=%#v", detailed, report)
 	}
 	if detailed.Markdown != ordinary.Markdown || detailed.Text != ordinary.Text {
@@ -4004,11 +4004,11 @@ func TestOutputLimitIsUTF8Safe(t *testing.T) {
 
 func TestMetadataFallback(t *testing.T) {
 	html := `<html><head><title>Client App</title><meta name="description" content="Content supplied for clients without script execution."></head><body><div id="app"></div></body></html>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/app", WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/app", withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.Diagnostics.Fallback != "metadata" || !strings.Contains(doc.Text, "Content supplied") {
+	if doc.diagnostic.Fallback != "metadata" || !strings.Contains(doc.Text, "Content supplied") {
 		t.Fatalf("%#v", doc)
 	}
 }
@@ -4301,7 +4301,7 @@ func TestArticleContinuityAcrossStructuralNodes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			html := `<html><head><meta property="og:type" content="article"><title>Continuity report</title></head><body><article class="newsletter"><h1>Continuity report</h1><p>` + anchorOne + `</p>` + tt.middle + `<p>` + anchorTwo + `</p></article></body></html>`
-			doc, err := ExtractBytes([]byte(html), "https://example.com/report", WithIncludeImages(tt.images), WithDiagnostics(true))
+			doc, err := ExtractBytes([]byte(html), "https://example.com/report", WithIncludeImages(tt.images), withDiagnostics())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -4315,7 +4315,7 @@ func TestArticleContinuityAcrossStructuralNodes(t *testing.T) {
 				t.Fatalf("article blocks were emitted out of DOM order:\n%s", doc.Text)
 			}
 			if tt.want != "" {
-				for _, block := range doc.Diagnostics.Blocks {
+				for _, block := range doc.diagnostic.Blocks {
 					if strings.Contains(block.Text, tt.want) && (!block.Selected || block.Score < 1) {
 						t.Fatalf("diagnostic does not report restored block: %+v", block)
 					}

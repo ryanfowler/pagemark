@@ -30,11 +30,11 @@ func BenchmarkExtractMozillaReadability(b *testing.B) {
 			b.Fatal(err)
 		}
 		if fixture.recovery {
-			doc, err := ExtractBytes(source, mozillaSyntheticURL, WithPageType(PageTypeArticle), WithDiagnostics(true))
+			doc, err := ExtractBytes(source, mozillaSyntheticURL, WithPageType(PageTypeArticle), withDiagnostics())
 			if err != nil {
 				b.Fatal(err)
 			}
-			if doc.Diagnostics == nil || doc.Diagnostics.Fallback != "article-region" {
+			if doc.diagnostic == nil || doc.diagnostic.Fallback != "article-region" {
 				b.Fatalf("fixture %s no longer exercises article-region recovery", fixture.fixture)
 			}
 		}

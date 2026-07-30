@@ -108,8 +108,7 @@ scores, or rejected links:
 doc, report, err := pagemark.ExtractDetailedBytes(source, pageURL)
 ```
 
-`DiagnosticReport` fields may change in a minor release. The deprecated
-diagnostic fields on `Document` remain temporarily for pre-1.0 migration.
+`DiagnosticReport` fields may change in a minor release.
 
 ## Limits
 
