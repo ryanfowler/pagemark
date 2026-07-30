@@ -1,4 +1,4 @@
-package pagemark
+package engine
 
 import (
 	"errors"
@@ -594,7 +594,7 @@ func TestHiddenRenderedMarkdownDoesNotOverrideVisibleContent(t *testing.T) {
 }
 
 func TestPageWidePreformattedArchiveRetainsLinks(t *testing.T) {
-	source, err := os.ReadFile("testdata/preformatted-archive.html")
+	source, err := os.ReadFile("../../testdata/preformatted-archive.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,7 +616,7 @@ func TestPageWidePreformattedArchiveRetainsLinks(t *testing.T) {
 }
 
 func TestLargeArticlePreCodeRemainsFenced(t *testing.T) {
-	source, err := os.ReadFile("testdata/article-large-code.html")
+	source, err := os.ReadFile("../../testdata/article-large-code.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +634,7 @@ func TestLargeArticlePreCodeRemainsFenced(t *testing.T) {
 }
 
 func TestRealColeFixtureRestoresHeadlineBeforeBodySections(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-cole-reddit-article.html")
+	source, err := os.ReadFile("../../testdata/real-cole-reddit-article.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +656,7 @@ func TestRealColeFixtureRestoresHeadlineBeforeBodySections(t *testing.T) {
 }
 
 func TestRealAlexYangFixturePromotesArticleH2OverSiteMasthead(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-alexyang-vim-ascii-art.html")
+	source, err := os.ReadFile("../../testdata/real-alexyang-vim-ascii-art.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +678,7 @@ func TestRealAlexYangFixturePromotesArticleH2OverSiteMasthead(t *testing.T) {
 }
 
 func TestRealGitHubBlogFixtureDropsShareControlsAndTrailingTaxonomy(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-github-blog-bug-bounty.html")
+	source, err := os.ReadFile("../../testdata/real-github-blog-bug-bounty.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +717,7 @@ func TestEditorialTaxonomySectionWithProseIsPreserved(t *testing.T) {
 }
 
 func TestRealIshmaelFixtureDropsBackToIndexControl(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-ishmael-ghost-cut.html")
+	source, err := os.ReadFile("../../testdata/real-ishmael-ghost-cut.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -734,7 +734,7 @@ func TestRealIshmaelFixtureDropsBackToIndexControl(t *testing.T) {
 }
 
 func TestRealEbellaniFixtureDoesNotRepeatNestedH2Headline(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-ebellani-programming-languages.html")
+	source, err := os.ReadFile("../../testdata/real-ebellani-programming-languages.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -756,7 +756,7 @@ func TestRealEbellaniFixtureDoesNotRepeatNestedH2Headline(t *testing.T) {
 }
 
 func TestRealCitizenDotFixtureDropsLeadingDiscussionLinks(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-citizendot-malware-article.html")
+	source, err := os.ReadFile("../../testdata/real-citizendot-malware-article.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -775,7 +775,7 @@ func TestRealCitizenDotFixtureDropsLeadingDiscussionLinks(t *testing.T) {
 }
 
 func TestRealAbhiFixtureDropsClosedDialogAndSiteFooter(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-abhi-calm-technologies.html")
+	source, err := os.ReadFile("../../testdata/real-abhi-calm-technologies.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -796,7 +796,7 @@ func TestRealAbhiFixtureDropsClosedDialogAndSiteFooter(t *testing.T) {
 }
 
 func TestRealBox2DFixtureDropsTrailingPostMetadata(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-box2d-simd-collision.html")
+	source, err := os.ReadFile("../../testdata/real-box2d-simd-collision.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -877,7 +877,7 @@ func TestArticleHeadlineSmallSubtitleWithUnmarkedTimeIsPreserved(t *testing.T) {
 }
 
 func TestRealRedfinArticleFixturePreservesBodyTableAndExcludesTail(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-redfin-article.html")
+	source, err := os.ReadFile("../../testdata/real-redfin-article.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -908,7 +908,7 @@ func TestRealRedfinArticleFixturePreservesBodyTableAndExcludesTail(t *testing.T)
 }
 
 func TestRealYankoFixtureSuppressesSerializedImagesWithoutLosingArticle(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-yanko-article.html")
+	source, err := os.ReadFile("../../testdata/real-yanko-article.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -929,7 +929,7 @@ func TestRealYankoFixtureSuppressesSerializedImagesWithoutLosingArticle(t *testi
 }
 
 func TestRealHashcloakFramerFixturePreservesHeadingsCodeAndOneBreadcrumb(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-hashcloak-framer-article.html")
+	source, err := os.ReadFile("../../testdata/real-hashcloak-framer-article.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -956,7 +956,7 @@ func TestRealHashcloakFramerFixturePreservesHeadingsCodeAndOneBreadcrumb(t *test
 }
 
 func TestRealPerlinFixtureUsesLeadingTitleSingleMathAndFigures(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-perlin-article.html")
+	source, err := os.ReadFile("../../testdata/real-perlin-article.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -983,7 +983,7 @@ func TestRealPerlinFixtureUsesLeadingTitleSingleMathAndFigures(t *testing.T) {
 }
 
 func TestRealBeejFixtureUsesArticleTitleInsteadOfSiteMasthead(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-beej-making-article.html")
+	source, err := os.ReadFile("../../testdata/real-beej-making-article.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1007,7 +1007,7 @@ func TestRealBeejFixtureUsesArticleTitleInsteadOfSiteMasthead(t *testing.T) {
 }
 
 func TestReorderedRealArticleTitleDoesNotConsumeBodyBudget(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-beej-making-article.html")
+	source, err := os.ReadFile("../../testdata/real-beej-making-article.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1024,7 +1024,7 @@ func TestReorderedRealArticleTitleDoesNotConsumeBodyBudget(t *testing.T) {
 }
 
 func TestReorderedArticleTitleBudgetRecognizesYearlessPublicationDates(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-beej-making-article.html")
+	source, err := os.ReadFile("../../testdata/real-beej-making-article.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1183,7 +1183,7 @@ func TestSemanticArticleFallbackQualityIgnoresExcludedComments(t *testing.T) {
 }
 
 func TestRealYummymelonFixtureDropsCodeLineNumberGutter(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-yummymelon-emacs-article.html")
+	source, err := os.ReadFile("../../testdata/real-yummymelon-emacs-article.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1203,7 +1203,7 @@ func TestRealYummymelonFixtureDropsCodeLineNumberGutter(t *testing.T) {
 }
 
 func TestRealFidderyFixtureExcludesEmptyCommentPrompt(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-fiddery-menu-article.html")
+	source, err := os.ReadFile("../../testdata/real-fiddery-menu-article.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1220,7 +1220,7 @@ func TestRealFidderyFixtureExcludesEmptyCommentPrompt(t *testing.T) {
 }
 
 func TestRealSheetsFixtureKeepsLayoutItemBoundaries(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-sheets-layout.html")
+	source, err := os.ReadFile("../../testdata/real-sheets-layout.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1323,7 +1323,7 @@ func TestExtractTreatsInputAsUTF8(t *testing.T) {
 }
 
 func TestJellyfinDiscussionPostBodies(t *testing.T) {
-	source, err := os.ReadFile("testdata/jellyfin-forum-thread.html")
+	source, err := os.ReadFile("../../testdata/jellyfin-forum-thread.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1466,7 +1466,7 @@ func TestAuxiliarySectionsAndCallsToActionAreRemoved(t *testing.T) {
 }
 
 func TestTrailingNewsletterWrapperIsExcluded(t *testing.T) {
-	source, err := os.ReadFile("testdata/article-with-newsletter.html")
+	source, err := os.ReadFile("../../testdata/article-with-newsletter.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3523,7 +3523,7 @@ func TestGenericDocIDDoesNotReclassifyNarrativeArticle(t *testing.T) {
 }
 
 func TestArticleCommentRegionIsProfileSpecific(t *testing.T) {
-	source, err := os.ReadFile("testdata/article-with-comments.html")
+	source, err := os.ReadFile("../../testdata/article-with-comments.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4223,7 +4223,7 @@ The article conclusion also remains available after the inline advertisement.</p
 }
 
 func TestRealCNNArticleLayout(t *testing.T) {
-	source, err := os.ReadFile("testdata/real-cnn-article.html")
+	source, err := os.ReadFile("../../testdata/real-cnn-article.html")
 	if err != nil {
 		t.Fatal(err)
 	}

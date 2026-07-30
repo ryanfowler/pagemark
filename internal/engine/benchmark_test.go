@@ -1,4 +1,4 @@
-package pagemark
+package engine
 
 import (
 	"encoding/json"
@@ -14,7 +14,7 @@ var benchmarkDocument *Document
 // including HTML parsing. The frozen corpus covers articles, documentation,
 // discussions, products, listings, services, and generic pages.
 func BenchmarkExtractRealWorld(b *testing.B) {
-	const directory = "testdata/real-world"
+	const directory = "../../testdata/real-world"
 	manifestData, err := os.ReadFile(filepath.Join(directory, "fixtures.json"))
 	if err != nil {
 		b.Fatal(err)

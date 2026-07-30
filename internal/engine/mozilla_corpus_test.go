@@ -1,4 +1,4 @@
-package pagemark
+package engine
 
 import (
 	"encoding/json"
@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	mozillaCorpusDir    = "testdata/readability-js/test/test-pages"
-	mozillaGatePath     = "testdata/mozilla/gate.json"
+	mozillaCorpusDir    = "../../testdata/readability-js/test/test-pages"
+	mozillaGatePath     = "../../testdata/mozilla/gate.json"
 	mozillaCommit       = "ab4027a8b37669745016869a37a504727992b2ba"
 	mozillaFixtures     = 130
 	mozillaSyntheticURL = "http://fakehost/test/page.html"

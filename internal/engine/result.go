@@ -1,4 +1,4 @@
-package pagemark
+package engine
 
 // PageType identifies the main shape of a page.
 type PageType string
