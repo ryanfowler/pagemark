@@ -634,7 +634,11 @@ func (a *analysis) pageMicrodataEntities(root *html.Node) (map[*html.Node]bool, 
 		if n.Type != html.ElementNode || (!hasHTMLAttr(n, "itemscope") && attrValue(n, "itemtype") == "") {
 			return true
 		}
-		if a.inferenceAuxiliaryBlock(n) || !isPageMicrodataEntity(n) {
+		// Nested scoped entities (authors, images, and card properties) are not
+		// page-level metadata regardless of their surrounding content region.
+		// Reject that common case before running the more expensive auxiliary
+		// ancestry classifier.
+		if !isPageMicrodataEntity(n) || a.inferenceAuxiliaryBlock(n) {
 			return true
 		}
 		entities[n] = true

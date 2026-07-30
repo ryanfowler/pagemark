@@ -3,10 +3,33 @@ package pagemark
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 )
+
+func TestNormalizedTextAtLeastMatchesMaterializedText(t *testing.T) {
+	sources := []string{
+		`<p>plain text</p>`,
+		`<p>  split <em> across </em> nodes  </p>`,
+		`<p>visible <span hidden>ignored text</span> café</p>`,
+		`<p><span> </span><span>alpha</span><span> </span><span>beta</span></p>`,
+	}
+	for _, source := range sources {
+		root, err := html.Parse(strings.NewReader(source))
+		if err != nil {
+			t.Fatal(err)
+		}
+		length := utf8.RuneCountInString(normalizeText(nodeText(root)))
+		for limit := 0; limit <= length+2; limit++ {
+			if got, want := normalizedTextAtLeast(root, limit), length >= limit; got != want {
+				t.Fatalf("normalizedTextAtLeast(%q, %d) = %v, want %v (length %d)",
+					source, limit, got, want, length)
+			}
+		}
+	}
+}
 
 func TestBlockSubtreeEvidenceMatchesIndependentScans(t *testing.T) {
 	parsed, err := html.Parse(strings.NewReader(`<main><p>outside <a href="/one"> one  <em>two</em> </a><button>act</button><span hidden><a href="/hidden">hidden</a><input></span><a href="/two"><span>three</span><span>four</span></a></p></main>`))

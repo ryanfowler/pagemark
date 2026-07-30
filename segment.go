@@ -176,6 +176,33 @@ func (c *normalizedRuneCounter) addText(text string) {
 	}
 }
 
+// normalizedTextAtLeast reports whether visible normalized text reaches limit
+// without materializing the subtree text. It is used by classification passes
+// that only need a threshold and can stop scanning as soon as it is met.
+func normalizedTextAtLeast(n *html.Node, limit int) bool {
+	if limit <= 0 {
+		return true
+	}
+	var counter normalizedRuneCounter
+	var visit func(*html.Node) bool
+	visit = func(current *html.Node) bool {
+		if current == nil || dom.Hidden(current) {
+			return false
+		}
+		if current.Type == html.TextNode {
+			counter.addText(current.Data)
+			return counter.runes >= limit
+		}
+		for child := current.FirstChild; child != nil; child = child.NextSibling {
+			if visit(child) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(n)
+}
+
 // blockSubtreeEvidence combines the two complete subtree scans needed by block
 // scoring. An outer link owns all of its descendant text, matching the pruning
 // behavior of linkTextLength even for malformed nested anchors.
