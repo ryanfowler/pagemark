@@ -14,7 +14,13 @@ Pagemark does not fetch the page. It does not run JavaScript. Supply rendered HT
 
 Decode non-UTF-8 input before extraction.
 
-Pagemark limits input bytes, tree size, tree depth, attributes, text, links, images, table cells, repeated items, and output bytes. A tree or input limit returns a `LimitError`.
+Pagemark limits input bytes, tree size, tree depth, attributes, text, links,
+images, table cells, repeated items, and output bytes. Public `Limits` fields
+use `0` for the package default, a positive value for an explicit limit, and
+`-1` for unlimited. Limits do not control whether links, images, or tables are
+included. The input-byte limit applies to `Extract` and `ExtractBytes`, not
+`ExtractNode`, whose DOM is already parsed. A tree or input limit returns a
+`LimitError`.
 
 ## Output
 
@@ -34,13 +40,22 @@ The Markdown uses a restricted CommonMark and GitHub Flavored Markdown format. I
 
 The default URL policy permits HTTP and HTTPS links and images. It rejects credentials and unsafe schemes for these URLs. The policy applies to Markdown links and images. It also applies to `Document.Links` and `Document.Images`.
 
-The policy does not apply to `Document.URL` or `Document.CanonicalURL`. `Document.URL` preserves the supplied page URL, including credentials. `Document.CanonicalURL` permits HTTP and HTTPS and removes credentials. Validate these metadata fields separately if you use them.
+The policy does not apply to `Document.URL` or `Document.CanonicalURL`. Both
+fields permit HTTP and HTTPS and remove credentials before returning a result.
 
 `Document.Title` contains the document title. The title does not occur again in `Document.Markdown`, `Document.Text`, or `Document.Sections`. It does not use the Markdown byte limit.
 
 `Document.Text` and `Document.Markdown` contain the same selected content. `Document.Sections` is a view of that content.
 
-`Document.Quality` measures observable output properties. It does not measure trust or factual accuracy.
+`Document.PublishedTime` is an unparsed source metadata value. It is not
+guaranteed to be a valid timestamp.
+
+The durable result contract consists of source and canonical URLs, metadata,
+page type, Markdown, text, sections, links, images, and warnings. Page-type
+scores, quality heuristics, block scores, fallback names, and detailed counters
+are experimental diagnostics. Request them with `ExtractDetailedBytes`;
+`DiagnosticReport` may change in a minor release. Legacy diagnostic fields on
+`Document` are deprecated during the pre-1.0 migration.
 
 ## Safety
 
@@ -55,6 +70,8 @@ Pagemark does not remove phrases such as "ignore previous instructions." This ty
 The same input and options produce the same content. Diagnostic timing is not part of this contract.
 
 Public options do not use mutable global state. Concurrent extraction calls are safe.
+`WithURLPolicy` clones caller-owned scheme slices, including when one option is
+reused concurrently.
 
 Do not change an `html.Node` tree during extraction.
 

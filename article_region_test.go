@@ -9,7 +9,7 @@ import (
 )
 
 func TestArticleRegionReconstructsSiblingSectionsInOrder(t *testing.T) {
-	// FavorPrecision leaves the two short story segments unselected by primary
+	// SelectionPrecision leaves the two short story segments unselected by primary
 	// block scoring. Their shared publisher class lets the article-region
 	// fallback recover them, while the similarly adjacent auxiliary regions stay
 	// excluded.
@@ -21,7 +21,7 @@ func TestArticleRegionReconstructsSiblingSectionsInOrder(t *testing.T) {
 <section class="related-articles"><h2>Related articles</h2><div class="card"><a href="/one">Unrelated story one</a></div><div class="card"><a href="/two">Unrelated story two</a></div></section>
 <div class="story-segment"><p>The final conclusion matters.</p></div>
 </div></body></html>`
-	doc, err := ExtractBytes([]byte(source), "https://example.com/field-report", WithPageType(PageTypeArticle), WithFavorPrecision(true), WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(source), "https://example.com/field-report", WithPageType(PageTypeArticle), WithSelectionMode(SelectionPrecision), WithDiagnostics(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestArticleRegionJoinsThreeIndependentCandidates(t *testing.T) {
 <div><p>The middle finding supplies important evidence.</p></div>
 <div><p>The closing finding states the practical result.</p></div>
 </div></body></html>`
-	doc, err := ExtractBytes([]byte(source), "https://example.com/joined", WithPageType(PageTypeArticle), WithFavorPrecision(true), WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(source), "https://example.com/joined", WithPageType(PageTypeArticle), WithSelectionMode(SelectionPrecision), WithDiagnostics(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestArticleRegionExtractionDoesNotMutateDOM(t *testing.T) {
 	if err := html.Render(&before, root); err != nil {
 		t.Fatal(err)
 	}
-	doc, err := ExtractNode(root, "https://example.com/immutable", WithPageType(PageTypeArticle), WithFavorPrecision(true), WithDiagnostics(true))
+	doc, err := ExtractNode(root, "https://example.com/immutable", WithPageType(PageTypeArticle), WithSelectionMode(SelectionPrecision), WithDiagnostics(true))
 	if err != nil {
 		t.Fatal(err)
 	}

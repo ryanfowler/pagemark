@@ -3,6 +3,7 @@ package pagemark
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -40,12 +41,8 @@ func TestDocumentTitleIsSeparatedFromEveryContentView(t *testing.T) {
 		t.Fatalf("body views or statistics are inconsistent: stats=%#v\n%s", doc.Stats, doc.Markdown)
 	}
 
-	withoutMetadata, err := ExtractBytes([]byte(source), "https://example.com/reports/field", WithPageType(PageTypeArticle), WithIncludeMetadata(false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if withoutMetadata.Title != "" || withoutMetadata.Markdown != doc.Markdown {
-		t.Fatalf("metadata suppression changed title separation: title=%q\n%s", withoutMetadata.Title, withoutMetadata.Markdown)
+	if doc.Title == "" && !strings.Contains(doc.Markdown, "Field report") {
+		t.Fatalf("authored title was lost from metadata and content:\n%s", doc.Markdown)
 	}
 }
 
@@ -246,7 +243,7 @@ func TestExtractStructuresAndSafety(t *testing.T) {
 	html := `<!doctype html><html lang="en"><head><title>API Guide</title><base href="https://example.com/docs/"><meta name="author" content="Ada"><link rel="canonical" href="guide"></head><body>
 <header><nav><a href="/">Home</a></nav></header><main><h1>API Guide</h1><p>Use <strong>this API</strong> safely.</p><pre>go test
 ` + "```" + `</pre><ul><li>First</li><li>Second</li></ul><table><tr><th>Name</th><th>Value</th></tr><tr><td>Mode</td><td>Fast</td></tr></table><p><a href="next?utm_source=x">Next page</a> <a href="javascript:alert(1)">bad</a></p></main><footer>Copyright</footer></body></html>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/start", WithPageType(PageTypeDocumentation), WithDiagnostics(true), WithURLPolicy(URLPolicy{Schemes: []string{"https"}, MaxLength: 1000, StripTracking: true}))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/start", WithPageType(PageTypeDocumentation), WithDiagnostics(true), WithURLPolicy(URLPolicy{AllowedSchemes: []string{"https"}, MaxLength: 1000, StripTracking: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1880,7 +1877,7 @@ func TestNeutralRecordsUnderResultsWrapperInferListing(t *testing.T) {
 		`<article><h2>Second match</h2><p>The second matching page has another descriptive summary.</p></article>` +
 		`<article><h2>Third match</h2><p>The third matching page completes the result set.</p></article>` +
 		`</div></div></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/search?q=match", WithMaxRepeatedItems(2))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/search?q=match", WithLimits(Limits{RepeatedItems: 2}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1930,7 +1927,7 @@ func TestPaginationItemsDoNotOverrideGenericListingRecords(t *testing.T) {
 		`<div><h2>Third result</h2><p>The third generic result completes the result set.</p></div>` +
 		`<nav aria-label="Pagination"><ul><li><a href="?page=1">1</a></li><li><a href="?page=2">2</a></li></ul></nav>` +
 		`</div></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/search?q=result", WithMaxRepeatedItems(2))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/search?q=result", WithLimits(Limits{RepeatedItems: 2}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1953,7 +1950,7 @@ func TestNestedMetadataListsDoNotOverrideGenericListingRecords(t *testing.T) {
 		`<div><h2>Second project</h2><p>The second project is a command line tool.</p><ul><li>Rust</li><li>CLI</li></ul></div>` +
 		`<div><h2>Third project</h2><p>The third project exposes an application interface.</p><ul><li>Java</li><li>API</li></ul></div>` +
 		`</div></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/search/projects", WithMaxRepeatedItems(2))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/search/projects", WithLimits(Limits{RepeatedItems: 2}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3686,7 +3683,7 @@ func TestMaxRepeatedDoesNotTruncateProseSiblings(t *testing.T) {
 		paragraphs.WriteString(`.</p>`)
 	}
 	html := `<main><h1>Long article</h1>` + paragraphs.String() + `<h2>What comes next?</h2><p>A final prose paragraph follows the section heading.</p></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithMaxRepeatedItems(3))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithLimits(Limits{RepeatedItems: 3}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3705,7 +3702,7 @@ func TestMaxRepeatedDoesNotTruncateProseSiblings(t *testing.T) {
 
 func TestMaxRepeatedLimitsListingRecordsAndWarns(t *testing.T) {
 	html := `<main><h1>Results</h1><div class="item"><p>First listed record.</p></div><div class="item"><p>Second listed record.</p></div><div class="item"><p>Third listed record.</p></div><div class="item"><p>Fourth listed record.</p></div></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/results", WithPageType(PageTypeListing), WithMaxRepeatedItems(2))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/results", WithPageType(PageTypeListing), WithLimits(Limits{RepeatedItems: 2}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3740,7 +3737,7 @@ func TestMaxRepeatedLimitsRecordsInsideListsAndTables(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			html := `<main><h1>Results</h1>` + test.body + `</main>`
-			doc, err := ExtractBytes([]byte(html), "https://example.com/results", WithPageType(PageTypeListing), WithMaxRepeatedItems(2))
+			doc, err := ExtractBytes([]byte(html), "https://example.com/results", WithPageType(PageTypeListing), WithLimits(Limits{RepeatedItems: 2}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3897,13 +3894,94 @@ func TestLimitsAndInvalidURL(t *testing.T) {
 	if !errors.As(e, &le) {
 		t.Fatalf("got %v", e)
 	}
+	if le.Resource != LimitInputBytes {
+		t.Fatalf("resource = %q, want %q", le.Resource, LimitInputBytes)
+	}
 	_, e = ExtractBytes([]byte(`<p>text</p>`), "/relative")
 	if !errors.Is(e, ErrInvalidURL) {
 		t.Fatalf("got %v", e)
 	}
-	_, e = ExtractBytes([]byte(`<div><div><p>deep text here</p></div></div>`), "", WithMaxDepth(2))
+	_, e = ExtractBytes([]byte(`<div><div><p>deep text here</p></div></div>`), "", WithLimits(Limits{Depth: 2}))
 	if !errors.Is(e, ErrLimit) {
 		t.Fatalf("got %v", e)
+	}
+}
+
+func TestMaxInt64InputLimitDoesNotOverflowReaderBound(t *testing.T) {
+	source := []byte(`<main><p>A maximum integer input limit must leave this useful reader content intact.</p></main>`)
+	doc, err := Extract(strings.NewReader(string(source)), "", WithMaxInputBytes(math.MaxInt64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "maximum integer input limit") {
+		t.Fatalf("reader content = %q", doc.Text)
+	}
+
+	doc, err = ExtractBytes(source, "", WithLimits(Limits{InputBytes: math.MaxInt64}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "maximum integer input limit") {
+		t.Fatalf("byte content = %q", doc.Text)
+	}
+}
+
+func TestSourceAndCanonicalURLsStripCredentials(t *testing.T) {
+	source := []byte(`<html><head><link rel="canonical" href="https://canonical:secret@example.com/article"></head><body><main><h1>Credential safety</h1><p>This report contains enough useful authored content for extraction.</p><p><a href="../guide">Read the complete guide</a> for more details.</p></main></body></html>`)
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"password", "https://user:password@example.com/private/page", "https://example.com/private/page"},
+		{"username", "https://user@example.com/private/page", "https://example.com/private/page"},
+		{"encoded", "https://user%40example.com:p%40ss@example.com/private/page", "https://example.com/private/page"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inputURL := tt.url
+			doc, err := ExtractBytes(source, inputURL, WithPageType(PageTypeDocumentation))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inputURL != tt.url {
+				t.Fatalf("caller URL changed from %q to %q", tt.url, inputURL)
+			}
+			if doc.URL != tt.want {
+				t.Fatalf("URL = %q, want %q", doc.URL, tt.want)
+			}
+			if doc.CanonicalURL != "https://example.com/article" {
+				t.Fatalf("canonical URL = %q", doc.CanonicalURL)
+			}
+			if len(doc.Links) != 1 || doc.Links[0].URL != "https://example.com/guide" {
+				t.Fatalf("relative links = %#v", doc.Links)
+			}
+		})
+	}
+}
+
+func TestDetailedExtractionMatchesOrdinaryExtraction(t *testing.T) {
+	source := []byte(`<main><h1>Detailed report</h1><p>This is useful content shared by both extraction entry points.</p></main>`)
+	ordinary, err := ExtractBytes(source, "https://example.com/report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ordinary.Diagnostics != nil {
+		t.Fatal("ordinary extraction populated detailed block diagnostics")
+	}
+	detailed, report, err := ExtractDetailedBytes(source, "https://example.com/report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report == nil || report.ProfileVersion == "" || detailed.Diagnostics != nil {
+		t.Fatalf("missing detailed report: doc=%#v report=%#v", detailed, report)
+	}
+	if detailed.Markdown != ordinary.Markdown || detailed.Text != ordinary.Text {
+		t.Fatalf("detailed extraction changed content:\nordinary=%q\n detailed=%q", ordinary.Markdown, detailed.Markdown)
+	}
+	if report.Quality != detailed.Quality || report.PageTypeScore != detailed.PageTypeScore ||
+		report.Stats.OutputBytes != len(detailed.Markdown) {
+		t.Fatalf("report does not match document: %#v", report)
 	}
 }
 
@@ -4019,7 +4097,7 @@ func FuzzExtract(f *testing.F) {
 		if len(b) > 100000 {
 			t.Skip()
 		}
-		d, e := ExtractBytes(b, "https://example.com", WithMaxInputBytes(100000), WithMaxElements(5000), WithMaxDepth(100), WithMaxOutputBytes(10000))
+		d, e := ExtractBytes(b, "https://example.com", WithLimits(Limits{Elements: 5000, Depth: 100}), WithMaxInputBytes(100000), WithMaxOutputBytes(10000))
 		if e == nil {
 			if len(d.Markdown) > 10000 {
 				t.Fatal("output limit")

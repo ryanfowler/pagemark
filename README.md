@@ -57,12 +57,12 @@ The page URL is optional. If you set it, use an absolute HTTP or HTTPS URL. Page
 - `Text`: the selected content as plain text.
 - `Sections`: a plain-text view of the selected sections.
 - `Links` and `Images`: the safe resources that occur in the output.
-- `PageType` and `PageTypeScore`: the detected page shape and its confidence score.
-- `Quality`: a score for the observable quality of the output.
+- `PageType`: the detected page shape.
 - `Warnings`: nonfatal conditions, such as output truncation.
-- `Stats`: input, tree, selection, and output counts.
 
 The title is separate from the content. Pagemark does not repeat it in `Markdown`, `Text`, or `Sections`.
+`PublishedTime` is the unparsed source metadata value and is not guaranteed to
+use RFC 3339.
 
 Images are enabled by default. Pagemark records image URLs, but it does not fetch the images. Use `WithIncludeImages(false)` for text-only output.
 
@@ -87,32 +87,65 @@ Use these options to control output:
 - `WithIncludeLinks`
 - `WithIncludeImages`
 - `WithIncludeTables`
-- `WithIncludeMetadata`
-- `WithFavorPrecision`
-- `WithFavorRecall`
+- `WithSelectionMode`
 
-Use `WithFavorPrecision(true)` to select less content. Use `WithFavorRecall(true)` to select more content. Do not enable both options. Their score changes cancel each other.
-
-Diagnostics can use much more memory. Enable them only when you must inspect page-type scores, block scores, or rejected links:
+Selection is balanced by default. Use `SelectionPrecision` to usually select
+less content or `SelectionRecall` to usually select more:
 
 ```go
-doc, err := pagemark.ExtractBytes(source, pageURL, pagemark.WithDiagnostics(true))
+doc, err := pagemark.ExtractBytes(
+	source,
+	pageURL,
+	pagemark.WithSelectionMode(pagemark.SelectionPrecision),
+)
 ```
+
+Detailed diagnostics are experimental and can use much more memory. Request
+them only when you must inspect page-type scores, quality heuristics, block
+scores, or rejected links:
+
+```go
+doc, report, err := pagemark.ExtractDetailedBytes(source, pageURL)
+```
+
+`DiagnosticReport` fields may change in a minor release. The deprecated
+diagnostic fields on `Document` remain temporarily for pre-1.0 migration.
 
 ## Limits
 
 Pagemark limits resource use. The default public limits are:
 
-| Resource | Default | Option |
-| --- | ---: | --- |
-| Input | 10 MiB | `WithMaxInputBytes` |
-| DOM elements | 200,000 | `WithMaxElements` |
-| DOM depth | 256 | `WithMaxDepth` |
-| Markdown output | 2 MiB | `WithMaxOutputBytes` |
-| Links | 1,000 | `WithMaxLinks` |
-| Images | 100 | `WithMaxImages` |
-| Table cells | 10,000 | `WithMaxTableCells` |
-| Repeated items | 200 | `WithMaxRepeatedItems` |
+| Resource | Default |
+| --- | ---: |
+| Input | 10 MiB |
+| DOM elements | 200,000 |
+| DOM depth | 256 |
+| Markdown output | 2 MiB |
+| Links | 1,000 |
+| Images | 100 |
+| Table cells | 10,000 |
+| Repeated items | 200 |
+
+Use `WithLimits` for advanced configuration:
+
+```go
+pagemark.WithLimits(pagemark.Limits{
+	Elements: 100_000,
+	Depth:    128,
+	Images:   20,
+})
+```
+
+Every field uses the same convention: `0` selects the package default, a
+positive value sets the limit, and `-1` makes it unlimited. Values below `-1`
+return `ErrInvalidOption`. `WithMaxInputBytes` and `WithMaxOutputBytes` are
+conveniences with the same convention. Options apply in order, so a later
+option overrides an earlier one.
+
+Limits do not toggle output features. Use `WithIncludeLinks`,
+`WithIncludeImages`, and `WithIncludeTables` independently.
+The input-byte limit applies to `Extract` and `ExtractBytes`, not `ExtractNode`,
+whose DOM is already parsed.
 
 Pagemark also has fixed limits for attributes and text. An input or tree limit returns a `LimitError`. The Markdown byte limit keeps complete blocks and adds a warning.
 
@@ -125,7 +158,8 @@ if errors.As(err, &limit) {
 }
 ```
 
-The package also returns `ErrNoContent` and `ErrInvalidURL`.
+The package also returns `ErrNoContent`, `ErrInvalidURL`, and
+`ErrInvalidOption`.
 
 ## URL and content safety
 
@@ -133,18 +167,30 @@ The Markdown has no raw HTML. The default URL policy permits only HTTP and HTTPS
 
 `URLPolicy` applies to Markdown links and images. It also applies to `Document.Links` and `Document.Images`. It does not apply to `Document.URL` or `Document.CanonicalURL`.
 
-`Document.URL` preserves the supplied page URL, including credentials. `Document.CanonicalURL` permits HTTP and HTTPS and removes credentials. These two fields do not use the policy scheme list or length limit. Validate them separately if you use them.
+`Document.URL` and `Document.CanonicalURL` permit HTTP and HTTPS and always
+remove credentials. These two fields do not use the policy scheme list or
+length limit.
 
-Use `WithURLPolicy` to replace the default Markdown URL policy. For example:
+Use `DefaultURLPolicy` to safely modify the default Markdown URL policy:
 
 ```go
-policy := pagemark.URLPolicy{
-	Schemes:       []string{"https"},
-	MaxLength:     2048,
-	StripTracking: true,
-}
+policy := pagemark.DefaultURLPolicy()
+policy.AllowedSchemes = []string{"https"}
+policy.MaxLength = 2048
+policy.StripTracking = true
+
 doc, err := pagemark.ExtractBytes(source, pageURL, pagemark.WithURLPolicy(policy))
 ```
+
+Pagemark copies `AllowedSchemes`, so a reusable option is safe for concurrent
+extraction. Scheme names are normalized to lowercase and duplicates are
+removed. An invalid scheme or a `MaxLength` below `-1` returns
+`ErrInvalidOption`. The defaults remain HTTP and HTTPS only; add `"mailto"`
+explicitly if needed.
+
+Warning codes and limit resources are typed. Compare `Warning.Code` with
+constants such as `WarningOutputTruncated`, and compare `LimitError.Resource`
+with constants such as `LimitInputBytes`.
 
 The extracted words are untrusted data. A hostile page can contain prompt injection. Do not use extracted content as system instructions or developer instructions. See the [Pagemark contract](docs/contract.md).
 
@@ -187,3 +233,6 @@ staticcheck ./...
 ```
 
 Normal tests do not use the external network. The package has no mutable global extraction state. Concurrent extraction calls are safe.
+
+See the [v0.2 migration guide](docs/migration-v0.2.md) for the public API
+simplification.

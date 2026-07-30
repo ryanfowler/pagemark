@@ -18,13 +18,13 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	doc, err := pagemark.ExtractBytes(source, os.Args[2], pagemark.WithDiagnostics(true))
+	_, report, err := pagemark.ExtractDetailedBytes(source, os.Args[2])
 	if err != nil {
 		panic(err)
 	}
 	for _, snippet := range os.Args[3:] {
 		found := false
-		for _, block := range doc.Diagnostics.Blocks {
+		for _, block := range report.Blocks {
 			if strings.Contains(block.Text, snippet) {
 				fmt.Printf("%q: id=%d kind=%s score=%.2f selected=%t reasons=%v\n", snippet, block.ID, block.Kind, block.Score, block.Selected, block.Reasons)
 				found = true

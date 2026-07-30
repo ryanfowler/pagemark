@@ -167,10 +167,10 @@ func (a *analysis) score(pt PageType, profile scoringProfile) {
 			a.addReason(b, "duplicate")
 		}
 		seen[hash] = struct{}{}
-		if a.o.favorPrecision {
+		if a.o.selectionMode == SelectionPrecision {
 			score -= .35
 		}
-		if a.o.favorRecall {
+		if a.o.selectionMode == SelectionRecall {
 			score += .35
 		}
 		b.score = score

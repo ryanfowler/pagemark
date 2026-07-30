@@ -52,7 +52,7 @@ func TestRelaxedArticleThresholdIsProseOnly(t *testing.T) {
 	<p>One concise paragraph narrowly misses strict scoring.</p><p>Another concise paragraph supplies the rest of the report.</p>
 	<nav><p>This deliberately long navigation label looks rather like prose but must always remain excluded from article output.</p></nav>
 	</div></body></html>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/brief", WithPageType(PageTypeArticle), WithFavorPrecision(true), WithDiagnostics(true))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/brief", WithPageType(PageTypeArticle), WithSelectionMode(SelectionPrecision), WithDiagnostics(true))
 	if err != nil {
 		t.Fatal(err)
 	}
