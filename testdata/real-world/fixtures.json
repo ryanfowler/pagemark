@@ -37,7 +37,9 @@
       ],
       "forbidden": [
         "Skip to Main Content",
-        "Copyright"
+        "Copyright",
+        "Documentation](https://go.dev/doc/)",
+        "Tutorials](https://go.dev/doc/tutorial/"
       ],
       "title": "Tutorial: Get started with Go"
     },
@@ -104,7 +106,9 @@
         "196 Likes",
         "Brand new user. Could use basic guidance",
         "Sign Up",
-        "crawler-linkback-list"
+        "crawler-linkback-list",
+        "1672×264",
+        "1367×449"
       ],
       "title": "Understanding Discourse for new users"
     },
@@ -149,7 +153,9 @@
       "forbidden": [
         "Help us improve GOV.UK",
         "Please fill in this survey",
-        "Services and information"
+        "Services and information",
+        "## Filter by Topic",
+        "## Filter by Type"
       ],
       "title": "Search all content on GOV.UK"
     },
@@ -171,7 +177,9 @@
       "forbidden": [
         "Get newsletter",
         "Republish this article",
-        "Most popular"
+        "Most popular",
+        "![The Conversation]",
+        "Academic rigour, journalistic flair"
       ],
       "title": "How Creative Commons works, and why it enables access to knowledge"
     },
@@ -218,7 +226,9 @@
         "From Wikibooks, open books for an open world",
         "Retrieved from",
         "edit source",
-        "Easy recipes"
+        "Easy recipes",
+        "Table_of_Contents)",
+        "Cookbook:Recipes)"
       ],
       "title": "Cookbook:Pancakes (North American)"
     },

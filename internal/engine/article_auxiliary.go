@@ -114,6 +114,7 @@ func irrelevantNode(n *html.Node) bool {
 		isPageFooterConvention(n) || hasClassConvention(n, "step-nav") || hasExactClass(n, "crawler-linkback-list") ||
 		hasExactClass(n, "post-likes") || hasClassPrefix(n, "jetpack-likes-widget") ||
 		hasExactClass(n, "mw-editsection") || hasExactClass(n, "printfooter") || hasExactClass(n, "catlinks") ||
+		isArticleNavigationControl(n) || isTaxonomyLinkParagraph(n) || isFilterControlRegion(n) || isMastheadRegion(n) ||
 		strings.EqualFold(attrValue(n, "id"), "siteSub") ||
 		strings.EqualFold(attrValue(n, "itemprop"), "interactionStatistic") ||
 		strings.EqualFold(attrValue(n, "id"), "warning_not_complete") {
@@ -132,6 +133,9 @@ func irrelevantNode(n *html.Node) bool {
 		return true
 	}
 	if elementContainsAny(n, navigationStructureTokens...) && !headingDocumentsStructure(n) && hasNavigationShape(n) {
+		return true
+	}
+	if isBreadcrumbLike(n) {
 		return true
 	}
 	// Interactive control strips are commonly generic divs rather than nav or
@@ -359,8 +363,17 @@ func isConventionallyNamedNavigation(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode || !hasNavigationShape(n) {
 		return false
 	}
+	// Breadcrumbs are often ordered lists rather than nav elements (for
+	// example, SiteBreadcrumb on go.dev). Their links are page chrome even when
+	// the current item repeats the document title.
+	if hasCompactClass(n, "breadcrumb", "breadcrumbs") {
+		return true
+	}
 	for class := range strings.FieldsSeq(strings.ToLower(attrValue(n, "class"))) {
 		class = strings.Trim(class, "_-")
+		if strings.Contains(class, "breadcrumb") && hasNavigationShape(n) {
+			return true
+		}
 		if class == "nav" || class == "navbar" || strings.HasPrefix(class, "nav-") ||
 			strings.HasPrefix(class, "nav_") || strings.HasSuffix(class, "-nav") || strings.HasSuffix(class, "_nav") {
 			return true
@@ -575,6 +588,262 @@ func hasNavigationShape(n *html.Node) bool {
 		return true
 	}
 	return controls(n) > 1
+}
+
+// isBreadcrumbLike covers older CMS and wiki templates that emit a plain
+// paragraph of breadcrumb links without a breadcrumb class. Requiring several
+// links, separator punctuation, and high link density keeps citation-heavy
+// authored paragraphs from being treated as navigation.
+func isBreadcrumbLike(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "p") {
+		return false
+	}
+	text := normalizeText(nodeText(n))
+	if !strings.ContainsAny(text, "|›»") || utf8.RuneCountInString(text) == 0 ||
+		float64(linkTextLength(n))/float64(utf8.RuneCountInString(text)) < .75 ||
+		!leadingNavigationParagraph(n) {
+		return false
+	}
+	links := 0
+	walk(n, func(x *html.Node) bool {
+		if x.Type == html.ElementNode && strings.EqualFold(x.Data, "a") {
+			links++
+			return false
+		}
+		return true
+	})
+	// Classed breadcrumb containers are handled above. An unmarked paragraph
+	// needs stronger evidence because a short authored paragraph can look like
+	// "Documentation | Guides | API".
+	return links >= 4
+}
+
+func leadingNavigationParagraph(n *html.Node) bool {
+	for sibling := n.PrevSibling; sibling != nil; sibling = sibling.PrevSibling {
+		if sibling.Type == html.CommentNode || sibling.Type == html.TextNode && strings.TrimSpace(sibling.Data) == "" {
+			continue
+		}
+		// Wiki and legacy CMS templates commonly place the breadcrumb directly
+		// after an explicitly marked infobox or metadata table. A bare leading
+		// paragraph is not enough evidence: it may be an authored resource index.
+		return sibling.Type == html.ElementNode && strings.EqualFold(sibling.Data, "table") &&
+			elementContainsAny(sibling, "infobox", "metadata")
+	}
+	return false
+}
+
+// isTaxonomyLinkParagraph recognizes a standalone tag list. Requiring every
+// non-whitespace child to be a hashtag link avoids removing an authored sentence
+// that happens to link to a tag.
+func isTaxonomyLinkParagraph(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "p") {
+		return false
+	}
+	found := false
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == html.TextNode {
+			if strings.TrimSpace(child.Data) != "" {
+				return false
+			}
+			continue
+		}
+		if child.Type != html.ElementNode || !strings.EqualFold(child.Data, "a") ||
+			!strings.HasPrefix(normalizedLabel(nodeText(child)), "#") {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+// isArticleNavigationControl handles the common blog shape where previous and
+// next links are placed in an ordinary paragraph instead of a nav element.
+// The class is stronger evidence than the short link label, so authored prose
+// containing words such as "next" remains untouched.
+func isArticleNavigationControl(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "a") {
+		return false
+	}
+	return hasClassConvention(n, "previous-post") || hasClassConvention(n, "next-post") ||
+		hasClassConvention(n, "prev-post")
+}
+
+// isFilterControlRegion identifies interactive result filters without treating
+// a documentation section merely named "Filter" as boilerplate. A structural
+// filter marker must also contain a real form control.
+func isFilterControlRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || strings.EqualFold(n.Data, "main") || strings.EqualFold(n.Data, "article") ||
+		!hasFilterStructureMarker(n) {
+		return false
+	}
+	// A generic filters wrapper can contain the whole result page. Only remove
+	// control-only regions; primary containers and substantive result records
+	// must remain available to selection.
+	return controls(n) > 0 && !hasPrimaryContentDescendant(n)
+}
+
+func hasPrimaryContentDescendant(n *html.Node) bool {
+	found := false
+	walk(n, func(current *html.Node) bool {
+		if current == n || current.Type != html.ElementNode {
+			return true
+		}
+		tag := strings.ToLower(current.Data)
+		if tag == "main" || tag == "article" {
+			found = true
+			return false
+		}
+		if !hasFormAncestor(current) {
+			if isListingRecordElement(current) &&
+				(utf8.RuneCountInString(normalizeText(nodeText(current))) >= 40 || hasResultLink(current)) {
+				found = true
+				return false
+			}
+			if isRecognizedResultContainer(current) && hasResultLink(current) {
+				found = true
+				return false
+			}
+			if substantiveResultRegion(current) {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func isRecognizedResultContainer(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	switch strings.ToLower(n.Data) {
+	case "div", "section", "ul", "ol":
+		return elementContainsAny(n, "results", "listings", "listing")
+	default:
+		return false
+	}
+}
+
+func hasResultLink(n *html.Node) bool {
+	found := false
+	walk(n, func(current *html.Node) bool {
+		if current.Type != html.ElementNode {
+			return true
+		}
+		if current != n && strings.EqualFold(current.Data, "form") {
+			return false
+		}
+		if strings.EqualFold(current.Data, "a") && strings.TrimSpace(attrValue(current, "href")) != "" &&
+			normalizeText(nodeText(current)) != "" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func substantiveResultRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	tag := strings.ToLower(n.Data)
+	if tag != "div" && tag != "section" && tag != "li" {
+		return false
+	}
+	heading, prose := false, false
+	walk(n, func(current *html.Node) bool {
+		if current.Type != html.ElementNode {
+			return true
+		}
+		if current != n && strings.EqualFold(current.Data, "form") {
+			return false
+		}
+		if isHeadingTag(strings.ToLower(current.Data)) && normalizeText(nodeText(current)) != "" {
+			heading = true
+		}
+		if (strings.EqualFold(current.Data, "p") || strings.EqualFold(current.Data, "blockquote")) &&
+			utf8.RuneCountInString(normalizeText(nodeText(current))) >= 20 {
+			prose = true
+		}
+		return !(heading && prose)
+	})
+	return heading && prose
+}
+
+func hasFormAncestor(n *html.Node) bool {
+	for parent := n.Parent; parent != nil; parent = parent.Parent {
+		if parent.Type == html.ElementNode && strings.EqualFold(parent.Data, "form") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFilterStructureMarker(n *html.Node) bool {
+	for _, convention := range []string{"filters", "filter-section", "filter-panel", "filter-group", "filter-controls", "filter-form", "refine-results"} {
+		if hasClassConvention(n, convention) || hasExactClass(n, convention) {
+			return true
+		}
+	}
+	id := strings.ToLower(strings.TrimSpace(attrValue(n, "id")))
+	switch id {
+	case "filters", "filter-section", "filter-panel", "filter-controls", "filter-form", "refine-results":
+		return true
+	}
+	return false
+}
+
+// isMastheadRegion recognizes a publisher masthead that is marked in the DOM
+// and contains visual branding or a header control. The marker is intentionally
+// required: a legitimate article section can discuss logos or headers.
+func isMastheadRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || !elementContainsAny(n, "masthead") {
+		return false
+	}
+	// Article templates often call their hero/header block an article-masthead.
+	// Preserve it when the DOM identifies authored story content, rather than
+	// letting the generic masthead rule remove the title and standfirst.
+	if mastheadContainsAuthoredContent(n) {
+		return false
+	}
+	visualOrControl := false
+	walk(n, func(x *html.Node) bool {
+		if x.Type != html.ElementNode {
+			return true
+		}
+		switch strings.ToLower(x.Data) {
+		case "img", "form", "button", "input", "select", "textarea":
+			visualOrControl = true
+		}
+		return !visualOrControl
+	})
+	return visualOrControl
+}
+
+func mastheadContainsAuthoredContent(n *html.Node) bool {
+	// A heading alone is not enough: publisher mastheads commonly contain a
+	// textual site name in an h1. Require an article/story marker or an
+	// explicit schema.org headline property before treating the masthead as
+	// authored content.
+	if elementContainsAny(n, "article", "story", "post", "entry", "standfirst", "dek") {
+		return true
+	}
+	foundHeadline := false
+	walk(n, func(current *html.Node) bool {
+		if current.Type != html.ElementNode {
+			return true
+		}
+		for _, prop := range strings.Fields(attrValue(current, "itemprop")) {
+			if strings.EqualFold(prop, "headline") {
+				foundHeadline = true
+				return false
+			}
+		}
+		return true
+	})
+	return foundHeadline
 }
 
 func (a *analysis) setIrrelevant(n *html.Node, irrelevant bool) {

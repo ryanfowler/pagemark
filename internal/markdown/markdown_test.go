@@ -39,6 +39,18 @@ func convertHTMLConfig(t *testing.T, source string, cfg Config) Result {
 	return Convert([]*html.Node{body}, cfg)
 }
 
+func TestImageAttachmentMetadataIsNotRenderedAsCaption(t *testing.T) {
+	r := convertHTML(t, `<div class="lightbox-wrapper"><a class="lightbox" href="/original.png"><img src="/small.png" alt="diagram"><div class="meta"><span class="filename">diagram</span><span class="informations">1200×800 42 KB</span></div></a></div>`)
+	if r.Markdown != "[![diagram](https://example.com/small.png)](https://example.com/original.png)" {
+		t.Fatalf("attachment metadata leaked into Markdown: %q", r.Markdown)
+	}
+
+	r = convertHTML(t, `<div><a class="image-link" href="/original.png"><img src="/small.png" alt="diagram"><div class="meta">Author's explanation</div></a></div>`)
+	if !strings.Contains(r.Markdown, "Author's explanation") {
+		t.Fatalf("authored image metadata was discarded: %q", r.Markdown)
+	}
+}
+
 func TestAdjacentResponsiveControlsAreDeduplicated(t *testing.T) {
 	// Framer-style responsive links wrap a block paragraph. Selection can begin
 	// at the paragraph, so conversion cannot render the ancestor anchor itself.

@@ -125,13 +125,55 @@ func enclosingSection(n *html.Node) *html.Node {
 }
 
 func (c *converter) skip(n *html.Node) bool {
-	if n == nil || isSourceCodeLineNumberGutter(n) || (c.cfg.Exclude != nil && c.cfg.Exclude(n)) {
+	if n == nil || isSourceCodeLineNumberGutter(n) || isImageAttachmentMetadata(n) || (c.cfg.Exclude != nil && c.cfg.Exclude(n)) {
 		return true
 	}
 	if dom.Hidden(n) {
 		// SVG is opaque to all generic traversal. The converter only admits its
 		// accessible label through the dedicated SVG branch below.
 		return !(c.cfg.Images && dom.AccessibleSVGLabel(n) != "")
+	}
+	return false
+}
+
+// isImageAttachmentMetadata removes the filename and dimensions UI emitted
+// by image lightboxes (for example, Discourse). It is not the image caption:
+// the metadata must be inside a linked image attachment for this rule to apply.
+func isImageAttachmentMetadata(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || !hasAnyClassToken(n, "meta") {
+		return false
+	}
+	filename, informations := false, false
+	walk := func(x *html.Node) bool {
+		if x.Type == html.ElementNode {
+			filename = filename || hasAnyClassToken(x, "filename")
+			informations = informations || hasAnyClassToken(x, "informations")
+		}
+		return !(filename && informations)
+	}
+	var visit func(*html.Node)
+	visit = func(x *html.Node) {
+		if !walk(x) {
+			return
+		}
+		for child := x.FirstChild; child != nil; child = child.NextSibling {
+			visit(child)
+		}
+	}
+	visit(n)
+	if !filename || !informations {
+		return false
+	}
+	for parent := n.Parent; parent != nil; parent = parent.Parent {
+		if parent.Type != html.ElementNode {
+			continue
+		}
+		if strings.EqualFold(parent.Data, "a") {
+			return hasAnyClassToken(parent, "lightbox") && hasDescendantElement(parent, "img")
+		}
+		if isBlockElement(strings.ToLower(parent.Data)) && !strings.EqualFold(parent.Data, "a") {
+			return false
+		}
 	}
 	return false
 }
