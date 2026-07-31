@@ -173,8 +173,8 @@ func TestOverrideIrrelevantInvalidatesDescendantCache(t *testing.T) {
 	if a.hasIrrelevantAncestor(heading) {
 		t.Fatal("neutral nested heading was unexpectedly irrelevant")
 	}
-	if got := a.nodeStates[heading].irrelevantAncestor; got != 1 {
-		t.Fatalf("heading ancestor result was not cached: got %d, want 1", got)
+	if got, known := a.nodeStates[heading].irrelevantAncestor.value(); !known || got {
+		t.Fatalf("heading ancestor result was not cached as false: got %t, known %t", got, known)
 	}
 
 	// Title restoration performs this kind of late override after probing the

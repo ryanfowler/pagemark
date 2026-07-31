@@ -35,15 +35,60 @@ type articleRegionEvidence struct {
 	documentOrder    int
 }
 
+type memoizedBool uint8
+
+const (
+	memoizedBoolUnknown memoizedBool = iota
+	memoizedBoolFalse
+	memoizedBoolTrue
+)
+
+func (m memoizedBool) value() (value, known bool) {
+	switch m {
+	case memoizedBoolFalse:
+		return false, true
+	case memoizedBoolTrue:
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+func (m *memoizedBool) store(value bool) {
+	*m = memoizedBoolFalse
+	if value {
+		*m = memoizedBoolTrue
+	}
+}
+
+type memoizedCount uint8
+
+// memoizedCountMax is the largest count needed by repeated-record policy.
+const memoizedCountMax = 2
+
+func (m memoizedCount) value() (value int, known bool) {
+	if m == 0 {
+		return 0, false
+	}
+	return int(m - 1), true
+}
+
+func (m *memoizedCount) store(value int) {
+	value = max(0, min(value, memoizedCountMax))
+	*m = memoizedCount(value + 1)
+}
+
 // nodeState contains memoized policy decisions. Immutable DOM facts belong in
 // evidenceIndex instead of this classification cache.
 type nodeState struct {
-	irrelevant, irrelevantAncestor, baseAuxiliary, articleAuxiliary uint8
-	inferenceAuxiliary                                              uint8
-	articleComment, commentCount                                    uint8
-	semanticBefore, semanticAfter                                   uint8
-	articleProseBefore, selfReference                               uint8
-	articleCardCount, substantialArticle                            uint8
+	irrelevant, irrelevantAncestor, baseAuxiliary, articleAuxiliary memoizedBool
+	inferenceAuxiliary                                              memoizedBool
+	articleComment                                                  memoizedBool
+	commentCount                                                    memoizedCount
+	semanticBefore, semanticAfter                                   memoizedBool
+	articleProseBefore, selfReference                               memoizedBool
+	articleCardCount                                                memoizedCount
+	substantialArticle                                              memoizedBool
 	inferenceTokens                                                 uint16
 }
 

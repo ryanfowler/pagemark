@@ -734,15 +734,12 @@ func (a *analysis) substantialArticleScope(n *html.Node) bool {
 	if n == nil || a.nodeStates == nil {
 		return substantialArticleScope(n)
 	}
-	if state := a.nodeStates[n].substantialArticle; state != 0 {
-		return state == 2
+	if value, known := a.nodeStates[n].substantialArticle.value(); known {
+		return value
 	}
 	result := substantialArticleScope(n)
 	state := a.nodeStates[n]
-	state.substantialArticle = 1
-	if result {
-		state.substantialArticle = 2
-	}
+	state.substantialArticle.store(result)
 	a.nodeStates[n] = state
 	return result
 }

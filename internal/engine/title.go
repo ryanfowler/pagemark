@@ -541,9 +541,9 @@ func (a *analysis) cloneWithHeadingDemotions(n *html.Node, demote map[*html.Node
 	if demote[n] {
 		clone.Data = "h2"
 	}
-	if state := a.nodeStates[n].irrelevant; state != 0 {
+	if value, known := a.nodeStates[n].irrelevant.value(); known {
 		cloneState := a.nodeStates[clone]
-		cloneState.irrelevant = state
+		cloneState.irrelevant.store(value)
 		a.nodeStates[clone] = cloneState
 	}
 	for child := n.FirstChild; child != nil; child = child.NextSibling {
