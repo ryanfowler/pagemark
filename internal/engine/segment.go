@@ -16,7 +16,7 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 		// SVG remains hidden to generic DOM walkers so its internals cannot affect
 		// scoring. Only this explicit opaque-image path may bypass that rule.
 		opaqueSVG := a.o.includeImages && tag == "svg" && meaningfulVisual(n)
-		excluded = excluded || (hardHidden(n) && !opaqueSVG)
+		excluded = excluded || (a.hidden(n) && !opaqueSVG)
 		if excluded {
 			return
 		}
@@ -102,7 +102,7 @@ func (a *analysis) segmentDirectFlow(parent *html.Node, excluded bool) {
 		a.appendBlock(p, "p", text, false)
 	}
 	for ch := parent.FirstChild; ch != nil; ch = ch.NextSibling {
-		boundary := hardHidden(ch)
+		boundary := a.hidden(ch)
 		if ch.Type == html.ElementNode {
 			tag := strings.ToLower(ch.Data)
 			boundary = boundary || isBlockTag(tag) || isGenericContainer(tag) || hasBlockDescendant(ch) ||
@@ -237,33 +237,11 @@ func accumulateSubtreeEvidence(n, root *html.Node, text, linked *normalizedRuneC
 		return
 	}
 	if n.Type == html.ElementNode {
-		tag := n.Data
-		switch tag {
+		switch n.Data {
 		case "button", "input", "select", "textarea":
 			*controlCount++
-		default:
-			// Preserve ExtractNode support for caller-built mixed-case trees
-			// without putting EqualFold on the parser-lowercase path.
-			for i := 0; i < len(tag); i++ {
-				if tag[i] >= 'A' && tag[i] <= 'Z' {
-					if strings.EqualFold(tag, "button") || strings.EqualFold(tag, "input") ||
-						strings.EqualFold(tag, "select") || strings.EqualFold(tag, "textarea") {
-						*controlCount++
-					}
-					break
-				}
-			}
 		}
-		anchor := tag == "a"
-		if !anchor {
-			for i := 0; i < len(tag); i++ {
-				if tag[i] >= 'A' && tag[i] <= 'Z' {
-					anchor = strings.EqualFold(tag, "a")
-					break
-				}
-			}
-		}
-		if n != root && linked == nil && anchor {
+		if n != root && linked == nil && n.Data == "a" {
 			var link normalizedRuneCounter
 			for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
 				accumulateSubtreeEvidence(ch, root, text, &link, linkedChars, controlCount)
@@ -472,8 +450,20 @@ const (
 // many nested containers. Only positive results are recorded, avoiding a large
 // hash-map entry for every element on pages without these features.
 func (a *analysis) indexSubtreeEvidence(n *html.Node) (bool, uint8) {
-	if n == nil || n.Type == html.ElementNode && hardHidden(n) {
+	if n == nil {
 		return false, 0
+	}
+	if n.Type == html.ElementNode {
+		hidden := hardHidden(n)
+		state := a.nodeStates[n]
+		state.hidden = 1
+		if hidden {
+			state.hidden = 2
+		}
+		a.nodeStates[n] = state
+		if hidden {
+			return false, 0
+		}
 	}
 	bodyBelow := false
 	var subscription uint8
@@ -533,6 +523,18 @@ func isBlockTag(tag string) bool {
 	return false
 }
 func hardHidden(n *html.Node) bool { return dom.Hidden(n) }
+
+// hidden returns the visibility decision recorded by the extraction evidence
+// pass. Synthetic and late-added nodes fall back to direct evaluation.
+func (a *analysis) hidden(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	if state := a.nodeStates[n].hidden; state != 0 {
+		return state == 2
+	}
+	return hardHidden(n)
+}
 
 // hasMeaningfulVisual recognizes visuals that can produce useful output. It is
 // deliberately stricter than the Markdown converter: selection must not make

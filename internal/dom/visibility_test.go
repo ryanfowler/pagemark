@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"golang.org/x/net/html"
-	"golang.org/x/net/html/atom"
 )
 
 func TestHiddenStyleCascade(t *testing.T) {
@@ -111,46 +110,27 @@ func TestHiddenUtilityClass(t *testing.T) {
 			t.Errorf("class %q reported visible", class)
 		}
 	}
+
+	// Preserve visibility when duplicate class attributes put the responsive
+	// display utility before the hidden token.
+	n := &html.Node{Type: html.ElementNode, Data: "p", Attr: []html.Attribute{
+		{Key: "class", Val: "md:block"},
+		{Key: "class", Val: "HIDDEN"},
+	}}
+	if Hidden(n) {
+		t.Error("responsive utility in an earlier class attribute was ignored")
+	}
 }
 
-func TestHiddenAcceptsAtomizedMixedCaseManualNodes(t *testing.T) {
-	tests := []struct {
-		name string
-		node *html.Node
-	}{
-		{
-			name: "mixed-case hidden attribute",
-			node: &html.Node{
-				Type:     html.ElementNode,
-				Data:     "div",
-				DataAtom: atom.Div,
-				Attr:     []html.Attribute{{Key: "HiDdEn"}},
-			},
-		},
-		{
-			name: "mixed-case modal attribute",
-			node: &html.Node{
-				Type:     html.ElementNode,
-				Data:     "div",
-				DataAtom: atom.Div,
-				Attr:     []html.Attribute{{Key: "ArIa-MoDaL", Val: "true"}},
-			},
-		},
-		{
-			name: "mixed-case excluded element",
-			node: &html.Node{
-				Type:     html.ElementNode,
-				Data:     "SCRIPT",
-				DataAtom: atom.Script,
-			},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if !Hidden(test.node) {
-				t.Fatal("atomized mixed-case manual node reported visible")
-			}
-		})
+func BenchmarkHiddenUtilityClassGate(b *testing.B) {
+	n := &html.Node{Type: html.ElementNode, Data: "div", Attr: []html.Attribute{{
+		Key: "class",
+		Val: strings.Repeat("article-card md:grid hover:block text-center ", 20),
+	}}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if Hidden(n) {
+			b.Fatal("visible utility classes reported hidden")
+		}
 	}
 }

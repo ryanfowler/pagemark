@@ -6,7 +6,6 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/net/html"
-	"golang.org/x/net/html/atom"
 )
 
 func TestNormalizedTextAtLeastMatchesMaterializedText(t *testing.T) {
@@ -31,111 +30,134 @@ func TestNormalizedTextAtLeastMatchesMaterializedText(t *testing.T) {
 	}
 }
 
-func TestBlockSubtreeEvidenceMatchesIndependentScans(t *testing.T) {
-	parsed, err := html.Parse(strings.NewReader(`<main><p>outside <a href="/one"> one  <em>two</em> </a><button>act</button><span hidden><a href="/hidden">hidden</a><input></span><a href="/two"><span>three</span><span>four</span></a></p></main>`))
-	if err != nil {
-		t.Fatal(err)
+func TestScriptRequirementNoticeStreamsNormalizedText(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{
+			name:   "phrases split across inline nodes",
+			source: `<div id="notice">Please enable <strong>JavaScript</strong> to run this <em>app</em>.</div>`,
+			want:   true,
+		},
+		{
+			name:   "unicode case and whitespace",
+			source: "<div id=\"notice\">ENABLE\u00a0<span>JAVASCRIPT</span> for this WEB APPLICATION.</div>",
+			want:   true,
+		},
+		{
+			name:   "hidden phrase ignored",
+			source: `<div id="notice">Please enable JavaScript.<span hidden>This web application requires JavaScript.</span></div>`,
+			want:   false,
+		},
+		{
+			name:   "hidden subtree excluded from length",
+			source: `<div id="notice">Enable JavaScript to run this app.<span hidden>` + strings.Repeat("ignored ", 1000) + `</span></div>`,
+			want:   true,
+		},
+		{
+			name:   "semantic content retained",
+			source: `<main><div id="notice">Enable JavaScript to run this app.</div></main>`,
+			want:   false,
+		},
 	}
 
-	manual := &html.Node{Type: html.ElementNode, Data: "DIV"}
-	link := &html.Node{Type: html.ElementNode, Data: "A"}
-	link.AppendChild(&html.Node{Type: html.TextNode, Data: "  mixed"})
-	span := &html.Node{Type: html.ElementNode, Data: "SPAN"}
-	span.AppendChild(&html.Node{Type: html.TextNode, Data: "case  "})
-	link.AppendChild(span)
-	manual.AppendChild(link)
-	manual.AppendChild(&html.Node{Type: html.ElementNode, Data: "BuTtOn"})
-	hidden := &html.Node{Type: html.ElementNode, Data: "DIV", Attr: []html.Attribute{{Key: "HiDdEn"}}}
-	hidden.AppendChild(&html.Node{Type: html.ElementNode, Data: "InPuT"})
-	manual.AppendChild(hidden)
-
-	for name, root := range map[string]*html.Node{"parsed": parsed, "manual mixed-case": manual} {
-		t.Run(name, func(t *testing.T) {
-			links, controlCount := blockSubtreeEvidence(root)
-			if want := linkTextLength(root); links != want {
-				t.Fatalf("linked text length = %d, want %d", links, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root, err := html.Parse(strings.NewReader(tt.source))
+			if err != nil {
+				t.Fatal(err)
 			}
-			if want := controls(root); controlCount != want {
-				t.Fatalf("controls = %d, want %d", controlCount, want)
+			var notice *html.Node
+			walk(root, func(n *html.Node) bool {
+				if n.Type == html.ElementNode && attrValue(n, "id") == "notice" {
+					notice = n
+					return false
+				}
+				return notice == nil
+			})
+			if notice == nil {
+				t.Fatal("notice element not found")
 			}
-			text, shapeLinks, shapeControls := subtreeShapeEvidence(root)
-			if want := utf8.RuneCountInString(normalizeText(nodeText(root))); text != want {
-				t.Fatalf("text length = %d, want %d", text, want)
-			}
-			if shapeLinks != links || shapeControls != controlCount {
-				t.Fatalf("shape evidence = (%d, %d), want (%d, %d)",
-					shapeLinks, shapeControls, links, controlCount)
+			if got := isScriptRequirementNotice(notice); got != tt.want {
+				t.Fatalf("isScriptRequirementNotice() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestExtractNodeAcceptsMixedCaseManualTree(t *testing.T) {
-	document := &html.Node{Type: html.DocumentNode}
-	htmlNode := &html.Node{Type: html.ElementNode, Data: "HTML"}
-	body := &html.Node{Type: html.ElementNode, Data: "BODY"}
-	main := &html.Node{Type: html.ElementNode, Data: "MAIN"}
-	article := &html.Node{Type: html.ElementNode, Data: "ARTICLE"}
-	heading := &html.Node{Type: html.ElementNode, Data: "H1"}
-	heading.AppendChild(&html.Node{Type: html.TextNode, Data: "Manual tree title"})
-	paragraph := &html.Node{Type: html.ElementNode, Data: "P"}
-	paragraph.AppendChild(&html.Node{Type: html.TextNode, Data: "This manually constructed mixed-case article contains enough substantive prose to be selected without changing its source DOM."})
-	article.AppendChild(heading)
-	article.AppendChild(paragraph)
-	main.AppendChild(article)
-	body.AppendChild(main)
-	htmlNode.AppendChild(body)
-	document.AppendChild(htmlNode)
+func TestScriptRequirementNoticeStopsAtNormalizedRuneLimit(t *testing.T) {
+	const evidence = "enable javascript requires javascript"
+	for _, tt := range []struct {
+		length int
+		want   bool
+	}{
+		{length: 300, want: true},
+		{length: 301, want: false},
+	} {
+		text := evidence + strings.Repeat("é", tt.length-utf8.RuneCountInString(evidence))
+		notice := &html.Node{Type: html.ElementNode, Data: "div"}
+		notice.AppendChild(&html.Node{Type: html.TextNode, Data: text})
+		// This tail must not be visited after the normalized text reaches 301
+		// runes. It also guards against byte-based length counting.
+		tail := &html.Node{Type: html.ElementNode, Data: "span"}
+		tail.AppendChild(&html.Node{Type: html.TextNode, Data: strings.Repeat("tail", 1000)})
+		notice.AppendChild(tail)
 
-	doc, err := ExtractNode(document, "https://example.com/manual", WithPageType(PageTypeArticle))
+		// At 300 runes, the separator before the visible tail is rune 301. The
+		// scan can reject the notice without visiting the large tail text.
+		if isScriptRequirementNotice(notice) {
+			t.Fatal("notice with visible tail was not rejected")
+		}
+		// Hide the tail for the exact boundary assertion.
+		tail.Attr = []html.Attribute{{Key: "hidden"}}
+		got := isScriptRequirementNotice(notice)
+		if got != tt.want {
+			t.Fatalf("%d normalized runes: isScriptRequirementNotice() = %v, want %v", tt.length, got, tt.want)
+		}
+	}
+}
+
+func BenchmarkScriptRequirementNoticeStreaming(b *testing.B) {
+	root, err := html.Parse(strings.NewReader(`<div id="notice">Please enable <strong>JavaScript</strong> to run this <em>app</em>.</div>`))
+	if err != nil {
+		b.Fatal(err)
+	}
+	var notice *html.Node
+	walk(root, func(n *html.Node) bool {
+		if n.Type == html.ElementNode && attrValue(n, "id") == "notice" {
+			notice = n
+			return false
+		}
+		return notice == nil
+	})
+	b.ReportAllocs()
+	for b.Loop() {
+		if !isScriptRequirementNotice(notice) {
+			b.Fatal("notice was not recognized")
+		}
+	}
+}
+
+func TestBlockSubtreeEvidenceMatchesIndependentScans(t *testing.T) {
+	root, err := html.Parse(strings.NewReader(`<main><p>outside <a href="/one"> one  <em>two</em> </a><button>act</button><span hidden><a href="/hidden">hidden</a><input></span><a href="/two"><span>three</span><span>four</span></a></p></main>`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(doc.Text, "manually constructed mixed-case article") {
-		t.Fatalf("mixed-case manual tree content was not extracted: %q", doc.Text)
+	links, controlCount := blockSubtreeEvidence(root)
+	if want := linkTextLength(root); links != want {
+		t.Fatalf("linked text length = %d, want %d", links, want)
 	}
-}
-
-func TestAtomizedManualTreeRetainsMixedCaseAttributeSupport(t *testing.T) {
-	n := &html.Node{
-		Type:     html.ElementNode,
-		Data:     "DIV",
-		DataAtom: atom.Div,
-		Attr: []html.Attribute{
-			{Key: "ID", Val: "Article"},
-			{Key: "ClAsS", Val: "Post Content"},
-			{Key: "RoLe", Val: "MAIN"},
-		},
+	if want := controls(root); controlCount != want {
+		t.Fatalf("controls = %d, want %d", controlCount, want)
 	}
-
-	if got := attrValue(n, "class"); got != "Post Content" {
-		t.Fatalf("mixed-case attribute value = %q, want %q", got, "Post Content")
+	text, shapeLinks, shapeControls := subtreeShapeEvidence(root)
+	if want := utf8.RuneCountInString(normalizeText(nodeText(root))); text != want {
+		t.Fatalf("text length = %d, want %d", text, want)
 	}
-	if !elementContainsAny(n, "article") {
-		t.Fatal("mixed-case token attribute was not recognized")
-	}
-	if got := elementTokens(n); got != "article post content main" {
-		t.Fatalf("element tokens = %q, want %q", got, "article post content main")
-	}
-}
-
-func TestInferenceTokenFlagsRetainMixedCaseAndUnicodeSupport(t *testing.T) {
-	n := &html.Node{
-		Type: html.ElementNode,
-		Data: "DIV",
-		Attr: []html.Attribute{
-			{Key: "ClAsS", Val: "Featured-CARD product"},
-			{Key: "RoLe", Val: "préface RESULTS"},
-		},
-	}
-	a := &analysis{nodeStates: make(map[*html.Node]nodeState)}
-	got := a.inferenceTokenFlags(n)
-	want := inferenceTokensKnown | inferenceTokenCard | inferenceTokenProduct | inferenceTokenResults
-	if got != want {
-		t.Fatalf("inference token flags = %#x, want %#x", got, want)
-	}
-	if cached := a.nodeStates[n].inferenceTokens; cached != want {
-		t.Fatalf("cached inference token flags = %#x, want %#x", cached, want)
+	if shapeLinks != links || shapeControls != controlCount {
+		t.Fatalf("shape evidence = (%d, %d), want (%d, %d)", shapeLinks, shapeControls, links, controlCount)
 	}
 }
 

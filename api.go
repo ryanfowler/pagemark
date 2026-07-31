@@ -63,7 +63,7 @@ func ExtractBytes(input []byte, pageURL string, opts ...Option) (*Document, erro
 	return engine.ExtractBytes(input, pageURL, opts...)
 }
 
-// ExtractNode extracts useful content from a parsed HTML tree without changing it.
+// ExtractNode extracts useful content from a tree produced by x/net/html without changing it.
 func ExtractNode(root *html.Node, pageURL string, opts ...Option) (*Document, error) {
 	return engine.ExtractNode(root, pageURL, opts...)
 }

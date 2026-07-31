@@ -9,7 +9,7 @@ import (
 	"golang.org/x/net/html"
 )
 
-func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
+func (a *analysis) inferType(wantCandidates bool) (PageType, float64, []PageCandidate) {
 	scores := map[PageType]float64{
 		PageTypeArticle: 0, PageTypeDocumentation: 0, PageTypeDiscussion: 0,
 		PageTypeProduct: 0, PageTypeListing: 0, PageTypeCollection: 0,
@@ -323,9 +323,28 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 	if strings.Contains(urlPath, "product") {
 		scores[PageTypeProduct] += 3
 	}
-	var cs []PageCandidate
-	for t, s := range scores {
-		cs = append(cs, PageCandidate{t, s})
+	// Ordinary extraction needs only the two best scores. Build and sort the
+	// complete candidate report only when diagnostics will expose it.
+	top := PageCandidate{Type: PageTypeGeneric, Score: scores[PageTypeGeneric]}
+	second := PageCandidate{}
+	for pageType, score := range scores {
+		candidate := PageCandidate{Type: pageType, Score: score}
+		if score > top.Score || score == top.Score && pageType < top.Type {
+			if pageType != top.Type {
+				second = top
+			}
+			top = candidate
+		} else if pageType != top.Type && (score > second.Score || score == second.Score && (second.Type == "" || pageType < second.Type)) {
+			second = candidate
+		}
+	}
+	confidence := .5 + (top.Score-second.Score)/(2*math.Max(1, top.Score))
+	if !wantCandidates {
+		return top.Type, clamp(confidence), nil
+	}
+	cs := make([]PageCandidate, 0, len(scores))
+	for pageType, score := range scores {
+		cs = append(cs, PageCandidate{Type: pageType, Score: score})
 	}
 	sort.Slice(cs, func(i, j int) bool {
 		if cs[i].Score == cs[j].Score {
@@ -333,11 +352,5 @@ func (a *analysis) inferType() (PageType, float64, []PageCandidate) {
 		}
 		return cs[i].Score > cs[j].Score
 	})
-	top := cs[0]
-	second := 0.0
-	if len(cs) > 1 {
-		second = cs[1].Score
-	}
-	confidence := .5 + (top.Score-second)/(2*math.Max(1, top.Score))
 	return top.Type, clamp(confidence), cs
 }

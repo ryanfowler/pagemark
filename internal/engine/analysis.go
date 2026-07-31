@@ -38,14 +38,14 @@ type articleRegionEvidence struct {
 // scoringProfile is deliberately internal. Relaxation is an article recovery
 // mechanism, not a general-purpose extraction mode.
 type nodeState struct {
-	irrelevant, irrelevantAncestor, articleAuxiliary uint8
-	inferenceAuxiliary, discussionBody               uint8
-	subscriptionEvidence                             uint8
-	articleComment, commentCount                     uint8
-	articleDescendant, semanticBefore, semanticAfter uint8
-	articleProseBefore, selfReference                uint8
-	articleCardCount, substantialArticle             uint8
-	inferenceTokens                                  uint16
+	hidden, irrelevant, irrelevantAncestor, baseAuxiliary, articleAuxiliary uint8
+	inferenceAuxiliary, discussionBody                                      uint8
+	subscriptionEvidence                                                    uint8
+	articleComment, commentCount                                            uint8
+	articleDescendant, semanticBefore, semanticAfter                        uint8
+	articleProseBefore, selfReference                                       uint8
+	articleCardCount, substantialArticle                                    uint8
+	inferenceTokens                                                         uint16
 }
 
 type analysis struct {

@@ -8,7 +8,7 @@ Pagemark supports articles, documentation, discussions, products, listings, coll
 
 ## Input
 
-Supply HTML with a byte slice, an `io.Reader`, or an `html.Node` tree. You can also supply an absolute HTTP or HTTPS page URL. The page URL is optional.
+Supply HTML with a byte slice, an `io.Reader`, or an `html.Node` tree produced by `x/net/html`. You can also supply an absolute HTTP or HTTPS page URL. The page URL is optional.
 
 Pagemark does not fetch the page. It does not run JavaScript. Supply rendered HTML when a page needs JavaScript.
 

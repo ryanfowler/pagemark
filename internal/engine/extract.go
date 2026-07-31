@@ -132,7 +132,7 @@ func containsASCIIFoldBytes(input []byte, pattern string) bool {
 	return false
 }
 
-// ExtractNode returns useful content from a parsed HTML tree.
+// ExtractNode returns useful content from a tree produced by x/net/html.
 // It does not change root. Do not change root during extraction.
 // pageURL can be empty. A nonempty pageURL must be an absolute HTTP or HTTPS URL.
 // WithMaxInputBytes does not apply to this function.
@@ -190,7 +190,11 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	a.extractMetadata()
 	a.segment(root, false)
 	a.detectTextListingPre()
-	pageType, confidence, candidates := a.inferType()
+	pageType, confidence := o.pageType, 1.0
+	var candidates []PageCandidate
+	if pageType == "" || a.diag != nil {
+		pageType, confidence, candidates = a.inferType(a.diag != nil)
+	}
 	if o.pageType != "" {
 		pageType = o.pageType
 		confidence = 1
@@ -302,7 +306,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 			(titleEquivalent(articleHeadingText(n), a.contentTitle, a.meta.site) || titleEquivalent(nodeText(n), a.contentTitle, a.meta.site))
 		return titleHeading || a.titleExcluded[n] || a.hasIrrelevantAncestor(n) || discussionAuxiliary || visualAuxiliary
 	}
-	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: o.urlPolicy.AllowedSchemes, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude, PruneEmptyHeadings: true}
+	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: o.urlPolicy.AllowedSchemes, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude, Hidden: a.hidden, PruneEmptyHeadings: true}
 	if a.textListingPre != nil {
 		cfg.TextPreformatted = func(n *html.Node) bool { return n == a.textListingPre }
 	}

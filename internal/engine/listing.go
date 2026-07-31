@@ -279,7 +279,7 @@ func (a *analysis) unmarkedListingRecordShape(n *html.Node) bool {
 	}
 	headings, proseOrLink := 0, false
 	walk(n, func(current *html.Node) bool {
-		if current != n && (hardHidden(current) || irrelevantNode(current) || isAdvertisementRegion(current)) {
+		if current != n && (a.hidden(current) || a.baseAuxiliaryNode(current)) {
 			return false
 		}
 		if current.Type != html.ElementNode {
@@ -379,7 +379,7 @@ func (a *analysis) inferenceListingWrapperRecords(wrapper *html.Node) map[*html.
 		// Type inference runs before a.pageType is assigned. Do not call the
 		// cached, type-dependent isIrrelevantNode here: doing so would preserve an
 		// incomplete result after the final article profile is known.
-		if hardHidden(n) || irrelevantNode(n) || isAdvertisementRegion(n) {
+		if a.hidden(n) || a.baseAuxiliaryNode(n) {
 			return false
 		}
 		tag := strings.ToLower(n.Data)
@@ -410,7 +410,7 @@ func (a *analysis) inferenceListingWrapperRecords(wrapper *html.Node) map[*html.
 	// cohorts on a tie, but prefer direct cards over nested li metadata.
 	var direct []*html.Node
 	for ch := wrapper.FirstChild; ch != nil; ch = ch.NextSibling {
-		if ch.Type != html.ElementNode || hardHidden(ch) || irrelevantNode(ch) || isAdvertisementRegion(ch) {
+		if ch.Type != html.ElementNode || a.hidden(ch) || a.baseAuxiliaryNode(ch) {
 			continue
 		}
 		switch strings.ToLower(ch.Data) {

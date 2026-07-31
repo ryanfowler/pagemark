@@ -44,7 +44,7 @@ Use one of these functions:
 
 - `Extract` reads UTF-8 HTML from an `io.Reader`.
 - `ExtractBytes` reads UTF-8 HTML from a byte slice.
-- `ExtractNode` reads a parsed `html.Node` tree. It does not change the tree.
+- `ExtractNode` reads a tree produced by `x/net/html`. It does not change the tree.
 
 The page URL is optional. If you set it, use an absolute HTTP or HTTPS URL. Pagemark uses it to resolve relative links.
 

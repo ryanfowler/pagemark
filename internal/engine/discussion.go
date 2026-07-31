@@ -149,18 +149,23 @@ func elementTokens(n *html.Node) string {
 	if n == nil || n.Type != html.ElementNode {
 		return ""
 	}
-	// HTML parsing already normalizes attribute keys, but retain EqualFold for
-	// caller-built trees. Collect in one pass instead of doing three scans and
-	// allocating both a concatenation and its lower-case copy.
+	// Collect token-bearing attributes in one pass instead of allocating both a
+	// concatenation and its lower-case copy.
 	var id, class, role string
 	for _, attr := range n.Attr {
-		switch {
-		case id == "" && strings.EqualFold(attr.Key, "id"):
-			id = attr.Val
-		case class == "" && strings.EqualFold(attr.Key, "class"):
-			class = attr.Val
-		case role == "" && strings.EqualFold(attr.Key, "role"):
-			role = attr.Val
+		switch attr.Key {
+		case "id":
+			if id == "" {
+				id = attr.Val
+			}
+		case "class":
+			if class == "" {
+				class = attr.Val
+			}
+		case "role":
+			if role == "" {
+				role = attr.Val
+			}
 		}
 	}
 	length := len(id) + len(class) + len(role)
@@ -198,21 +203,7 @@ func elementContainsAny(n *html.Node, values ...string) bool {
 		return false
 	}
 	for _, attr := range n.Attr {
-		// Parsed HTML has canonical lowercase attribute names. Keep EqualFold as
-		// the uncommon fallback for caller-built trees passed to ExtractNode.
-		key := attr.Key
-		tokenAttribute := key == "id" || key == "class" || key == "role"
-		if !tokenAttribute {
-			switch len(key) {
-			case len("id"):
-				tokenAttribute = strings.EqualFold(key, "id")
-			case len("role"):
-				tokenAttribute = strings.EqualFold(key, "role")
-			case len("class"):
-				tokenAttribute = strings.EqualFold(key, "class")
-			}
-		}
-		if tokenAttribute && containsAnyFold(attr.Val, values...) {
+		if (attr.Key == "id" || attr.Key == "class" || attr.Key == "role") && containsAnyFold(attr.Val, values...) {
 			return true
 		}
 	}
