@@ -954,10 +954,7 @@ func mastheadContainsAuthoredContent(n *html.Node) bool {
 
 func (a *analysis) setIrrelevant(n *html.Node, irrelevant bool) {
 	state := a.nodeStates[n]
-	state.irrelevant = 1
-	if irrelevant {
-		state.irrelevant = 2
-	}
+	state.irrelevant.store(irrelevant)
 	a.nodeStates[n] = state
 }
 
@@ -969,7 +966,7 @@ func (a *analysis) overrideIrrelevant(n *html.Node, irrelevant bool) {
 	walk(n, func(descendant *html.Node) bool {
 		state, cached := a.nodeStates[descendant]
 		if cached {
-			state.irrelevantAncestor = 0
+			state.irrelevantAncestor = memoizedBoolUnknown
 			a.nodeStates[descendant] = state
 		}
 		return true
@@ -980,22 +977,19 @@ func (a *analysis) overrideIrrelevant(n *html.Node, irrelevant bool) {
 // Type inference, listing detection, and final scoring all query this same
 // evidence, so each element must pay for its local classification only once.
 func (a *analysis) baseAuxiliaryNode(n *html.Node) bool {
-	if state := a.nodeStates[n].baseAuxiliary; state != 0 {
-		return state == 2
+	if value, known := a.nodeStates[n].baseAuxiliary.value(); known {
+		return value
 	}
 	auxiliary := irrelevantNode(n) || isAdvertisementRegion(n)
 	state := a.nodeStates[n]
-	state.baseAuxiliary = 1
-	if auxiliary {
-		state.baseAuxiliary = 2
-	}
+	state.baseAuxiliary.store(auxiliary)
 	a.nodeStates[n] = state
 	return auxiliary
 }
 
 func (a *analysis) isIrrelevantNode(n *html.Node) bool {
-	if state := a.nodeStates[n].irrelevant; state != 0 {
-		return state == 2
+	if value, known := a.nodeStates[n].irrelevant.value(); known {
+		return value
 	}
 	irrelevant := a.baseAuxiliaryNode(n)
 	// An empty comments header is auxiliary regardless of the selected profile.
@@ -1029,13 +1023,9 @@ func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 // place.
 func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 	for p := n; p != nil; p = p.Parent {
-		switch a.nodeStates[p].inferenceAuxiliary {
-		case 1:
-			a.cacheInferenceAuxiliaryPath(n, p, 1)
-			return true
-		case 2:
-			a.cacheInferenceAuxiliaryPath(n, p, 2)
-			return false
+		if value, known := a.nodeStates[p].inferenceAuxiliary.value(); known {
+			a.cacheInferenceAuxiliaryPath(n, p, value)
+			return value
 		}
 		auxiliary := a.baseAuxiliaryNode(p)
 		if !auxiliary && p.Type == html.ElementNode && (strings.EqualFold(p.Data, "aside") ||
@@ -1062,20 +1052,20 @@ func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 			auxiliary = true
 		}
 		if auxiliary {
-			a.cacheInferenceAuxiliaryPath(n, p, 1)
+			a.cacheInferenceAuxiliaryPath(n, p, true)
 			return true
 		}
 	}
-	a.cacheInferenceAuxiliaryPath(n, nil, 2)
+	a.cacheInferenceAuxiliaryPath(n, nil, false)
 	return false
 }
 
 // cacheInferenceAuxiliaryPath avoids allocating a temporary ancestor slice on
 // every query. The second parent walk is cheap and only occurs on cache misses.
-func (a *analysis) cacheInferenceAuxiliaryPath(n, end *html.Node, value uint8) {
+func (a *analysis) cacheInferenceAuxiliaryPath(n, end *html.Node, value bool) {
 	for p := n; p != nil; p = p.Parent {
 		state := a.nodeStates[p]
-		state.inferenceAuxiliary = value
+		state.inferenceAuxiliary.store(value)
 		a.nodeStates[p] = state
 		if p == end {
 			return
@@ -1206,10 +1196,7 @@ func (a *analysis) hasSemanticArticleBefore(n *html.Node) bool {
 				return true
 			}
 			state := a.nodeStates[x]
-			state.semanticBefore = 1
-			if seen {
-				state.semanticBefore = 2
-			}
+			state.semanticBefore.store(seen)
 			a.nodeStates[x] = state
 			if strings.EqualFold(x.Data, "article") && !elementContainsAny(x, "card") {
 				seen = true
@@ -1217,7 +1204,8 @@ func (a *analysis) hasSemanticArticleBefore(n *html.Node) bool {
 			return true
 		})
 	}
-	return a.nodeStates[n].semanticBefore == 2
+	value, _ := a.nodeStates[n].semanticBefore.value()
+	return value
 }
 
 func (a *analysis) hasSemanticArticleAfter(n *html.Node) bool {
@@ -1232,32 +1220,27 @@ func (a *analysis) hasSemanticArticleAfter(n *html.Node) bool {
 				return
 			}
 			state := a.nodeStates[x]
-			state.semanticAfter = 1
-			if seen {
-				state.semanticAfter = 2
-			}
+			state.semanticAfter.store(seen)
 			a.nodeStates[x] = state
 			if strings.EqualFold(x.Data, "article") && !elementContainsAny(x, "card") {
 				seen = true
 			}
 		})
 	}
-	return a.nodeStates[n].semanticAfter == 2
+	value, _ := a.nodeStates[n].semanticAfter.value()
+	return value
 }
 
 func (a *analysis) hasSelfReference(root *html.Node) (result bool) {
 	if root == nil || hardHidden(root) {
 		return false
 	}
-	if state := a.nodeStates[root].selfReference; state != 0 {
-		return state == 2
+	if value, known := a.nodeStates[root].selfReference.value(); known {
+		return value
 	}
 	defer func() {
 		state := a.nodeStates[root]
-		state.selfReference = 1
-		if result {
-			state.selfReference = 2
-		}
+		state.selfReference.store(result)
 		a.nodeStates[root] = state
 	}()
 
@@ -1570,15 +1553,12 @@ func (a *analysis) articleAuxiliaryNode(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	if state := a.nodeStates[n].articleAuxiliary; state != 0 {
-		return state == 2
+	if value, known := a.nodeStates[n].articleAuxiliary.value(); known {
+		return value
 	}
 	auxiliary := a.articleAuxiliaryNodeUncached(n)
 	state := a.nodeStates[n]
-	state.articleAuxiliary = 1
-	if auxiliary {
-		state.articleAuxiliary = 2
-	}
+	state.articleAuxiliary.store(auxiliary)
 	a.nodeStates[n] = state
 	return auxiliary
 }
@@ -2182,10 +2162,7 @@ func (a *analysis) hasLongArticleProseBefore(n *html.Node) bool {
 			switch strings.ToLower(x.Data) {
 			case "div", "section", "aside", "fieldset":
 				state := a.nodeStates[x]
-				state.articleProseBefore = 1
-				if seen {
-					state.articleProseBefore = 2
-				}
+				state.articleProseBefore.store(seen)
 				a.nodeStates[x] = state
 			}
 			if strings.EqualFold(x.Data, "p") &&
@@ -2195,7 +2172,8 @@ func (a *analysis) hasLongArticleProseBefore(n *html.Node) bool {
 			return true
 		})
 	}
-	return a.nodeStates[n].articleProseBefore == 2
+	value, _ := a.nodeStates[n].articleProseBefore.value()
+	return value
 }
 
 func regionHasLongProse(n *html.Node, limit int) bool {
@@ -2553,15 +2531,12 @@ func (a *analysis) isArticleCommentRegion(n *html.Node) (result bool) {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	if state := a.nodeStates[n].articleComment; state != 0 {
-		return state == 2
+	if value, known := a.nodeStates[n].articleComment.value(); known {
+		return value
 	}
 	defer func() {
 		state := a.nodeStates[n]
-		state.articleComment = 1
-		if result {
-			state.articleComment = 2
-		}
+		state.articleComment.store(result)
 		a.nodeStates[n] = state
 	}()
 
@@ -2724,8 +2699,8 @@ func (a *analysis) commentRecordCount(root *html.Node) int {
 	if root == nil || hardHidden(root) {
 		return 0
 	}
-	if state := a.nodeStates[root].commentCount; state != 0 {
-		return int(state - 1)
+	if value, known := a.nodeStates[root].commentCount.value(); known {
+		return value
 	}
 	count := 0
 	for ch := root.FirstChild; ch != nil && count < 2; ch = ch.NextSibling {
@@ -2742,7 +2717,7 @@ func (a *analysis) commentRecordCount(root *html.Node) int {
 		}
 	}
 	state := a.nodeStates[root]
-	state.commentCount = uint8(count + 1)
+	state.commentCount.store(count)
 	a.nodeStates[root] = state
 	return count
 }
@@ -3018,8 +2993,8 @@ func (a *analysis) articleCardCount(root *html.Node) int {
 	if root == nil || hardHidden(root) {
 		return 0
 	}
-	if cached := a.nodeStates[root].articleCardCount; cached != 0 {
-		return int(cached - 1)
+	if value, known := a.nodeStates[root].articleCardCount.value(); known {
+		return value
 	}
 	count := 0
 	for ch := root.FirstChild; ch != nil && count < 2; ch = ch.NextSibling {
@@ -3036,7 +3011,7 @@ func (a *analysis) articleCardCount(root *html.Node) int {
 		}
 	}
 	state := a.nodeStates[root]
-	state.articleCardCount = uint8(count + 1)
+	state.articleCardCount.store(count)
 	a.nodeStates[root] = state
 	return count
 }
@@ -3088,15 +3063,12 @@ func (a *analysis) hasIrrelevantAncestor(n *html.Node) bool {
 	if n.Type != html.ElementNode {
 		return a.hasIrrelevantAncestor(n.Parent)
 	}
-	if cached := a.nodeStates[n].irrelevantAncestor; cached != 0 {
-		return cached == 2
+	if value, known := a.nodeStates[n].irrelevantAncestor.value(); known {
+		return value
 	}
 	irrelevant := a.isIrrelevantNode(n) || a.hasIrrelevantAncestor(n.Parent)
 	state := a.nodeStates[n] // isIrrelevantNode may have updated the entry.
-	state.irrelevantAncestor = 1
-	if irrelevant {
-		state.irrelevantAncestor = 2
-	}
+	state.irrelevantAncestor.store(irrelevant)
 	a.nodeStates[n] = state
 	return irrelevant
 }

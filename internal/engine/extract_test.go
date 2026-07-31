@@ -384,8 +384,11 @@ func TestSubstantialArticleScopeIsMemoized(t *testing.T) {
 		t.Fatal("article not found")
 	}
 	a := analysis{nodeStates: make(map[*html.Node]nodeState)}
-	if !a.substantialArticleScope(article) || a.nodeStates[article].substantialArticle != 2 {
-		t.Fatalf("substantial article result was not cached: %#v", a.nodeStates[article])
+	if !a.substantialArticleScope(article) {
+		t.Fatal("substantial article scope was not detected")
+	}
+	if got, known := a.nodeStates[article].substantialArticle.value(); !known || !got {
+		t.Fatalf("substantial article result was not cached: got %t, known %t", got, known)
 	}
 	if !a.substantialArticleScope(article) {
 		t.Fatal("cached substantial article result changed")
