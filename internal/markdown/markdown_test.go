@@ -39,6 +39,23 @@ func convertHTMLConfig(t *testing.T, source string, cfg Config) Result {
 	return Convert([]*html.Node{body}, cfg)
 }
 
+func TestStripTrackingQueryPreservesUntouchedComponents(t *testing.T) {
+	for _, test := range []struct {
+		raw, want string
+	}{
+		{raw: "keep=1;other=2&utm_source=x", want: "keep=1;other=2"},
+		{raw: "first=1&utm_source=x&second=%zz&fbclid=y", want: "first=1&second=%zz"},
+		{raw: "%6Beep=1&gclid=x&last=2", want: "%6Beep=1&last=2"},
+		{raw: "utm_source=x&keep=1&utm_medium=email", want: "keep=1"},
+	} {
+		t.Run(test.raw, func(t *testing.T) {
+			if got := stripTrackingQuery(test.raw); got != test.want {
+				t.Fatalf("stripTrackingQuery(%q) = %q, want %q", test.raw, got, test.want)
+			}
+		})
+	}
+}
+
 func TestImageAttachmentMetadataIsNotRenderedAsCaption(t *testing.T) {
 	r := convertHTML(t, `<div class="lightbox-wrapper"><a class="lightbox" href="/original.png"><img src="/small.png" alt="diagram"><div class="meta"><span class="filename">diagram</span><span class="informations">1200×800 42 KB</span></div></a></div>`)
 	if r.Markdown != "[![diagram](https://example.com/small.png)](https://example.com/original.png)" {
@@ -355,6 +372,25 @@ func TestFormattedLinkAndLinkedImage(t *testing.T) {
 	}
 	if len(r.Links) != 2 || len(r.Images) != 1 {
 		t.Fatalf("links=%v images=%v", r.Links, r.Images)
+	}
+}
+
+func TestTrackingQueryStrippingPreservesLinkAndImageURLs(t *testing.T) {
+	base, _ := url.Parse("https://example.com/")
+	r := convertHTMLConfig(t, `<p><a href="/article?keep=1;other=2&amp;utm_source=news">Read</a> <img src="/image?keep=1;other=2&amp;gclid=campaign" alt="Photo"></p>`, Config{
+		Base: base, Links: true, Images: true, MaxLinks: 10, MaxImages: 10,
+		Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096, StripTracking: true},
+	})
+	wantLink := "https://example.com/article?keep=1;other=2"
+	wantImage := "https://example.com/image?keep=1;other=2"
+	if r.Markdown != "[Read]("+wantLink+") ![Photo]("+wantImage+")" {
+		t.Fatalf("Markdown = %q", r.Markdown)
+	}
+	if len(r.Links) != 1 || r.Links[0].URL != wantLink {
+		t.Fatalf("links = %#v", r.Links)
+	}
+	if len(r.Images) != 1 || r.Images[0].URL != wantImage {
+		t.Fatalf("images = %#v", r.Images)
 	}
 }
 
