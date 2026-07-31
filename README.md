@@ -110,43 +110,26 @@ doc, report, err := pagemark.ExtractDetailedBytes(source, pageURL)
 
 `DiagnosticReport` fields may change in a minor release.
 
-## Limits
+## Resource bounds
 
-Pagemark limits resource use. The default public limits are:
+Pagemark exposes two resource options:
 
-| Resource | Default |
-| --- | ---: |
-| Input | 10 MiB |
-| DOM elements | 200,000 |
-| DOM depth | 256 |
-| Markdown output | 2 MiB |
-| Links | 1,000 |
-| Images | 100 |
-| Table cells | 10,000 |
-| Repeated items | 200 |
+| Resource | Default | Option |
+| --- | ---: | --- |
+| Input | 10 MiB | `WithMaxInputBytes` |
+| Markdown output | 2 MiB | `WithMaxOutputBytes` |
 
-Use `WithLimits` for advanced configuration:
+Zero selects the default. A positive value sets the limit. `-1` disables the
+limit. Values below `-1` return `ErrInvalidOption`. Options apply in order, so
+a later option overrides an earlier one.
 
-```go
-pagemark.WithLimits(pagemark.Limits{
-	Elements: 100_000,
-	Depth:    128,
-	Images:   20,
-})
-```
+Pagemark also applies fixed internal limits to DOM elements and DOM depth. An
+input or DOM limit returns a `LimitError`. The Markdown byte limit keeps
+complete blocks and adds a warning. The input-byte limit applies to `Extract`
+and `ExtractBytes`, not `ExtractNode`, whose DOM is already parsed.
 
-Every field uses the same convention: `0` selects the package default, a
-positive value sets the limit, and `-1` makes it unlimited. Values below `-1`
-return `ErrInvalidOption`. `WithMaxInputBytes` and `WithMaxOutputBytes` are
-conveniences with the same convention. Options apply in order, so a later
-option overrides an earlier one.
-
-Limits do not toggle output features. Use `WithIncludeLinks`,
-`WithIncludeImages`, and `WithIncludeTables` independently.
-The input-byte limit applies to `Extract` and `ExtractBytes`, not `ExtractNode`,
-whose DOM is already parsed.
-
-Pagemark also has fixed limits for attributes and text. An input or tree limit returns a `LimitError`. The Markdown byte limit keeps complete blocks and adds a warning.
+Use `WithIncludeLinks`, `WithIncludeImages`, and `WithIncludeTables` to control
+output features. These options are independent of resource bounds.
 
 Check errors with `errors.Is` and `errors.As`:
 

@@ -107,10 +107,9 @@ type Image struct {
 type WarningCode string
 
 const (
-	WarningOutputTruncated        WarningCode = "output-truncated"
-	WarningRepeatedItemsTruncated WarningCode = "repeated-items-truncated"
-	WarningFallbackUsed           WarningCode = "fallback"
-	WarningRelaxedExtraction      WarningCode = "relaxed-article-extraction"
+	WarningOutputTruncated   WarningCode = "output-truncated"
+	WarningFallbackUsed      WarningCode = "fallback"
+	WarningRelaxedExtraction WarningCode = "relaxed-article-extraction"
 )
 
 // Warning reports a nonfatal extraction condition.

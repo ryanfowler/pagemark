@@ -63,10 +63,10 @@ type URLPolicy struct {
 	StripTracking bool
 }
 type Config struct {
-	Base                                         *url.URL
-	Links, Images, Tables                        bool
-	MaxLinks, MaxImages, MaxTableCells, MaxBytes int
-	Policy                                       URLPolicy
+	Base                  *url.URL
+	Links, Images, Tables bool
+	MaxBytes              int
+	Policy                URLPolicy
 	// Exclude removes extraction-specific boilerplate subtrees. Hidden DOM
 	// handling remains built in to the converter.
 	Exclude func(*html.Node) bool
@@ -93,12 +93,10 @@ type ImageValue struct{ Alt, URL string }
 type SectionValue struct{ Heading, Text string }
 
 type converter struct {
-	cfg                   Config
-	linkCount, imageCount int
-	rejected              []string
-	cells                 int
-	heading               *html.Node
-	textPreformatted      bool
+	cfg              Config
+	rejected         []string
+	heading          *html.Node
+	textPreformatted bool
 }
 
 func Convert(nodes []*html.Node, cfg Config) Result {
@@ -482,9 +480,8 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 				safe, ok := c.safeURL(href)
 				if !ok {
 					c.rejected = append(c.rejected, href)
-				} else if len(children) > 0 && c.linkCount < c.cfg.MaxLinks {
+				} else if len(children) > 0 {
 					out = append(out, &Node{Kind: Link, URL: safe, Children: children})
-					c.linkCount++
 					return
 				}
 			}
@@ -496,22 +493,20 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 			return
 		case "img":
 			alt, src := clean(attr(x, "alt")), attr(x, "src")
-			if c.cfg.Images && alt != "" && c.imageCount < c.cfg.MaxImages {
+			if c.cfg.Images && alt != "" {
 				if safe, ok := c.safeURL(src); ok {
 					out = append(out, &Node{Kind: Image, Value: alt, URL: safe})
-					c.imageCount++
 				}
 			}
 			return
 		case "svg":
 			// Inline SVG has no image URL to report. Preserve an accessible name
 			// as a concise textual stand-in rather than silently dropping a
-			// meaningful diagram. It still consumes the image budget so SVG cannot
-			// bypass the configured visual-output limit.
-			if c.cfg.Images && c.imageCount < c.cfg.MaxImages {
+			// meaningful diagram. Keep it subject to the same image feature toggle
+			// as raster images.
+			if c.cfg.Images {
 				if label := clean(dom.AccessibleSVGLabel(x)); label != "" {
 					out = append(out, &Node{Kind: Text, Value: "Diagram: " + label})
-					c.imageCount++
 				}
 			}
 			return
@@ -1094,8 +1089,8 @@ func (c *converter) buildTable(s tableSource, fallbackContent func() *Node) *Nod
 		return nil
 	}
 	fallback := func() *Node {
-		// Captions render before fallback rows and must therefore consume link and
-		// image budgets first as well.
+		// Captions render before fallback rows and must therefore remain in source
+		// order.
 		captions := caption()
 		return tableWithCaption(fallbackContent(), captions)
 	}
@@ -1117,19 +1112,18 @@ func (c *converter) buildTable(s tableSource, fallbackContent func() *Node) *Nod
 	if len(rows) == 0 {
 		return fallback()
 	}
-	width, total := len(rows[0]), 0
+	width := len(rows[0])
 	for _, row := range rows {
 		if len(row) != width {
 			return fallback()
 		}
-		total += len(row)
 		for _, cell := range row {
 			if integerAttr(cell, "colspan", 1) != 1 || integerAttr(cell, "rowspan", 1) != 1 {
 				return fallback()
 			}
 		}
 	}
-	if width == 0 || c.cfg.MaxTableCells <= 0 || c.cells+total > c.cfg.MaxTableCells {
+	if width == 0 {
 		return fallback()
 	}
 
@@ -1153,14 +1147,8 @@ func (c *converter) buildTable(s tableSource, fallbackContent func() *Node) *Nod
 		return fallback()
 	}
 
-	// Reserve the complete outer table before converting any content. Cell
-	// conversion may encounter nested tables; those tables must observe the
-	// reduced remaining budget rather than allowing the final total to exceed
-	// MaxTableCells.
-	c.cells += total
-
 	// Caption and promoted-title content appears before body cells, so convert it
-	// first to preserve document-order link and image limits.
+	// first to preserve document order.
 	captions := caption()
 	if s.title != nil {
 		title := c.tableCellInlines(s.title)
@@ -1457,7 +1445,7 @@ func (c *converter) tableRowHasOwnRenderableContent(n *html.Node) bool {
 				renderable = true
 				return
 			case "img":
-				if c.cfg.Images && c.imageCount < c.cfg.MaxImages && clean(attr(x, "alt")) != "" {
+				if c.cfg.Images && clean(attr(x, "alt")) != "" {
 					_, renderable = c.safeURL(attr(x, "src"))
 				}
 				return

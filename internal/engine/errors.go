@@ -21,12 +21,9 @@ var (
 type LimitResource string
 
 const (
-	LimitInputBytes     LimitResource = "input-bytes"
-	LimitElements       LimitResource = "elements"
-	LimitDepth          LimitResource = "depth"
-	LimitAttributes     LimitResource = "attributes"
-	LimitAttributeBytes LimitResource = "attribute-bytes"
-	LimitTextBytes      LimitResource = "text-bytes"
+	LimitInputBytes LimitResource = "input-bytes"
+	LimitElements   LimitResource = "elements"
+	LimitDepth      LimitResource = "depth"
 )
 
 // LimitError reports a resource limit. Use errors.Is(err, ErrLimit) to test it.

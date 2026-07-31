@@ -2,7 +2,6 @@ package engine
 
 import (
 	"errors"
-	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -70,16 +69,8 @@ func TestSelectionModeGoldenOutputs(t *testing.T) {
 		mode SelectionMode
 		want string
 	}{
-		{
-			name: "precision",
-			mode: SelectionPrecision,
-			want: "```\nanchor content stays\n```",
-		},
-		{
-			name: "recall",
-			mode: SelectionRecall,
-			want: "```\nanchor content stays\n```\n\nThis medium optional paragraph has enough characters to cross the balanced threshold.\n\nBrief optional note.",
-		},
+		{name: "precision", mode: SelectionPrecision, want: "```\nanchor content stays\n```"},
+		{name: "recall", mode: SelectionRecall, want: "```\nanchor content stays\n```\n\nThis medium optional paragraph has enough characters to cross the balanced threshold.\n\nBrief optional note."},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -101,181 +92,44 @@ func TestPageTypeValidation(t *testing.T) {
 	}
 }
 
-func TestLimitsSemanticsAndPrecedence(t *testing.T) {
-	defaults, err := applyOptions([]Option{WithLimits(Limits{})})
+func TestInputAndOutputOptions(t *testing.T) {
+	source := []byte(`<main><p>The first complete paragraph is useful and should remain in the output.</p><p>The second complete paragraph proves that unlimited output is not truncated.</p></main>`)
+	if _, err := ExtractBytes([]byte(strings.Repeat("x", 20)), "", WithMaxInputBytes(10)); !errors.Is(err, ErrLimit) {
+		t.Fatalf("input limit error = %v", err)
+	}
+	limited, err := ExtractBytes(source, "", WithMaxOutputBytes(80))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := defaultOptions()
-	if defaults.maxInput != want.maxInput || defaults.maxElements != want.maxElements ||
-		defaults.maxDepth != want.maxDepth || defaults.maxOutput != want.maxOutput ||
-		defaults.maxLinks != want.maxLinks || defaults.maxImages != want.maxImages ||
-		defaults.maxTableCells != want.maxTableCells || defaults.maxRepeated != want.maxRepeated {
-		t.Fatalf("zero limits = %#v, want defaults %#v", defaults, want)
+	if len(limited.Warnings) == 0 || limited.Warnings[0].Code != WarningOutputTruncated {
+		t.Fatalf("small output limit did not truncate: %#v", limited.Warnings)
 	}
-
-	unlimited, err := applyOptions([]Option{WithLimits(Limits{
-		InputBytes: -1, Elements: -1, Depth: -1, OutputBytes: -1,
-		Links: -1, Images: -1, TableCells: -1, RepeatedItems: -1,
-	})})
+	doc, err := ExtractBytes(source, "", WithMaxOutputBytes(-1))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unlimited.maxInput != 0 || unlimited.maxElements != 0 || unlimited.maxDepth != 0 ||
-		unlimited.maxOutput != 0 || unlimited.maxLinks != math.MaxInt ||
-		unlimited.maxImages != math.MaxInt || unlimited.maxTableCells != math.MaxInt ||
-		unlimited.maxRepeated != 0 {
-		t.Fatalf("unlimited values were not normalized: %#v", unlimited)
-	}
-
-	later, err := applyOptions([]Option{
-		WithLimits(Limits{OutputBytes: 1 << 20}),
-		WithMaxOutputBytes(2 << 20),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if later.maxOutput != 2<<20 {
-		t.Fatalf("later output limit = %d, want %d", later.maxOutput, 2<<20)
+	if !strings.Contains(doc.Text, "second complete paragraph") {
+		t.Fatalf("unlimited output was truncated: %q", doc.Text)
 	}
 }
 
-func TestInvalidLimitValues(t *testing.T) {
-	tests := []Limits{
-		{InputBytes: -2}, {Elements: -2}, {Depth: -2}, {OutputBytes: -2},
-		{Links: -2}, {Images: -2}, {TableCells: -2}, {RepeatedItems: -2},
-	}
-	for _, limits := range tests {
-		_, err := ExtractBytes([]byte(`<p>content</p>`), "", WithLimits(limits))
-		if !errors.Is(err, ErrInvalidOption) {
-			t.Errorf("WithLimits(%#v) error = %v", limits, err)
-		}
-	}
+func TestInvalidInputAndOutputLimits(t *testing.T) {
 	for _, option := range []Option{WithMaxInputBytes(-2), WithMaxOutputBytes(-2)} {
 		_, err := ExtractBytes([]byte(`<p>content</p>`), "", option)
 		if !errors.Is(err, ErrInvalidOption) {
-			t.Errorf("convenience option error = %v", err)
+			t.Errorf("invalid limit error = %v", err)
 		}
 	}
 }
 
-func TestUnlimitedContentLimitsDoNotDisableFeatures(t *testing.T) {
-	source := []byte(`<main><h1>Resources</h1><p>Useful resources are listed here for readers.</p><p><a href="/guide">Read the guide</a></p><img src="/diagram.png" alt="System diagram" width="800" height="600"><table><tr><th>Name</th><th>Value</th></tr><tr><td>Mode</td><td>Safe</td></tr></table><p>This conclusion provides enough substantive content for extraction.</p></main>`)
-	doc, err := ExtractBytes(source, "https://example.com/start", WithPageType(PageTypeDocumentation), WithLimits(Limits{Links: -1, Images: -1, TableCells: -1}))
-	if err != nil {
-		t.Fatal(err)
+func TestInternalDOMLimits(t *testing.T) {
+	source := []byte(`<main><section><div><p>Deep content remains available.</p></div></section></main>`)
+	if _, err := ExtractBytes(source, "", func(o *options) { o.maxElements = 2 }); !errors.Is(err, ErrLimit) {
+		t.Fatalf("element limit error = %v", err)
 	}
-	if len(doc.Links) == 0 || len(doc.Images) == 0 || !strings.Contains(doc.Markdown, "| Name | Value |") {
-		t.Fatalf("unlimited limits disabled a feature: links=%#v images=%#v\n%s", doc.Links, doc.Images, doc.Markdown)
+	if _, err := ExtractBytes(source, "", func(o *options) { o.maxDepth = 2 }); !errors.Is(err, ErrLimit) {
+		t.Fatalf("depth limit error = %v", err)
 	}
-
-	disabled, err := ExtractBytes(source, "https://example.com/start", WithPageType(PageTypeDocumentation),
-		WithLimits(Limits{Links: -1, Images: -1, TableCells: -1}),
-		WithIncludeLinks(false), WithIncludeImages(false), WithIncludeTables(false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(disabled.Links) != 0 || len(disabled.Images) != 0 || strings.Contains(disabled.Markdown, "| Name | Value |") {
-		t.Fatalf("feature toggles were ignored: links=%#v images=%#v\n%s", disabled.Links, disabled.Images, disabled.Markdown)
-	}
-}
-
-func TestUnlimitedLimitsThroughPublicAPI(t *testing.T) {
-	t.Run("input reader and bytes", func(t *testing.T) {
-		source := []byte(`<main><p>Useful content remains available after disabling the small input limit.</p></main>`)
-		for _, extract := range []struct {
-			name string
-			call func(...Option) (*Document, error)
-		}{
-			{"reader", func(opts ...Option) (*Document, error) {
-				return Extract(strings.NewReader(string(source)), "", opts...)
-			}},
-			{"bytes", func(opts ...Option) (*Document, error) {
-				return ExtractBytes(source, "", opts...)
-			}},
-		} {
-			t.Run(extract.name, func(t *testing.T) {
-				if _, err := extract.call(WithMaxInputBytes(10)); !errors.Is(err, ErrLimit) {
-					t.Fatalf("small limit error = %v", err)
-				}
-				doc, err := extract.call(WithMaxInputBytes(-1))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !strings.Contains(doc.Text, "Useful content") {
-					t.Fatalf("unlimited input lost content: %q", doc.Text)
-				}
-			})
-		}
-	})
-
-	t.Run("elements", func(t *testing.T) {
-		source := []byte(`<main><section><div><p>Element-limited content remains available.</p></div></section></main>`)
-		if _, err := ExtractBytes(source, "", WithLimits(Limits{Elements: 2})); !errors.Is(err, ErrLimit) {
-			t.Fatalf("small element limit error = %v", err)
-		}
-		doc, err := ExtractBytes(source, "", WithLimits(Limits{Elements: -1}))
-		if err != nil || !strings.Contains(doc.Text, "Element-limited content") {
-			t.Fatalf("unlimited elements: doc=%#v err=%v", doc, err)
-		}
-	})
-
-	t.Run("depth", func(t *testing.T) {
-		source := []byte(`<main><section><div><p>Deep content remains available.</p></div></section></main>`)
-		if _, err := ExtractBytes(source, "", WithLimits(Limits{Depth: 2})); !errors.Is(err, ErrLimit) {
-			t.Fatalf("small depth limit error = %v", err)
-		}
-		doc, err := ExtractBytes(source, "", WithLimits(Limits{Depth: -1}))
-		if err != nil || !strings.Contains(doc.Text, "Deep content") {
-			t.Fatalf("unlimited depth: doc=%#v err=%v", doc, err)
-		}
-	})
-
-	t.Run("output", func(t *testing.T) {
-		source := []byte(`<main><p>The first complete paragraph is useful and should remain in the output.</p><p>The second complete paragraph proves that unlimited output is not truncated.</p></main>`)
-		limited, err := ExtractBytes(source, "", WithLimits(Limits{OutputBytes: 80}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(limited.Warnings) == 0 || limited.Warnings[0].Code != WarningOutputTruncated {
-			t.Fatalf("small output limit did not truncate: %#v", limited.Warnings)
-		}
-		doc, err := ExtractBytes(source, "", WithLimits(Limits{OutputBytes: -1}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(doc.Text, "second complete paragraph") {
-			t.Fatalf("unlimited output was truncated: %q", doc.Text)
-		}
-		for _, warning := range doc.Warnings {
-			if warning.Code == WarningOutputTruncated {
-				t.Fatalf("unlimited output warning: %#v", warning)
-			}
-		}
-	})
-
-	t.Run("repeated items", func(t *testing.T) {
-		source := []byte(`<main><h1>Results</h1><div class="item"><p>First listed record.</p></div><div class="item"><p>Second listed record.</p></div><div class="item"><p>Third listed record.</p></div></main>`)
-		limited, err := ExtractBytes(source, "https://example.com/results", WithPageType(PageTypeListing), WithLimits(Limits{RepeatedItems: 1}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(limited.Text, "Third listed") {
-			t.Fatalf("small repeated limit retained every record: %q", limited.Text)
-		}
-		doc, err := ExtractBytes(source, "https://example.com/results", WithPageType(PageTypeListing), WithLimits(Limits{RepeatedItems: -1}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(doc.Text, "Third listed") {
-			t.Fatalf("unlimited repeated items were truncated: %q", doc.Text)
-		}
-		for _, warning := range doc.Warnings {
-			if warning.Code == WarningRepeatedItemsTruncated {
-				t.Fatalf("unlimited repeated-item warning: %#v", warning)
-			}
-		}
-	})
 }
 
 func TestURLPolicyValidationAndOwnership(t *testing.T) {

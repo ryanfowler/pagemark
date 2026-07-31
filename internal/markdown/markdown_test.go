@@ -13,7 +13,6 @@ func convertHTML(t *testing.T, source string) Result {
 	base, _ := url.Parse("https://example.com/base/")
 	return convertHTMLConfig(t, source, Config{
 		Base: base, Links: true, Images: true, Tables: true,
-		MaxLinks: 100, MaxImages: 100, MaxTableCells: 100,
 		Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096},
 	})
 }
@@ -281,7 +280,7 @@ func TestEmptyHeadingsArePrunedAfterConversion(t *testing.T) {
 func TestWhitespaceOnlyLinkedSuperscriptDoesNotPreserveHeading(t *testing.T) {
 	base, _ := url.Parse("https://example.com/")
 	r := convertHTMLConfig(t, `<h2>Empty</h2><p><sup><a href="/x"><em> </em></a></sup></p>`, Config{
-		Base: base, Links: true, MaxLinks: 100, PruneEmptyHeadings: true,
+		Base: base, Links: true, PruneEmptyHeadings: true,
 		Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096},
 	})
 	if r.Markdown != "" {
@@ -335,10 +334,10 @@ func TestHeadingPermalinks(t *testing.T) {
 	}
 }
 
-func TestUnsafeLinkIsRejectedAfterOutputLimit(t *testing.T) {
+func TestUnsafeLinkIsRejected(t *testing.T) {
 	base, _ := url.Parse("https://example.com/")
 	r := convertHTMLConfig(t, `<p><a href="/safe">safe</a> <a href="javascript:alert(1)">unsafe</a></p>`, Config{
-		Base: base, Links: true, MaxLinks: 1,
+		Base: base, Links: true,
 		Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096},
 	})
 	if r.Markdown != "[safe](https://example.com/safe) unsafe" {
@@ -378,7 +377,7 @@ func TestFormattedLinkAndLinkedImage(t *testing.T) {
 func TestTrackingQueryStrippingPreservesLinkAndImageURLs(t *testing.T) {
 	base, _ := url.Parse("https://example.com/")
 	r := convertHTMLConfig(t, `<p><a href="/article?keep=1;other=2&amp;utm_source=news">Read</a> <img src="/image?keep=1;other=2&amp;gclid=campaign" alt="Photo"></p>`, Config{
-		Base: base, Links: true, Images: true, MaxLinks: 10, MaxImages: 10,
+		Base: base, Links: true, Images: true,
 		Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096, StripTracking: true},
 	})
 	wantLink := "https://example.com/article?keep=1;other=2"
@@ -487,22 +486,18 @@ func TestAccessibleSVGTextFallback(t *testing.T) {
 		if got := convertHTML(t, `<p>before<svg role="img" aria-label="Modal diagram" aria-modal="true"></svg>after</p>`).Markdown; got != "beforeafter" {
 			t.Fatalf("aria-modal SVG output = %q", got)
 		}
-		cfg := Config{Images: false, MaxImages: 100, Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096}}
+		cfg := Config{Images: false, Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096}}
 		if got := convertHTMLConfig(t, `<svg role="img" aria-label="Hidden diagram"></svg>`, cfg).Markdown; got != "" {
 			t.Fatalf("disabled SVG output = %q", got)
 		}
 	})
 
-	t.Run("shares image limit", func(t *testing.T) {
+	t.Run("keeps all images", func(t *testing.T) {
 		base, _ := url.Parse("https://example.com/")
-		cfg := Config{Base: base, Images: true, MaxImages: 1, Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096}}
+		cfg := Config{Base: base, Images: true, Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096}}
 		r := convertHTMLConfig(t, `<p><svg role="img" aria-label="First diagram"></svg><img src="/second.png" alt="Second diagram"></p>`, cfg)
-		if r.Markdown != "Diagram: First diagram" || len(r.Images) != 0 {
-			t.Fatalf("SVG did not consume image limit: markdown=%q images=%#v", r.Markdown, r.Images)
-		}
-		cfg.MaxImages = 0
-		if got := convertHTMLConfig(t, `<svg role="img" aria-label="Limited diagram"></svg>`, cfg).Markdown; got != "" {
-			t.Fatalf("MaxImages=0 SVG output = %q", got)
+		if r.Markdown != "Diagram: First diagram![Second diagram](https://example.com/second.png)" || len(r.Images) != 1 {
+			t.Fatalf("image output was dropped: markdown=%q images=%#v", r.Markdown, r.Images)
 		}
 	})
 }
@@ -672,64 +667,6 @@ func TestARIATableAndGridPreserveCells(t *testing.T) {
 	})
 }
 
-func TestNestedTableCannotExceedCellBudget(t *testing.T) {
-	source := `<table><tr><th>A</th><th>B</th></tr><tr><td>outer<table><tr><th>X</th><th>Y</th></tr><tr><td>1</td><td>2</td></tr></table></td><td>end</td></tr></table>`
-	root, err := html.Parse(strings.NewReader(source))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var outer *html.Node
-	var find func(*html.Node)
-	find = func(n *html.Node) {
-		if outer == nil && n.Type == html.ElementNode && n.Data == "table" {
-			outer = n
-			return
-		}
-		for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-			find(ch)
-		}
-	}
-	find(root)
-	c := &converter{cfg: Config{Tables: true, MaxTableCells: 6}}
-	if got := c.table(outer); got == nil {
-		t.Fatal("outer table was not converted")
-	}
-	if c.cells != 4 || c.cells > c.cfg.MaxTableCells {
-		t.Fatalf("nested table bypassed cell budget: cells=%d limit=%d", c.cells, c.cfg.MaxTableCells)
-	}
-}
-
-func TestTableMetadataConsumesMediaLimitsBeforeBody(t *testing.T) {
-	base, _ := url.Parse("https://example.com/")
-	cfg := Config{
-		Base: base, Links: true, Images: true, Tables: true,
-		MaxLinks: 1, MaxImages: 1, MaxTableCells: 100,
-		Policy: URLPolicy{Schemes: []string{"https"}, MaxLength: 4096},
-	}
-
-	t.Run("caption before body and fallback", func(t *testing.T) {
-		for _, source := range []string{
-			`<table><caption><a href="/caption">Caption</a></caption><tr><th>Head</th></tr><tr><td><a href="/body">Body</a></td></tr></table>`,
-			`<table><caption><a href="/caption">Caption</a></caption><tr><td><a href="/body">Body</a></td></tr></table>`,
-		} {
-			got := convertHTMLConfig(t, source, cfg).Markdown
-			if !strings.Contains(got, `[Caption](https://example.com/caption)`) || strings.Contains(got, `[Body](`) {
-				t.Fatalf("caption did not receive the first link budget slot: %q", got)
-			}
-		}
-	})
-
-	t.Run("promoted title before body", func(t *testing.T) {
-		source := `<table><tr><td colspan="2"><a href="/title">Title</a> <img src="/title.png" alt="Title image"></td></tr>` +
-			`<tr><td></td><td><b>Value</b></td></tr><tr><td>Row</td><td><a href="/body">Body</a><img src="/body.png" alt="Body image"></td></tr></table>`
-		got := convertHTMLConfig(t, source, cfg).Markdown
-		if !strings.Contains(got, `[Title](https://example.com/title)`) || !strings.Contains(got, `![Title image](https://example.com/title.png)`) ||
-			strings.Contains(got, `[Body](`) || strings.Contains(got, `![Body image](`) {
-			t.Fatalf("title did not receive the first media budget slots: %q", got)
-		}
-	})
-}
-
 func TestUnsafeTableShapesFallBackWithoutBecomingTables(t *testing.T) {
 	t.Run("unequal native rows", func(t *testing.T) {
 		got := convertHTML(t, `<table><tr><th>A</th><th>B</th></tr><tr><td>only A</td></tr></table>`)
@@ -742,15 +679,6 @@ func TestUnsafeTableShapesFallBackWithoutBecomingTables(t *testing.T) {
 		got := convertHTML(t, `<div role="table"><div role="row"><span role="columnheader">A</span><span role="columnheader">B</span></div><div role="row"><span role="cell">only A</span></div></div>`)
 		if strings.Contains(got.Markdown, "| ---") || !strings.Contains(got.Text, "only A") {
 			t.Fatalf("unexpected conversion: %q", got.Markdown)
-		}
-	})
-
-	t.Run("oversized", func(t *testing.T) {
-		base, _ := url.Parse("https://example.com/")
-		cfg := Config{Base: base, Tables: true, MaxTableCells: 3}
-		got := convertHTMLConfig(t, `<div role="table"><div role="row"><span role="columnheader">A</span><span role="columnheader">B</span></div><div role="row"><span role="cell">1</span><span role="cell">2</span></div></div>`, cfg)
-		if strings.Contains(got.Markdown, "| ---") || !strings.Contains(got.Text, "1") {
-			t.Fatalf("table limit was not respected: %q", got.Markdown)
 		}
 	})
 
