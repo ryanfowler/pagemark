@@ -1633,16 +1633,38 @@ func (c *converter) safeURL(raw string) (string, bool) {
 		}
 	}
 	if c.cfg.Policy.StripTracking {
-		q := u.Query()
-		for k := range q {
-			lk := strings.ToLower(k)
-			if strings.HasPrefix(lk, "utm_") || lk == "fbclid" || lk == "gclid" {
-				q.Del(k)
-			}
-		}
-		u.RawQuery = q.Encode()
+		u.RawQuery = stripTrackingQuery(u.RawQuery)
 	}
 	return u.String(), true
+}
+
+// stripTrackingQuery removes tracking parameters without parsing or re-encoding
+// the query. Query parsing can discard malformed components, so only the key
+// of each ampersand-delimited component is decoded. Components that cannot be
+// decoded are retained unchanged.
+func stripTrackingQuery(rawQuery string) string {
+	components := strings.Split(rawQuery, "&")
+	kept := components[:0]
+	removed := false
+	for _, component := range components {
+		key := component
+		if equals := strings.IndexByte(component, '='); equals >= 0 {
+			key = component[:equals]
+		}
+		decodedKey, err := url.QueryUnescape(key)
+		if err == nil {
+			lowerKey := strings.ToLower(decodedKey)
+			if strings.HasPrefix(lowerKey, "utm_") || lowerKey == "fbclid" || lowerKey == "gclid" {
+				removed = true
+				continue
+			}
+		}
+		kept = append(kept, component)
+	}
+	if !removed {
+		return rawQuery
+	}
+	return strings.Join(kept, "&")
 }
 
 type serializedMedia struct {
