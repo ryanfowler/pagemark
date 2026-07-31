@@ -922,6 +922,44 @@ func TestCodeFenceInfoAndInlineCodePadding(t *testing.T) {
 	}
 }
 
+func TestCodeFencesUseTheShortestDelimiter(t *testing.T) {
+	for _, tc := range []struct {
+		content, want string
+	}{
+		{"```", "~~~\n```\n~~~"},
+		{"~~~", "```\n~~~\n```"},
+		{"```` and ~~", "~~~\n```` and ~~\n~~~"},
+	} {
+		source := "<pre><code>" + tc.content + "</code></pre>"
+		if got := convertHTML(t, source).Markdown; got != tc.want {
+			t.Errorf("content %q: want %q, got %q", tc.content, tc.want, got)
+		}
+	}
+}
+
+func TestLongDelimiterRunsRenderInLinearTime(t *testing.T) {
+	const run = 100_000
+	backticks := strings.Repeat("`", run)
+	if got := convertHTML(t, "<p><code>"+backticks+"</code></p>").Markdown; len(got) != 3*run+4 {
+		t.Fatalf("inline code length=%d, want %d", len(got), 3*run+4)
+	}
+	tildes := strings.Repeat("~", 10)
+	got := convertHTML(t, "<pre><code>"+backticks+tildes+"</code></pre>").Markdown
+	if !strings.HasPrefix(got, strings.Repeat("~", 11)) || !strings.HasSuffix(got, strings.Repeat("~", 11)) {
+		t.Fatalf("fence did not choose the short delimiter: %q", got[:min(len(got), 20)])
+	}
+}
+
+func TestCodeBlockBudgetIsCheckedBeforeRendering(t *testing.T) {
+	for _, delimiter := range []string{"`", "~"} {
+		value := strings.Repeat(delimiter, 100_000)
+		got := convertHTMLConfig(t, "<pre><code>"+value+"</code></pre>", Config{MaxBytes: 30})
+		if got.Markdown != "\n\n[Content truncated]" || !got.Truncated {
+			t.Fatalf("delimiter %q: markdown=%q truncated=%v", delimiter, got.Markdown, got.Truncated)
+		}
+	}
+}
+
 func TestPreformattedStructuralLines(t *testing.T) {
 	tests := []struct {
 		name, source, code string
@@ -956,6 +994,18 @@ func TestNestedSpansInInlineCodeRemainInline(t *testing.T) {
 	got := convertHTML(t, `<p>Use <code><span>foo</span><span>bar</span></code> here.</p>`).Markdown
 	if want := "Use `foobar` here."; got != want {
 		t.Fatalf("want %q, got %q", want, got)
+	}
+}
+
+func TestOutputLimitTrimsBeforeChargingBlockSeparators(t *testing.T) {
+	padded := convertHTMLConfig(t, `<p> text </p>`, Config{MaxBytes: 4})
+	if padded.Markdown != "text" || padded.Truncated {
+		t.Fatalf("padded paragraph: markdown=%q truncated=%v", padded.Markdown, padded.Truncated)
+	}
+
+	empty := convertHTMLConfig(t, `<p>abcd</p><ul></ul>`, Config{MaxBytes: 4})
+	if empty.Markdown != "abcd" || empty.Truncated {
+		t.Fatalf("empty block: markdown=%q truncated=%v", empty.Markdown, empty.Truncated)
 	}
 }
 

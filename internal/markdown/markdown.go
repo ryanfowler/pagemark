@@ -2288,7 +2288,29 @@ func render(doc *Node, max int, pruneHeadings bool) Result {
 	blocks = collapseAdjacentControls(blocks)
 	used, truncated := 0, false
 	for _, n := range blocks {
-		s := strings.TrimSpace(renderBlock(n, 0))
+		// Ordinary blocks must be rendered and trimmed before the separator is
+		// charged. Code blocks are the exception: preflight them first so a large
+		// fence is never allocated merely to discover that it cannot fit.
+		var rendered string
+		fits := true
+		if max > 0 && containsCodeBlock(n) {
+			budget := max - used
+			if len(markdownBlocks) > 0 {
+				budget -= 2
+			}
+			if budget < 0 {
+				truncated = true
+				break
+			}
+			rendered, fits = renderBlockBudget(n, 0, budget)
+		} else {
+			rendered = renderBlock(n, 0)
+		}
+		if !fits {
+			truncated = true
+			break
+		}
+		s := strings.TrimSpace(rendered)
 		if s == "" {
 			continue
 		}
@@ -2296,6 +2318,8 @@ func render(doc *Node, max int, pruneHeadings bool) Result {
 		if len(markdownBlocks) > 0 {
 			add += 2
 		}
+		// Keep this as the authoritative check for ordinary blocks. It uses the
+		// same trimmed representation that is appended to the final output.
 		if max > 0 && used+add > max {
 			truncated = true
 			break
@@ -2492,6 +2516,159 @@ func retainedSections(nodes []*Node) []SectionValue {
 	flush()
 	return sections
 }
+
+func delimiterRuns(value string) (backticks, tildes int) {
+	var currentBackticks, currentTildes int
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '`':
+			currentBackticks++
+			currentTildes = 0
+			if currentBackticks > backticks {
+				backticks = currentBackticks
+			}
+		case '~':
+			currentTildes++
+			currentBackticks = 0
+			if currentTildes > tildes {
+				tildes = currentTildes
+			}
+		default:
+			currentBackticks = 0
+			currentTildes = 0
+		}
+	}
+	return backticks, tildes
+}
+
+func fenceLength(longest int) int {
+	if longest < 2 {
+		return 3
+	}
+	return longest + 1
+}
+
+func codeFence(value, info string) (byte, int) {
+	backticks, tildes := delimiterRuns(value)
+	backtickLength := fenceLength(backticks)
+	tildeLength := fenceLength(tildes)
+	// A backtick fence cannot have backticks in its info string. codeInfo
+	// currently produces a restricted identifier, but keep this invariant here
+	// because Node is also an internal rendering interface.
+	if strings.ContainsRune(info, '`') {
+		backtickLength = int(^uint(0) >> 1)
+	}
+	if backtickLength <= tildeLength {
+		return '`', backtickLength
+	}
+	return '~', tildeLength
+}
+
+func writeFence(b *strings.Builder, delimiter byte, length int) {
+	for i := 0; i < length; i++ {
+		b.WriteByte(delimiter)
+	}
+}
+
+// normalizedCodeValueLength returns the byte length after CR normalization and
+// removal of trailing newlines. It does not allocate, so a large code block can
+// be rejected before the rendered Markdown is built.
+func normalizedCodeValueLength(value string) int {
+	length, lastContent := 0, 0
+	for i := 0; i < len(value); {
+		if value[i] == '\r' {
+			if i+1 < len(value) && value[i+1] == '\n' {
+				i++
+			}
+			length++
+			i++
+			continue
+		}
+		length++
+		if value[i] != '\n' {
+			lastContent = length
+		}
+		i++
+	}
+	return lastContent
+}
+
+func normalizedCodeValue(value string) string {
+	if strings.IndexByte(value, '\r') >= 0 {
+		value = strings.ReplaceAll(strings.ReplaceAll(value, "\r\n", "\n"), "\r", "\n")
+	}
+	return strings.TrimRight(value, "\n")
+}
+
+func codeBlockSize(n *Node, fence int) int {
+	return 2*fence + len(n.Info) + normalizedCodeValueLength(n.Value) + 2
+}
+
+func renderCodeBlock(n *Node, budget int) (string, bool) {
+	delimiter, fence := codeFence(n.Value, n.Info)
+	total := codeBlockSize(n, fence)
+	if budget >= 0 && total > budget {
+		return "", false
+	}
+	value := normalizedCodeValue(n.Value)
+	var b strings.Builder
+	b.Grow(total)
+	writeFence(&b, delimiter, fence)
+	b.WriteString(n.Info)
+	b.WriteByte('\n')
+	b.WriteString(value)
+	b.WriteByte('\n')
+	writeFence(&b, delimiter, fence)
+	return b.String(), true
+}
+
+func containsCodeBlock(n *Node) bool {
+	if n == nil {
+		return false
+	}
+	if n.Kind == CodeBlock {
+		return true
+	}
+	for _, child := range n.Children {
+		if containsCodeBlock(child) {
+			return true
+		}
+	}
+	return false
+}
+
+func nestedCodeBlocksFit(n *Node, budget int) bool {
+	if n == nil {
+		return true
+	}
+	if n.Kind == CodeBlock {
+		_, fence := codeFence(n.Value, n.Info)
+		return codeBlockSize(n, fence) <= budget
+	}
+	for _, child := range n.Children {
+		if !nestedCodeBlocksFit(child, budget) {
+			return false
+		}
+	}
+	return true
+}
+
+// renderBlockBudget performs only the early code-block preflight. Ordinary
+// blocks are checked by render after trimming, because their final size can
+// differ from the raw rendering.
+func renderBlockBudget(n *Node, depth, budget int) (string, bool) {
+	if n == nil {
+		return "", true
+	}
+	if n.Kind == CodeBlock {
+		return renderCodeBlock(n, budget)
+	}
+	if !nestedCodeBlocksFit(n, budget) {
+		return "", false
+	}
+	return renderBlock(n, depth), true
+}
+
 func renderBlock(n *Node, depth int) string {
 	if n == nil {
 		return ""
@@ -2517,12 +2694,8 @@ func renderBlock(n *Node, depth int) string {
 	case Paragraph:
 		return renderInline(n.Children)
 	case CodeBlock:
-		f := "```"
-		for strings.Contains(n.Value, f) {
-			f += "`"
-		}
-		value := strings.ReplaceAll(strings.ReplaceAll(n.Value, "\r\n", "\n"), "\r", "\n")
-		return f + n.Info + "\n" + strings.TrimRight(value, "\n") + "\n" + f
+		value, _ := renderCodeBlock(n, -1)
+		return value
 	case Blockquote:
 		s := renderBlock(&Node{Kind: Document, Children: n.Children}, depth)
 		return "> " + strings.ReplaceAll(s, "\n", "\n> ")
@@ -2632,12 +2805,11 @@ func renderInlineWithHardBreak(ns []*Node, hardBreak string) string {
 			}
 		case InlineCode:
 			v := n.Value
-			tick := "`"
-			for strings.Contains(v, tick) {
-				tick += "`"
-			}
+			longest, _ := delimiterRuns(v)
+			tickLength := longest + 1
 			var code strings.Builder
-			code.WriteString(tick)
+			code.Grow(len(v) + 2*tickLength + 2)
+			writeFence(&code, '`', tickLength)
 			needsPadding := strings.HasPrefix(v, "`") || strings.HasSuffix(v, "`") ||
 				((strings.HasPrefix(v, " ") || strings.HasSuffix(v, " ")) && strings.Trim(v, " ") != "")
 			if needsPadding {
@@ -2647,7 +2819,7 @@ func renderInlineWithHardBreak(ns []*Node, hardBreak string) string {
 			if needsPadding {
 				code.WriteByte(' ')
 			}
-			code.WriteString(tick)
+			writeFence(&code, '`', tickLength)
 			value = code.String()
 		case Link:
 			label := renderInlineWithHardBreak(n.Children, hardBreak)
