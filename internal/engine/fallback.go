@@ -216,11 +216,22 @@ func (a *analysis) reconstructArticleRegion() []*html.Node {
 	if len(candidates) == 0 {
 		return nil
 	}
-	order := a.documentOrder()
+	// Record order only on candidate containers. A document-wide pointer map is
+	// expensive on large pages and the rank tie-break needs only these ordinals.
+	ordinal := 0
+	walk(a.root, func(n *html.Node) bool {
+		if n.Type == html.ElementNode {
+			if e := evidence[n]; e != nil {
+				e.documentOrder = ordinal
+			}
+		}
+		ordinal++
+		return true
+	})
 	sort.SliceStable(candidates, func(i, j int) bool {
 		ri, rj := regionRank(candidates[i]), regionRank(candidates[j])
 		if ri == rj {
-			return order[candidates[i].node] < order[candidates[j].node]
+			return candidates[i].documentOrder < candidates[j].documentOrder
 		}
 		return ri > rj
 	})
@@ -241,22 +252,31 @@ func (a *analysis) reconstructArticleRegion() []*html.Node {
 		}
 	}
 
-	roots := []*html.Node{root}
 	primaryEvidence := evidence[root]
 	if primaryEvidence == nil {
 		primaryEvidence = primary
 	}
-	if root.Parent != nil {
-		for sibling := root.Parent.FirstChild; sibling != nil; sibling = sibling.NextSibling {
-			if sibling == root || sibling.Type != html.ElementNode || a.unsafeArticleRegion(sibling) {
-				continue
-			}
-			if a.qualifyingArticleSibling(sibling, root, evidence[sibling], regionRank(primaryEvidence)) {
-				roots = append(roots, sibling)
-			}
+	if root.Parent == nil {
+		return []*html.Node{root}
+	}
+
+	// All additional roots are siblings of the primary root. Walking that sibling
+	// list emits unique, non-overlapping roots in document order without sorting.
+	primaryRank := regionRank(primaryEvidence)
+	roots := make([]*html.Node, 0, 4)
+	for sibling := root.Parent.FirstChild; sibling != nil; sibling = sibling.NextSibling {
+		if sibling == root {
+			roots = append(roots, root)
+			continue
+		}
+		if sibling.Type != html.ElementNode || a.unsafeArticleRegion(sibling) {
+			continue
+		}
+		if a.qualifyingArticleSibling(sibling, root, evidence[sibling], primaryRank) {
+			roots = append(roots, sibling)
 		}
 	}
-	return a.normalizeSourceRoots(roots, order)
+	return roots
 }
 
 // nonOverlappingNearCandidates keeps the highest-ranked candidate from each
@@ -383,40 +403,6 @@ func meaningfulSharedClass(aNode, bNode *html.Node) bool {
 		}
 	}
 	return false
-}
-
-func (a *analysis) documentOrder() map[*html.Node]int {
-	order := make(map[*html.Node]int, a.elements)
-	i := 0
-	walk(a.root, func(n *html.Node) bool {
-		order[n] = i
-		i++
-		return true
-	})
-	return order
-}
-
-func (a *analysis) normalizeSourceRoots(nodes []*html.Node, order map[*html.Node]int) []*html.Node {
-	sort.SliceStable(nodes, func(i, j int) bool { return order[nodes[i]] < order[nodes[j]] })
-	out := make([]*html.Node, 0, len(nodes))
-	seen := make(map[*html.Node]bool)
-	for _, n := range nodes {
-		if n == nil || seen[n] {
-			continue
-		}
-		covered := false
-		for _, ancestor := range out {
-			if nodeWithin(n, ancestor) {
-				covered = true
-				break
-			}
-		}
-		if !covered {
-			out = append(out, n)
-			seen[n] = true
-		}
-	}
-	return out
 }
 
 func (a *analysis) highRecall() []*html.Node {
