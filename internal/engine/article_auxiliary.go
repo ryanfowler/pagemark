@@ -191,15 +191,7 @@ func isScriptRequirementNotice(n *html.Node) bool {
 	if tag != "p" && tag != "div" && tag != "section" && tag != "noscript" {
 		return false
 	}
-	// Page-wide wrappers cannot be concise notices. Reject them with a bounded,
-	// allocation-free scan before collecting and normalizing their full text.
-	if normalizedTextAtLeast(n, 301) {
-		return false
-	}
-	text := strings.ToLower(normalizeText(nodeText(n)))
-	if !strings.Contains(text, "enable javascript") ||
-		(!strings.Contains(text, "web application") && !strings.Contains(text, "run this app") &&
-			!strings.Contains(text, "requires javascript")) {
+	if !hasConciseScriptRequirementText(n) {
 		return false
 	}
 	if tag == "noscript" {
@@ -213,6 +205,102 @@ func isScriptRequirementNotice(n *html.Node) bool {
 		}
 	}
 	return true
+}
+
+// hasConciseScriptRequirementText performs normalization, length counting,
+// lowercasing, and phrase matching in one bounded subtree scan. Its text-node
+// separators match nodeText, so phrases can span inline elements.
+func hasConciseScriptRequirementText(n *html.Node) bool {
+	s := scriptRequirementTextScanner{}
+	s.scan(n)
+	return !s.tooLong && s.enableJavaScript && s.applicationContext
+}
+
+type scriptRequirementTextScanner struct {
+	window                         [32]byte
+	windowLen, windowStart, runes  int
+	textNodes                      int
+	started, pendingSpace, tooLong bool
+	enableJavaScript               bool
+	applicationContext             bool
+}
+
+// scan returns true when the 301st normalized rune makes further traversal
+// unnecessary.
+func (s *scriptRequirementTextScanner) scan(n *html.Node) bool {
+	if n == nil || dom.Hidden(n) {
+		return false
+	}
+	if n.Type == html.TextNode {
+		if s.textNodes > 0 && s.started {
+			s.pendingSpace = true
+		}
+		s.textNodes++
+		for text := n.Data; text != ""; {
+			r := rune(text[0])
+			size := 1
+			space := r == ' ' || r >= '\t' && r <= '\r'
+			if r >= utf8.RuneSelf {
+				r, size = utf8.DecodeRuneInString(text)
+				space = unicode.IsSpace(r)
+			}
+			text = text[size:]
+			if space {
+				if s.started {
+					s.pendingSpace = true
+				}
+				continue
+			}
+			if s.pendingSpace {
+				if s.push(' ') {
+					return true
+				}
+				s.pendingSpace = false
+			}
+			if s.push(unicode.ToLower(r)) {
+				return true
+			}
+			s.started = true
+		}
+		return false
+	}
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if s.scan(child) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *scriptRequirementTextScanner) push(r rune) bool {
+	s.runes++
+	if s.runes == 301 {
+		s.tooLong = true
+		return true
+	}
+	c := byte(0)
+	if r <= unicode.MaxASCII {
+		c = byte(r)
+	}
+	pushTextWindow(&s.window, &s.windowLen, &s.windowStart, c)
+	switch c {
+	case 't':
+		if !s.enableJavaScript {
+			s.enableJavaScript = windowHasSuffix(&s.window, s.windowLen, s.windowStart, "enable javascript", false)
+		}
+		if !s.applicationContext {
+			s.applicationContext = windowHasSuffix(&s.window, s.windowLen, s.windowStart, "requires javascript", false)
+		}
+	case 'n':
+		if !s.applicationContext {
+			s.applicationContext = windowHasSuffix(&s.window, s.windowLen, s.windowStart, "web application", false)
+		}
+	case 'p':
+		if !s.applicationContext {
+			s.applicationContext = windowHasSuffix(&s.window, s.windowLen, s.windowStart, "run this app", false)
+		}
+	}
+	return false
 }
 
 func isCopyrightNotice(n *html.Node) bool {
@@ -264,7 +352,16 @@ func containsCopyrightYear(text string) bool {
 // A generic .footer outside primary semantic content is page furniture. The
 // ancestor check preserves documentation for footer-named components.
 func isPageFooterConvention(n *html.Node) bool {
-	if !hasExactClass(n, "footer") && !hasClassPrefix(n, "footer") && !hasClassPrefix(n, "site-footer") {
+	named := false
+	for class := range strings.FieldsSeq(attrValue(n, "class")) {
+		class = strings.ToLower(class)
+		if class == "footer" || strings.HasPrefix(class, "footer-") || strings.HasPrefix(class, "footer_") ||
+			class == "site-footer" || strings.HasPrefix(class, "site-footer-") || strings.HasPrefix(class, "site-footer_") {
+			named = true
+			break
+		}
+	}
+	if !named {
 		return false
 	}
 	for p := n.Parent; p != nil; p = p.Parent {
@@ -283,6 +380,15 @@ func isCookieConsentRegion(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
+	// Reject ordinary elements from local attributes before walking ancestors or
+	// scanning controls in the candidate subtree.
+	id, class := attrValue(n, "id"), attrValue(n, "class")
+	subject := containsAnyFold(id, "cookie", "consent") || containsAnyFold(class, "cookie", "consent")
+	panel := containsAnyFold(id, "banner", "dialog", "modal", "notice", "preferences", "popup", "pop-up") ||
+		containsAnyFold(class, "banner", "dialog", "modal", "notice", "preferences", "popup", "pop-up")
+	if !subject || !panel {
+		return false
+	}
 	insideMain := false
 	for p := n; p != nil; p = p.Parent {
 		if p.Type != html.ElementNode {
@@ -292,12 +398,6 @@ func isCookieConsentRegion(n *html.Node) bool {
 			return false
 		}
 		insideMain = insideMain || strings.EqualFold(p.Data, "main")
-	}
-	identifier := strings.ToLower(attrValue(n, "id") + " " + attrValue(n, "class"))
-	subject := containsAny(identifier, "cookie", "consent")
-	panel := containsAny(identifier, "banner", "dialog", "modal", "notice", "preferences", "popup", "pop-up")
-	if !subject || !panel {
-		return false
 	}
 	// Inside a broad application main, naming alone is ambiguous with authored
 	// documentation. Real consent UI has controls; an explanatory section with
@@ -783,9 +883,14 @@ func hasFormAncestor(n *html.Node) bool {
 }
 
 func hasFilterStructureMarker(n *html.Node) bool {
-	for _, convention := range []string{"filters", "filter-section", "filter-panel", "filter-group", "filter-controls", "filter-form", "refine-results"} {
-		if hasClassConvention(n, convention) || hasExactClass(n, convention) {
-			return true
+	conventions := [...]string{"filters", "filter-section", "filter-panel", "filter-group", "filter-controls", "filter-form", "refine-results"}
+	for class := range strings.FieldsSeq(attrValue(n, "class")) {
+		class = strings.ToLower(strings.Trim(class, "_- "))
+		for _, convention := range conventions {
+			if class == convention || strings.HasPrefix(class, convention+"--") ||
+				strings.HasPrefix(class, convention+"__") || strings.Contains(class, "-"+convention) {
+				return true
+			}
 		}
 	}
 	id := strings.ToLower(strings.TrimSpace(attrValue(n, "id")))
@@ -871,11 +976,28 @@ func (a *analysis) overrideIrrelevant(n *html.Node, irrelevant bool) {
 	})
 }
 
+// baseAuxiliaryNode caches page-type-independent auxiliary classification.
+// Type inference, listing detection, and final scoring all query this same
+// evidence, so each element must pay for its local classification only once.
+func (a *analysis) baseAuxiliaryNode(n *html.Node) bool {
+	if state := a.nodeStates[n].baseAuxiliary; state != 0 {
+		return state == 2
+	}
+	auxiliary := irrelevantNode(n) || isAdvertisementRegion(n)
+	state := a.nodeStates[n]
+	state.baseAuxiliary = 1
+	if auxiliary {
+		state.baseAuxiliary = 2
+	}
+	a.nodeStates[n] = state
+	return auxiliary
+}
+
 func (a *analysis) isIrrelevantNode(n *html.Node) bool {
 	if state := a.nodeStates[n].irrelevant; state != 0 {
 		return state == 2
 	}
-	irrelevant := irrelevantNode(n) || isAdvertisementRegion(n)
+	irrelevant := a.baseAuxiliaryNode(n)
 	// An empty comments header is auxiliary regardless of the selected profile.
 	// This also covers generic pages, where article-only filtering would otherwise
 	// allow labels such as “thread” and “discussion” into Markdown.
@@ -915,7 +1037,7 @@ func (a *analysis) inferenceAuxiliaryBlock(n *html.Node) bool {
 			a.cacheInferenceAuxiliaryPath(n, p, 2)
 			return false
 		}
-		auxiliary := irrelevantNode(p) || isAdvertisementRegion(p)
+		auxiliary := a.baseAuxiliaryNode(p)
 		if !auxiliary && p.Type == html.ElementNode && (strings.EqualFold(p.Data, "aside") ||
 			elementContainsAny(p, "sidebar")) {
 			// Asides and explicitly named sidebars may contain complete-looking

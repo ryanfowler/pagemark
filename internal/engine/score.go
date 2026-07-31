@@ -90,7 +90,6 @@ func (a *analysis) score(pt PageType, profile scoringProfile) {
 				continue
 			}
 			tag := strings.ToLower(p.Data)
-			tokens := elementTokens(p)
 			if tag == "main" {
 				score += 2
 				a.addReason(b, "inside main")
@@ -120,11 +119,14 @@ func (a *analysis) score(pt PageType, profile scoringProfile) {
 					a.addReason(b, "article evidence overrides weak label")
 				}
 			}
-			if pt == PageTypeDiscussion && containsAny(tokens, "comment", "comments", "answer", "post", "thread") {
+			if pt == PageTypeDiscussion && containsAny(elementTokens(p), "comment", "comments", "answer", "post", "thread") {
 				score += 2
 			}
-			if (pt == PageTypeListing || pt == PageTypeCollection) && containsAny(tokens, "card", "item", "result", "product") {
-				score += 1.5
+			if pt == PageTypeListing || pt == PageTypeCollection {
+				flags := a.inferenceTokenFlags(p)
+				if flags&(inferenceTokenCard|inferenceTokenItem|inferenceTokenResult|inferenceTokenResults|inferenceTokenProduct) != 0 {
+					score += 1.5
+				}
 			}
 		}
 		if b.kind == "p" && (pt == PageTypeArticle || pt == PageTypeDocumentation || pt == PageTypeDiscussion || pt == PageTypeProduct || pt == PageTypeService) {
@@ -270,7 +272,7 @@ func (a *analysis) makeExtractionAttempt(profile scoringProfile, nodes []*html.N
 		if !b.selected {
 			continue
 		}
-		if a.hasIrrelevantAncestor(b.node) || hardHidden(b.node) {
+		if a.hasIrrelevantAncestor(b.node) || a.hidden(b.node) {
 			attempt.hardExcluded = true
 			continue
 		}
@@ -302,7 +304,7 @@ func (a *analysis) shouldRetryArticle(pt PageType, nodes []*html.Node) bool {
 	chars, links, blocks := 0, 0, 0
 	for i := range a.blocks {
 		b := &a.blocks[i]
-		if !b.selected || a.hasIrrelevantAncestor(b.node) || hardHidden(b.node) {
+		if !b.selected || a.hasIrrelevantAncestor(b.node) || a.hidden(b.node) {
 			continue
 		}
 		chars += b.textChars()

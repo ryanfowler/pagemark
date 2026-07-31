@@ -142,7 +142,7 @@ func textRuneSpace(s string) (bool, int) {
 }
 func attrValue(n *html.Node, key string) string {
 	for _, x := range n.Attr {
-		if strings.EqualFold(x.Key, key) {
+		if x.Key == key {
 			return x.Val
 		}
 	}

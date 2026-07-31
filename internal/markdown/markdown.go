@@ -58,7 +58,6 @@ type Node struct {
 
 type URLPolicy struct {
 	Schemes       []string
-	AllowMailto   bool
 	MaxLength     int
 	StripTracking bool
 }
@@ -67,9 +66,11 @@ type Config struct {
 	Links, Images, Tables bool
 	MaxBytes              int
 	Policy                URLPolicy
-	// Exclude removes extraction-specific boilerplate subtrees. Hidden DOM
-	// handling remains built in to the converter.
+	// Exclude removes extraction-specific boilerplate subtrees.
 	Exclude func(*html.Node) bool
+	// Hidden can provide a visibility decision cached by the caller. If it is
+	// nil, the converter evaluates DOM visibility itself.
+	Hidden func(*html.Node) bool
 	// TextPreformatted marks a page-wide text interface that should retain inline
 	// links and line breaks instead of being emitted as source code.
 	TextPreformatted func(*html.Node) bool
@@ -124,11 +125,18 @@ func enclosingSection(n *html.Node) *html.Node {
 	return nil
 }
 
+func (c *converter) hidden(n *html.Node) bool {
+	if c.cfg.Hidden != nil {
+		return c.cfg.Hidden(n)
+	}
+	return dom.Hidden(n)
+}
+
 func (c *converter) skip(n *html.Node) bool {
 	if n == nil || isSourceCodeLineNumberGutter(n) || isImageAttachmentMetadata(n) || (c.cfg.Exclude != nil && c.cfg.Exclude(n)) {
 		return true
 	}
-	if dom.Hidden(n) {
+	if c.hidden(n) {
 		// SVG is opaque to all generic traversal. The converter only admits its
 		// accessible label through the dedicated SVG branch below.
 		return !(c.cfg.Images && dom.AccessibleSVGLabel(n) != "")
@@ -790,7 +798,7 @@ func (c *converter) pruneMathNode(n *html.Node, includeAriaHidden bool) bool {
 	if includeAriaHidden {
 		return dom.HiddenExceptARIA(n)
 	}
-	return dom.Hidden(n)
+	return c.hidden(n)
 }
 
 func (c *converter) firstMathDescendant(n *html.Node, match func(*html.Node) bool) *html.Node {
@@ -1516,7 +1524,7 @@ func (c *converter) decorativeHeadingPermalink(link *html.Node) bool {
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode {
-			if dom.Hidden(n) {
+			if c.hidden(n) {
 				iconOnly = true
 				return
 			}
@@ -1613,9 +1621,6 @@ func (c *converter) safeURL(raw string) (string, bool) {
 		if scheme == strings.ToLower(s) {
 			allowed = true
 		}
-	}
-	if scheme == "mailto" && c.cfg.Policy.AllowMailto {
-		allowed = true
 	}
 	if !allowed {
 		return "", false

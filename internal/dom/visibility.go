@@ -26,28 +26,9 @@ func hiddenElement(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	// The HTML parser canonicalizes tag names. Keep the overwhelmingly common
-	// path allocation-free and only normalize caller-built mixed-case trees.
-	tag := n.Data
-	switch tag {
+	switch n.Data {
 	case "script", "style", "template", "canvas", "svg", "iframe", "object", "embed":
 		return true
-	}
-	for i := 0; i < len(tag); i++ {
-		if tag[i] >= 'A' && tag[i] <= 'Z' {
-			switch strings.ToLower(tag) {
-			case "script", "style", "template", "canvas", "svg", "iframe", "object", "embed":
-				return true
-			}
-			break
-		}
-		if tag[i] >= utf8.RuneSelf {
-			// Preserve Unicode case-folding for manually constructed trees.
-			return strings.EqualFold(tag, "script") || strings.EqualFold(tag, "style") ||
-				strings.EqualFold(tag, "template") || strings.EqualFold(tag, "canvas") ||
-				strings.EqualFold(tag, "svg") || strings.EqualFold(tag, "iframe") ||
-				strings.EqualFold(tag, "object") || strings.EqualFold(tag, "embed")
-		}
 	}
 	return false
 }
@@ -57,7 +38,7 @@ func hiddenElement(n *html.Node) bool {
 // never descend into SVG text, links, or metadata; callers that explicitly
 // support this representation may use this function before their hidden check.
 func AccessibleSVGLabel(n *html.Node) string {
-	if n == nil || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "svg") ||
+	if n == nil || n.Type != html.ElementNode || n.Data != "svg" ||
 		!strings.EqualFold(strings.TrimSpace(attr(n, "role")), "img") {
 		return ""
 	}
@@ -87,54 +68,9 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 	}
 	open := false
 	style := ""
-	utilityHidden, responsiveUtilityVisible := false, false
+	utilityHidden := false
 	for _, a := range n.Attr {
-		key := a.Key
-		// Parsed HTML has canonical lowercase names, so dispatch those directly.
-		// Only manually constructed mixed-case trees need case folding. This keeps
-		// common attributes such as class and href to one switch and a short ASCII
-		// scan instead of comparing them with every visibility key.
-		switch key {
-		case "hidden", "inert", "open", "aria-hidden", "aria-modal", "style", "class":
-		default:
-			// A mixed-case spelling can only match one of the visibility keys
-			// when its length matches. Reject the many class, data, href, and
-			// framework attributes before scanning their bytes for uppercase.
-			switch len(key) {
-			case len("open"), len("inert"), len("hidden"), len("aria-modal"), len("aria-hidden"):
-			default:
-				continue
-			}
-			mixedCase := false
-			for i := 0; i < len(key); i++ {
-				if key[i] >= 'A' && key[i] <= 'Z' {
-					mixedCase = true
-					break
-				}
-			}
-			if !mixedCase {
-				continue
-			}
-			switch {
-			case strings.EqualFold(key, "class"):
-				key = "class"
-			case strings.EqualFold(key, "hidden"):
-				key = "hidden"
-			case strings.EqualFold(key, "inert"):
-				key = "inert"
-			case strings.EqualFold(key, "open"):
-				key = "open"
-			case strings.EqualFold(key, "aria-hidden"):
-				key = "aria-hidden"
-			case strings.EqualFold(key, "aria-modal"):
-				key = "aria-modal"
-			case strings.EqualFold(key, "style"):
-				key = "style"
-			default:
-				continue
-			}
-		}
-		switch key {
+		switch a.Key {
 		case "hidden", "inert":
 			return true
 		case "open":
@@ -151,26 +87,67 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 			style = a.Val
 		case "class":
 			// Utility-first and component frameworks conventionally use an exact
-			// hidden class as their display:none primitive. A responsive display
-			// utility means the element is nevertheless visible at some viewport,
-			// and extraction does not commit to the smallest viewport.
-			for class := range strings.FieldsSeq(a.Val) {
-				utilityHidden = utilityHidden || strings.EqualFold(class, "hidden")
-				responsiveUtilityVisible = responsiveUtilityVisible || responsiveDisplayUtility(class)
+			// hidden class as their display:none primitive.
+			if !utilityHidden && hasHiddenUtilityToken(a.Val) {
+				utilityHidden = true
 			}
 		}
 	}
-	if utilityHidden && !responsiveUtilityVisible {
-		return true
+	if utilityHidden {
+		// A responsive display utility means the element is visible at some
+		// viewport. Scan for one only after an exact hidden token is known to
+		// exist; most class attributes cannot affect visibility.
+		if !hasResponsiveDisplayUtility(n) {
+			return true
+		}
 	}
 	// A dialog is not rendered until its boolean open attribute is present.
-	if (n.Data == "dialog" || len(n.Data) == len("dialog") && strings.EqualFold(n.Data, "dialog")) && !open {
+	if n.Data == "dialog" && !open {
 		return true
 	}
 	if style == "" {
 		return false
 	}
 	return hiddenStyle(style)
+}
+
+// hasHiddenUtilityToken uses a substring gate before splitting the class
+// attribute. Parsed utility classes are lowercase. The uppercase fallback
+// preserves support for manually constructed trees without penalizing the
+// common path.
+func hasHiddenUtilityToken(value string) bool {
+	if !strings.Contains(value, "hidden") {
+		hasUpper := false
+		for i := 0; i < len(value); i++ {
+			if value[i] >= 'A' && value[i] <= 'Z' {
+				hasUpper = true
+				break
+			}
+		}
+		if !hasUpper {
+			return false
+		}
+	}
+	for class := range strings.FieldsSeq(value) {
+		if len(class) == len("hidden") && strings.EqualFold(class, "hidden") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasResponsiveDisplayUtility(n *html.Node) bool {
+	for _, a := range n.Attr {
+		if a.Key != "class" {
+			continue
+		}
+		for class := range strings.FieldsSeq(a.Val) {
+			if responsiveDisplayUtility(class) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func responsiveDisplayUtility(class string) bool {
@@ -747,7 +724,7 @@ func asciiPrefixFold(value, prefix string) bool {
 
 func attr(n *html.Node, key string) string {
 	for _, a := range n.Attr {
-		if strings.EqualFold(a.Key, key) {
+		if a.Key == key {
 			return a.Val
 		}
 	}
