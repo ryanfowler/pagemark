@@ -191,8 +191,13 @@ func isScriptRequirementNotice(n *html.Node) bool {
 	if tag != "p" && tag != "div" && tag != "section" && tag != "noscript" {
 		return false
 	}
+	// Page-wide wrappers cannot be concise notices. Reject them with a bounded,
+	// allocation-free scan before collecting and normalizing their full text.
+	if normalizedTextAtLeast(n, 301) {
+		return false
+	}
 	text := strings.ToLower(normalizeText(nodeText(n)))
-	if utf8.RuneCountInString(text) > 300 || !strings.Contains(text, "enable javascript") ||
+	if !strings.Contains(text, "enable javascript") ||
 		(!strings.Contains(text, "web application") && !strings.Contains(text, "run this app") &&
 			!strings.Contains(text, "requires javascript")) {
 		return false
@@ -361,33 +366,31 @@ func tocStatePrefixSegment(segment string) bool {
 }
 
 func isConventionallyNamedNavigation(n *html.Node) bool {
-	if n == nil || n.Type != html.ElementNode || !hasNavigationShape(n) {
+	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	// Breadcrumbs are often ordered lists rather than nav elements (for
-	// example, SiteBreadcrumb on go.dev). Their links are page chrome even when
-	// the current item repeats the document title.
-	if hasCompactClass(n, "breadcrumb", "breadcrumbs") {
-		return true
-	}
-	for class := range strings.FieldsSeq(strings.ToLower(attrValue(n, "class"))) {
-		class = strings.Trim(class, "_-")
-		if strings.Contains(class, "breadcrumb") && hasNavigationShape(n) {
-			return true
-		}
-		if class == "nav" || class == "navbar" || strings.HasPrefix(class, "nav-") ||
-			strings.HasPrefix(class, "nav_") || strings.HasSuffix(class, "-nav") || strings.HasSuffix(class, "_nav") {
-			return true
+	// Check the cheap class-name condition first. Most elements are not named as
+	// navigation, so they must not pay for a complete subtree evidence scan.
+	named := hasCompactClass(n, "breadcrumb", "breadcrumbs")
+	if !named {
+		for class := range strings.FieldsSeq(strings.ToLower(attrValue(n, "class"))) {
+			class = strings.Trim(class, "_-")
+			if strings.Contains(class, "breadcrumb") || class == "nav" || class == "navbar" ||
+				strings.HasPrefix(class, "nav-") || strings.HasPrefix(class, "nav_") ||
+				strings.HasSuffix(class, "-nav") || strings.HasSuffix(class, "_nav") {
+				named = true
+				break
+			}
 		}
 	}
-	return false
+	return named && hasNavigationShape(n)
 }
 
 // Image-only headings linked to the site root are publication wordmarks, not
 // article headings. Requiring the heading, home link, and image-only shape
 // leaves linked article headings and ordinary figures unaffected.
 func isLinkedImageMasthead(n *html.Node) bool {
-	if n == nil || n.Type != html.ElementNode || !isHeadingTag(strings.ToLower(n.Data)) || normalizeText(nodeText(n)) != "" {
+	if n == nil || n.Type != html.ElementNode || !isHeadingTag(strings.ToLower(n.Data)) || normalizedTextAtLeast(n, 1) {
 		return false
 	}
 	link := n.FirstChild
@@ -584,11 +587,8 @@ func headingDocumentsStructure(n *html.Node) bool {
 }
 
 func hasNavigationShape(n *html.Node) bool {
-	textLength := utf8.RuneCountInString(normalizeText(nodeText(n)))
-	if textLength > 0 && float64(linkTextLength(n))/float64(textLength) >= .6 {
-		return true
-	}
-	return controls(n) > 1
+	textLength, linkedLength, controlCount := subtreeShapeEvidence(n)
+	return textLength > 0 && float64(linkedLength)/float64(textLength) >= .6 || controlCount > 1
 }
 
 // isBreadcrumbLike covers older CMS and wiki templates that emit a plain
@@ -696,7 +696,7 @@ func hasPrimaryContentDescendant(n *html.Node) bool {
 		}
 		if !hasFormAncestor(current) {
 			if isListingRecordElement(current) &&
-				(utf8.RuneCountInString(normalizeText(nodeText(current))) >= 40 || hasResultLink(current)) {
+				(normalizedTextAtLeast(current, 40) || hasResultLink(current)) {
 				found = true
 				return false
 			}
@@ -736,7 +736,7 @@ func hasResultLink(n *html.Node) bool {
 			return false
 		}
 		if strings.EqualFold(current.Data, "a") && strings.TrimSpace(attrValue(current, "href")) != "" &&
-			normalizeText(nodeText(current)) != "" {
+			normalizedTextAtLeast(current, 1) {
 			found = true
 			return false
 		}
@@ -761,11 +761,11 @@ func substantiveResultRegion(n *html.Node) bool {
 		if current != n && strings.EqualFold(current.Data, "form") {
 			return false
 		}
-		if isHeadingTag(strings.ToLower(current.Data)) && normalizeText(nodeText(current)) != "" {
+		if isHeadingTag(strings.ToLower(current.Data)) && normalizedTextAtLeast(current, 1) {
 			heading = true
 		}
 		if (strings.EqualFold(current.Data, "p") || strings.EqualFold(current.Data, "blockquote")) &&
-			utf8.RuneCountInString(normalizeText(nodeText(current))) >= 20 {
+			normalizedTextAtLeast(current, 20) {
 			prose = true
 		}
 		return !(heading && prose)
@@ -1231,7 +1231,7 @@ func hasDeepLeadingAuxiliaryHeading(n *html.Node) bool {
 			label = normalizedLabel(nodeText(x))
 			return false
 		}
-		if x != n && (tag == "p" || tag == "blockquote" || tag == "pre") && normalizeText(nodeText(x)) != "" {
+		if x != n && (tag == "p" || tag == "blockquote" || tag == "pre") && normalizedTextAtLeast(x, 1) {
 			label = "content"
 			return false
 		}
@@ -1431,7 +1431,7 @@ func isArticleTaxonomyRegion(n *html.Node) bool {
 			tagLinks++
 			return false
 		}
-		if strings.EqualFold(x.Data, "p") && normalizeText(nodeText(x)) != "" {
+		if strings.EqualFold(x.Data, "p") && normalizedTextAtLeast(x, 1) {
 			proseParagraphs++
 			return false
 		}
@@ -1787,7 +1787,7 @@ func (a *analysis) subtreeHasRelevantArticleText(n *html.Node) (found bool) {
 		}
 		if x.Type == html.ElementNode {
 			tag := strings.ToLower(x.Data)
-			if (tag == "p" || tag == "li" || isHeadingTag(tag)) && normalizeText(nodeText(x)) != "" {
+			if (tag == "p" || tag == "li" || isHeadingTag(tag)) && normalizedTextAtLeast(x, 1) {
 				found = true
 				return false
 			}
@@ -1804,7 +1804,7 @@ func subtreeHasArticleText(n *html.Node) (found bool) {
 		}
 		if x.Type == html.ElementNode {
 			tag := strings.ToLower(x.Data)
-			if (tag == "p" || tag == "li" || isHeadingTag(tag)) && normalizeText(nodeText(x)) != "" {
+			if (tag == "p" || tag == "li" || isHeadingTag(tag)) && normalizedTextAtLeast(x, 1) {
 				found = true
 				return false
 			}
@@ -3010,7 +3010,7 @@ func leadingRegionHasAuxiliaryHeading(n *html.Node, limit int) bool {
 				found = auxiliaryLabels[normalizedLabel(nodeText(ch))]
 				continue
 			}
-			if isBlockTag(tag) && normalizeText(nodeText(ch)) != "" {
+			if isBlockTag(tag) && normalizedTextAtLeast(ch, 1) {
 				stopped = true
 				continue
 			}

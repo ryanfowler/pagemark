@@ -88,7 +88,7 @@ func extractBytes(input []byte, pageURL string, o options) (*Document, error) {
 	// therefore exposes that fallback as text. Reparse only when the ordinary
 	// result is empty or tiny; normal pages keep the single-parse fast path and
 	// pages with both versions do not duplicate their content.
-	if (doc == nil || utf8.RuneCountInString(doc.Text) < 120) && bytes.Contains(bytes.ToLower(input), []byte("<noscript")) {
+	if (doc == nil || utf8.RuneCountInString(doc.Text) < 120) && containsASCIIFoldBytes(input, "<noscript") {
 		fallbackRoot, parseErr := html.ParseWithOptions(bytes.NewReader(input), html.ParseOptionEnableScripting(false))
 		if parseErr == nil {
 			if fallback, fallbackErr := extractNode(fallbackRoot, pageURL, o); fallbackErr == nil &&
@@ -102,6 +102,34 @@ func extractBytes(input []byte, pageURL string, o options) (*Document, error) {
 		}
 	}
 	return doc, extractErr
+}
+
+// containsASCIIFoldBytes searches HTML syntax without copying and lowercasing
+// the complete input. HTML tag names use ASCII case-insensitive matching.
+func containsASCIIFoldBytes(input []byte, pattern string) bool {
+	for len(input) >= len(pattern) {
+		i := bytes.IndexByte(input, pattern[0])
+		if i < 0 || len(input)-i < len(pattern) {
+			return false
+		}
+		input = input[i:]
+		matched := true
+		for j := 1; j < len(pattern); j++ {
+			c := input[j]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != pattern[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+		input = input[1:]
+	}
+	return false
 }
 
 // ExtractNode returns useful content from a parsed HTML tree.
