@@ -286,14 +286,14 @@ func (a *analysis) unmarkedListingRecordShape(n *html.Node) bool {
 			return true
 		}
 		tag := strings.ToLower(current.Data)
-		if isHeadingTag(tag) && normalizeText(nodeText(current)) != "" {
+		if isHeadingTag(tag) && normalizedTextAtLeast(current, 1) {
 			headings++
 			return headings <= 1
 		}
 		if tag == "p" || tag == "blockquote" {
-			proseOrLink = proseOrLink || normalizeText(nodeText(current)) != ""
+			proseOrLink = proseOrLink || normalizedTextAtLeast(current, 1)
 		}
-		if tag == "a" && attrValue(current, "href") != "" && normalizeText(nodeText(current)) != "" {
+		if tag == "a" && attrValue(current, "href") != "" && normalizedTextAtLeast(current, 1) {
 			proseOrLink = true
 		}
 		return headings <= 1

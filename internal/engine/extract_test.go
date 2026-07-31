@@ -4491,7 +4491,7 @@ func TestContainsWordSequence(t *testing.T) {
 }
 
 func TestNoscriptFallbackForScriptDrivenPage(t *testing.T) {
-	source := []byte(`<!doctype html><html><head><title>Forum thread - Example Forum</title></head><body><header><a href="/">Example Forum</a></header><main id="app"></main><noscript><main><h1>Forum thread</h1><article><p>This is the complete server-rendered fallback post, with enough useful prose to be selected instead of the empty application shell.</p><p>A second paragraph makes clear that this fallback is substantive primary content.</p></article></main></noscript></body></html>`)
+	source := []byte(`<!doctype html><html><head><title>Forum thread - Example Forum</title></head><body><header><a href="/">Example Forum</a></header><main id="app"></main><NoScRiPt><main><h1>Forum thread</h1><article><p>This is the complete server-rendered fallback post, with enough useful prose to be selected instead of the empty application shell.</p><p>A second paragraph makes clear that this fallback is substantive primary content.</p></article></main></NoScRiPt></body></html>`)
 	doc, err := ExtractBytes(source, "https://example.com/thread/1", withDiagnostics())
 	if err != nil {
 		t.Fatal(err)

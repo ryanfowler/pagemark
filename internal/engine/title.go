@@ -196,7 +196,7 @@ func (a *analysis) leadingSelectedHeading(nodes []*html.Node, cfg markdown.Confi
 			// Publication furniture may precede a title. Other rendered blocks with
 			// text establish that a later heading is a section, not the title.
 			if isBlockTag(tag) && tag != "div" && tag != "main" && tag != "article" && tag != "section" && tag != "header" &&
-				normalizeText(nodeText(n)) != "" && !isPublicationFurnitureBlock(n) {
+				normalizedTextAtLeast(n, 1) && !isPublicationFurnitureBlock(n) {
 				return nil, true
 			}
 		}

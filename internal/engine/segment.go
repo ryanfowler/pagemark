@@ -210,15 +210,27 @@ func normalizedTextAtLeast(n *html.Node, limit int) bool {
 // scoring. An outer link owns all of its descendant text, matching the pruning
 // behavior of linkTextLength even for malformed nested anchors.
 func blockSubtreeEvidence(root *html.Node) (linkedChars, controlCount int) {
-	accumulateBlockSubtreeEvidence(root, root, nil, &linkedChars, &controlCount)
+	accumulateSubtreeEvidence(root, root, nil, nil, &linkedChars, &controlCount)
 	return linkedChars, controlCount
 }
 
-func accumulateBlockSubtreeEvidence(n, root *html.Node, linked *normalizedRuneCounter, linkedChars, controlCount *int) {
+// subtreeShapeEvidence collects the text and interaction counts used to
+// classify navigation. It avoids three separate subtree walks and does not
+// materialize text that the caller only uses as a length.
+func subtreeShapeEvidence(root *html.Node) (textChars, linkedChars, controlCount int) {
+	var text normalizedRuneCounter
+	accumulateSubtreeEvidence(root, root, &text, nil, &linkedChars, &controlCount)
+	return text.runes, linkedChars, controlCount
+}
+
+func accumulateSubtreeEvidence(n, root *html.Node, text, linked *normalizedRuneCounter, linkedChars, controlCount *int) {
 	if n == nil || dom.Hidden(n) {
 		return
 	}
 	if n.Type == html.TextNode {
+		if text != nil {
+			text.addText(n.Data)
+		}
 		if linked != nil {
 			linked.addText(n.Data)
 		}
@@ -254,14 +266,14 @@ func accumulateBlockSubtreeEvidence(n, root *html.Node, linked *normalizedRuneCo
 		if n != root && linked == nil && anchor {
 			var link normalizedRuneCounter
 			for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-				accumulateBlockSubtreeEvidence(ch, root, &link, linkedChars, controlCount)
+				accumulateSubtreeEvidence(ch, root, text, &link, linkedChars, controlCount)
 			}
 			*linkedChars += link.runes
 			return
 		}
 	}
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-		accumulateBlockSubtreeEvidence(ch, root, linked, linkedChars, controlCount)
+		accumulateSubtreeEvidence(ch, root, text, linked, linkedChars, controlCount)
 	}
 }
 
@@ -359,7 +371,7 @@ func linkedPreLineEvidence(root *html.Node) (anchors, linkedLines int) {
 		if hardHidden(n) {
 			return
 		}
-		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "a") && attrValue(n, "href") != "" && normalizeText(nodeText(n)) != "" {
+		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "a") && attrValue(n, "href") != "" && normalizedTextAtLeast(n, 1) {
 			anchors++
 			inLink = true
 		}

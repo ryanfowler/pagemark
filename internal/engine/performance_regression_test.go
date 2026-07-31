@@ -58,6 +58,14 @@ func TestBlockSubtreeEvidenceMatchesIndependentScans(t *testing.T) {
 			if want := controls(root); controlCount != want {
 				t.Fatalf("controls = %d, want %d", controlCount, want)
 			}
+			text, shapeLinks, shapeControls := subtreeShapeEvidence(root)
+			if want := utf8.RuneCountInString(normalizeText(nodeText(root))); text != want {
+				t.Fatalf("text length = %d, want %d", text, want)
+			}
+			if shapeLinks != links || shapeControls != controlCount {
+				t.Fatalf("shape evidence = (%d, %d), want (%d, %d)",
+					shapeLinks, shapeControls, links, controlCount)
+			}
 		})
 	}
 }
