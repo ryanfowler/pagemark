@@ -158,7 +158,9 @@ if errors.As(err, &limit) {
 ```
 
 The package also returns `ErrNoContent`, `ErrInvalidURL`, and
-`ErrInvalidOption`.
+`ErrInvalidOption`. Output truncation is nonfatal. If no selected substantive
+content block fits within the output limit, the package returns a `Document`
+with bounded empty output and `WarningOutputTruncated`.
 
 ## URL and content safety
 

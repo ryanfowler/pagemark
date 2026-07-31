@@ -4149,6 +4149,67 @@ func TestDetailedExtractionMatchesOrdinaryExtraction(t *testing.T) {
 	}
 }
 
+func TestOutputLimitDoesNotBecomeNoContent(t *testing.T) {
+	html := `<main><p>This useful block is larger than the configured output budget.</p></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/page", WithPageType(PageTypeGeneric), WithMaxOutputBytes(8))
+	if err != nil {
+		t.Fatalf("small output limit returned an error: %v", err)
+	}
+	if doc == nil || len(doc.Markdown) > 8 {
+		t.Fatalf("small output limit returned invalid document: %#v", doc)
+	}
+	if doc.Text != "" {
+		t.Fatalf("unexpected text from content that did not fit: %q", doc.Text)
+	}
+	foundWarning := false
+	for _, warning := range doc.Warnings {
+		if warning.Code == WarningOutputTruncated {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("missing truncation warning: %#v", doc.Warnings)
+	}
+}
+
+func TestOutputLimitDoesNotTurnThematicBreakIntoContent(t *testing.T) {
+	html := `<main><hr></main>`
+	_, err := ExtractBytes([]byte(html), "https://example.com/page", WithPageType(PageTypeGeneric), WithMaxOutputBytes(1))
+	if !errors.Is(err, ErrNoContent) {
+		t.Fatalf("thematic break with a small output limit returned %v, want ErrNoContent", err)
+	}
+}
+
+func TestOutputLimitIgnoresEmptySyntaxOnlyBlocks(t *testing.T) {
+	html := `<main><pre><code></code></pre></main>`
+	_, err := ExtractBytes([]byte(html), "https://example.com/page", WithPageType(PageTypeGeneric), WithMaxOutputBytes(1))
+	if !errors.Is(err, ErrNoContent) {
+		t.Fatalf("empty code block with a small output limit returned %v, want ErrNoContent", err)
+	}
+}
+
+func TestOutputLimitFindsContentAfterOversizedThematicBreak(t *testing.T) {
+	html := `<main><hr><p>x</p></main>`
+	doc, err := ExtractBytes([]byte(html), "https://example.com/page", WithPageType(PageTypeGeneric), WithMaxOutputBytes(1))
+	if err != nil {
+		t.Fatalf("content after an oversized thematic break returned %v", err)
+	}
+	if doc == nil || doc.Text != "" || len(doc.Markdown) > 1 {
+		t.Fatalf("unexpected bounded output: %#v", doc)
+	}
+	foundWarning := false
+	for _, warning := range doc.Warnings {
+		if warning.Code == WarningOutputTruncated {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("missing truncation warning: %#v", doc.Warnings)
+	}
+}
+
 func TestOutputLimitIsUTF8Safe(t *testing.T) {
 	html := `<main><h1>Title</h1><p>` + strings.Repeat("界", 10) + `</p><p>later block</p></main>`
 	d, e := ExtractBytes([]byte(html), "", WithMaxOutputBytes(40))

@@ -295,7 +295,11 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	// in Markdown, plain text, sections, or retained media.
 	selected, resolvedTitle := a.separateDocumentTitle(selected, cfg, pageType, authored != nil)
 	mr := markdown.Convert(selected, cfg)
-	if strings.TrimSpace(mr.Text) == "" {
+	// A selected content block can be useful even when the output budget is too
+	// small to emit it. Keep that result distinct from an extraction with no
+	// useful content: Convert reports discarded substantive content separately
+	// from truncation of headings or thematic breaks.
+	if strings.TrimSpace(mr.Text) == "" && !mr.DiscardedContent {
 		return nil, ErrNoContent
 	}
 	documentTitle := normalizeText(resolvedTitle)

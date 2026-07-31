@@ -20,7 +20,9 @@ use `0` for the package default, a positive value for an explicit limit, and
 `-1` for unlimited. Limits do not control whether links, images, or tables are
 included. The input-byte limit applies to `Extract` and `ExtractBytes`, not
 `ExtractNode`, whose DOM is already parsed. A tree or input limit returns a
-`LimitError`.
+`LimitError`. The output-byte limit is nonfatal for substantive content. If
+no selected substantive content block fits, Pagemark returns a `Document` with
+bounded empty output and a `WarningOutputTruncated` warning.
 
 ## Output
 

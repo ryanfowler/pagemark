@@ -145,6 +145,8 @@ func WithMaxInputBytes(v int64) Option {
 
 // WithMaxOutputBytes sets the maximum Markdown size. Zero uses the 2 MiB
 // default and -1 disables the limit. Truncation occurs at a block boundary.
+// If no selected substantive content block fits, extraction returns an empty
+// Document with WarningOutputTruncated instead of ErrNoContent.
 func WithMaxOutputBytes(v int) Option {
 	return func(o *options) { o.maxOutput = limit(v, defaultMaxOutputBytes) }
 }
