@@ -58,7 +58,7 @@ The page URL is optional. If you set it, use an absolute HTTP or HTTPS URL. Page
 - `Sections`: a plain-text view of the selected sections.
 - `Links` and `Images`: the safe resources that occur in the output.
 - `PageType`: the detected page shape.
-- `Warnings`: nonfatal conditions, such as output truncation.
+- `Truncated`: whether the output byte limit omitted content.
 
 The title is separate from the content. Pagemark does not repeat it in `Markdown`, `Text`, or `Sections`.
 `PublishedTime` is the unparsed source metadata value and is not guaranteed to
@@ -100,16 +100,6 @@ doc, err := pagemark.ExtractBytes(
 )
 ```
 
-Detailed diagnostics are experimental and can use much more memory. Request
-them only when you must inspect page-type scores, quality heuristics, block
-scores, or rejected links:
-
-```go
-doc, report, err := pagemark.ExtractDetailedBytes(source, pageURL)
-```
-
-`DiagnosticReport` fields may change in a minor release.
-
 ## Resource bounds
 
 Pagemark exposes two resource options:
@@ -125,8 +115,9 @@ a later option overrides an earlier one.
 
 Pagemark also applies fixed internal limits to DOM elements and DOM depth. An
 input or DOM limit returns a `LimitError`. The Markdown byte limit keeps
-complete blocks and adds a warning. The input-byte limit applies to `Extract`
-and `ExtractBytes`, not `ExtractNode`, whose DOM is already parsed.
+complete blocks and sets `Document.Truncated` if it omits content. The
+input-byte limit applies to `Extract` and `ExtractBytes`, not `ExtractNode`,
+whose DOM is already parsed.
 
 Use `WithIncludeLinks`, `WithIncludeImages`, and `WithIncludeTables` to control
 output features. These options are independent of resource bounds.
@@ -143,7 +134,7 @@ if errors.As(err, &limit) {
 The package also returns `ErrNoContent`, `ErrInvalidURL`, and
 `ErrInvalidOption`. Output truncation is nonfatal. If no selected substantive
 content block fits within the output limit, the package returns a `Document`
-with bounded empty output and `WarningOutputTruncated`.
+with bounded empty output and `Truncated` set to true.
 
 ## URL and content safety
 
@@ -172,9 +163,8 @@ removed. An invalid scheme or a `MaxLength` below `-1` returns
 `ErrInvalidOption`. The defaults remain HTTP and HTTPS only; add `"mailto"`
 explicitly if needed.
 
-Warning codes and limit resources are typed. Compare `Warning.Code` with
-constants such as `WarningOutputTruncated`, and compare `LimitError.Resource`
-with constants such as `LimitInputBytes`.
+Limit resources are typed. Compare `LimitError.Resource` with constants such
+as `LimitInputBytes`.
 
 The extracted words are untrusted data. A hostile page can contain prompt injection. Do not use extracted content as system instructions or developer instructions. See the [Pagemark contract](docs/contract.md).
 

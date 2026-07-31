@@ -2,7 +2,6 @@ package engine
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
 )
 
@@ -50,7 +49,6 @@ type options struct {
 	includeLinks, includeImages, includeTables bool
 	urlPolicy                                  URLPolicy
 	customURLPolicy, diagnostics               bool
-	logger                                     *slog.Logger
 }
 
 var defaultAllowedSchemes = []string{"http", "https"}
@@ -108,7 +106,7 @@ func WithMaxInputBytes(v int64) Option {
 // WithMaxOutputBytes sets the maximum Markdown size. Zero uses the 2 MiB
 // default and -1 disables the limit. Truncation occurs at a block boundary.
 // If no selected substantive content block fits, extraction returns an empty
-// Document with WarningOutputTruncated instead of ErrNoContent.
+// Document with Truncated set instead of ErrNoContent.
 func WithMaxOutputBytes(v int) Option {
 	return func(o *options) { o.maxOutput = limit(v, defaultMaxOutputBytes) }
 }
@@ -140,9 +138,6 @@ func WithURLPolicy(v URLPolicy) Option {
 		o.customURLPolicy = true
 	}
 }
-
-// WithLogger sets a logger for extraction debug messages. A nil logger disables messages.
-func WithLogger(v *slog.Logger) Option { return func(o *options) { o.logger = v } }
 
 // withDiagnostics enables diagnostic collection for the detailed extraction
 // path. It is intentionally not part of the public option set.

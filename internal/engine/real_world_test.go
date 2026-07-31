@@ -63,7 +63,7 @@ func TestRealWorldFixtures(t *testing.T) {
 				t.Fatalf("fixture checksum = %s, want %s; update expectations and provenance deliberately", got, fixture.SHA256)
 			}
 
-			doc, err := ExtractBytes(source, fixture.URL)
+			doc, err := ExtractBytes(source, fixture.URL, withDiagnostics())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -78,8 +78,8 @@ func TestRealWorldFixtures(t *testing.T) {
 					t.Errorf("document title was repeated as a Markdown heading: %q", line)
 				}
 			}
-			if doc.Quality < fixture.MinQuality {
-				t.Errorf("quality = %.2f, want at least %.2f", doc.Quality, fixture.MinQuality)
+			if doc.diagnostic == nil || doc.diagnostic.Quality < fixture.MinQuality {
+				t.Errorf("diagnostics = %#v, want quality at least %.2f", doc.diagnostic, fixture.MinQuality)
 			}
 			if fixture.MaxOutputBytes > 0 && len(doc.Markdown) > fixture.MaxOutputBytes {
 				t.Errorf("Markdown size = %d bytes, want at most %d; likely retained page furniture", len(doc.Markdown), fixture.MaxOutputBytes)

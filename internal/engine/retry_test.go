@@ -20,9 +20,6 @@ func TestRelaxedArticleLabelsRecoverProse(t *testing.T) {
 	if doc.diagnostic == nil || doc.diagnostic.Fallback != "relaxed-labels" {
 		t.Fatalf("fallback = %#v, want relaxed-labels", doc.diagnostic)
 	}
-	if len(doc.Warnings) == 0 || doc.Warnings[0].Code != "relaxed-article-extraction" {
-		t.Fatalf("warnings = %#v", doc.Warnings)
-	}
 }
 
 func TestRelaxedArticleLabelsRecoverLongEmptyPrimary(t *testing.T) {

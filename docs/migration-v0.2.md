@@ -67,38 +67,40 @@ both metadata and content.
 
 ## Typed identifiers
 
-`Warning.Code` is a `WarningCode`; use constants such as
-`WarningOutputTruncated`. `LimitError.Resource` is a `LimitResource`; use
-constants such as `LimitInputBytes`. JSON string values remain stable.
+`LimitError.Resource` is a `LimitResource`. Use constants such as
+`LimitInputBytes`. JSON string values remain stable.
 
-## Diagnostics
+## Extraction status and diagnostics
 
-Use the experimental detailed API:
+Replace warning checks for output truncation with `Document.Truncated`:
 
 ```go
-doc, report, err := pagemark.ExtractDetailedBytes(source, pageURL)
+if doc.Truncated {
+	// The output byte limit omitted content.
+}
 ```
 
-`report` contains page-type and quality scores, block details, fallback names,
-rejected links, and extraction counters. Its shape may change in a minor
-release. Diagnostic details are available only through `DiagnosticReport`;
-the legacy `WithDiagnostics` option and diagnostics pointer are not part of the
-current API.
+`Warning`, `WarningCode`, and all warning constants have been removed. Fallback
+and relaxed-extraction warnings described internal algorithm choices and have
+no stable replacement.
+
+`Document.Quality`, `Document.PageTypeScore`, and `Document.Stats` have also
+been removed. `ExtractDetailedBytes`, `DiagnosticReport`, `PageCandidate`, and
+`BlockDiagnostic` are no longer part of the public package. Algorithm
+diagnostics remain internal to this module. `WithLogger` has also been removed;
+callers can log stable result fields after extraction.
 
 ## Implementation decisions
 
 - The module is pre-1.0 and has no stated compatibility guarantee. `Profile`,
   `WithProfile`, `WithFavorPrecision`, `WithFavorRecall`, advanced individual
-  limit options, and `WithIncludeMetadata` were removed directly. Only the
-  legacy diagnostics option and fields have a temporary compatibility path.
+  limit options, and `WithIncludeMetadata` were removed directly.
 - Public resource configuration is limited to input and output byte bounds.
   DOM element and depth bounds are fixed internal safety limits.
-- `ExtractDetailedBytes` enables diagnostics inside the existing extraction
-  pass and builds `DiagnosticReport`. Diagnostic state remains internal to the
-  extraction engine, avoiding a second extraction pipeline and import-cycle
-  workarounds.
-- `Quality`, `PageTypeScore`, and `Stats` remain on `Document` for the stable
-  result contract; the detailed report also includes their diagnostic view.
+- Internal diagnostic extraction uses the existing extraction pass. Diagnostic
+  state remains in the extraction engine.
+- The stable `Document` reports output truncation with one boolean. Fallback
+  choices, scores, and extraction counters remain internal diagnostics.
 - The `URLPolicy` field rename and `AllowMailto` removal are included now.
   Mailto has the same scheme-policy behavior as other allowed schemes.
 - A complete repository search found old-option usage only in this module's

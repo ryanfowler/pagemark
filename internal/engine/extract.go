@@ -5,7 +5,6 @@
 // to Document.URL or Document.CanonicalURL; credentials are removed from both.
 //
 // Extract, ExtractBytes, and ExtractNode return the stable content result.
-// ExtractDetailedBytes also returns experimental algorithm diagnostics.
 //
 // The package does not fetch pages or run JavaScript.
 //
@@ -52,8 +51,8 @@ func Extract(input io.Reader, pageURL string, opts ...Option) (*Document, error)
 	// extraction; attempting to sniff here can misinterpret UTF-8 as Windows-1252
 	// and can decode input a second time.
 	doc, err := extractBytes(data, pageURL, o)
-	if doc != nil {
-		doc.Stats.InputBytes = len(data)
+	if doc != nil && doc.diagnostic != nil {
+		doc.diagnostic.Stats.InputBytes = len(data)
 	}
 	return doc, err
 }
@@ -72,8 +71,8 @@ func ExtractBytes(input []byte, pageURL string, opts ...Option) (*Document, erro
 	// Parse the caller's byte slice directly. Routing through Extract would make
 	// io.ReadAll copy the complete input before parsing it.
 	doc, err := extractBytes(input, pageURL, o)
-	if doc != nil {
-		doc.Stats.InputBytes = len(input)
+	if doc != nil && doc.diagnostic != nil {
+		doc.diagnostic.Stats.InputBytes = len(input)
 	}
 	return doc, err
 }
@@ -95,7 +94,9 @@ func extractBytes(input []byte, pageURL string, o options) (*Document, error) {
 			if fallback, fallbackErr := extractNode(fallbackRoot, pageURL, o); fallbackErr == nil &&
 				fallback != nil && utf8.RuneCountInString(fallback.Text) >= 120 &&
 				(doc == nil || utf8.RuneCountInString(fallback.Text) > 2*utf8.RuneCountInString(doc.Text)) {
-				fallback.Warnings = append(fallback.Warnings, Warning{WarningFallbackUsed, "The noscript fallback produced the result."})
+				if fallback.diagnostic != nil {
+					fallback.diagnostic.Fallback = "noscript"
+				}
 				return fallback, nil
 			}
 		}
@@ -341,7 +342,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	if page != nil {
 		sourceURL = page.String()
 	}
-	doc := &Document{URL: sourceURL, CanonicalURL: a.meta.canonical, Title: documentTitle, Description: a.meta.description, Author: a.meta.author, SiteName: a.meta.site, Language: a.meta.language, PublishedTime: a.meta.published, PageType: pageType, PageTypeScore: confidence, Markdown: mr.Markdown, Text: mr.Text, Quality: clamp(quality), Stats: Stats{Elements: a.elements, TextBytes: a.textBytes, Blocks: len(a.blocks), OutputBytes: len(mr.Markdown)}, diagnostic: a.diag}
+	doc := &Document{URL: sourceURL, CanonicalURL: a.meta.canonical, Title: documentTitle, Description: a.meta.description, Author: a.meta.author, SiteName: a.meta.site, Language: a.meta.language, PublishedTime: a.meta.published, PageType: pageType, Markdown: mr.Markdown, Text: mr.Text, Truncated: mr.Truncated, diagnostic: a.diag}
 	if len(mr.Links) > 0 {
 		doc.Links = make([]Link, len(mr.Links))
 		for i, l := range mr.Links {
@@ -354,27 +355,18 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 			doc.Images[i] = Image{Alt: im.Alt, URL: im.URL}
 		}
 	}
-	doc.Stats.SelectedBlocks = mr.EmittedBlocks
-	if mr.Truncated {
-		doc.Warnings = append(doc.Warnings, Warning{WarningOutputTruncated, "The output reached the configured byte limit."})
-	}
-	if strings.HasPrefix(fallback, "relaxed-") {
-		doc.Warnings = append(doc.Warnings, Warning{WarningRelaxedExtraction, "A relaxed article extraction profile produced the result."})
-	} else if fallback != "primary" {
-		doc.Warnings = append(doc.Warnings, Warning{WarningFallbackUsed, "The " + fallback + " fallback produced the result."})
-	}
 	if a.diag != nil {
 		a.diag.Fallback = fallback
 		a.diag.RejectedLinks = mr.Rejected
+		a.diag.Stats = diagnosticStats{Elements: a.elements, TextBytes: a.textBytes, Blocks: len(a.blocks), SelectedBlocks: mr.EmittedBlocks, OutputBytes: len(mr.Markdown)}
+		a.diag.Quality = clamp(quality)
+		a.diag.PageTypeScore = confidence
 	}
 	if len(mr.Sections) > 0 {
 		doc.Sections = make([]Section, len(mr.Sections))
 		for i, section := range mr.Sections {
 			doc.Sections[i] = Section{Heading: section.Heading, Text: section.Text}
 		}
-	}
-	if o.logger != nil {
-		o.logger.Debug("extracted page", "type", pageType, "quality", doc.Quality, "blocks", len(a.blocks), "selected", doc.Stats.SelectedBlocks)
 	}
 	return doc, nil
 }
@@ -397,15 +389,16 @@ func ExtractDetailedBytes(input []byte, pageURL string, opts ...Option) (*Docume
 }
 
 func diagnosticReport(doc *Document) *DiagnosticReport {
-	report := &DiagnosticReport{
-		Stats: doc.Stats, Quality: doc.Quality, PageTypeScore: doc.PageTypeScore,
-	}
+	report := &DiagnosticReport{}
 	if doc.diagnostic != nil {
 		report.ProfileVersion = doc.diagnostic.ProfileVersion
 		report.Fallback = doc.diagnostic.Fallback
 		report.PageCandidates = doc.diagnostic.PageCandidates
 		report.Blocks = doc.diagnostic.Blocks
 		report.RejectedLinks = doc.diagnostic.RejectedLinks
+		report.Stats = doc.diagnostic.Stats
+		report.Quality = doc.diagnostic.Quality
+		report.PageTypeScore = doc.diagnostic.PageTypeScore
 	}
 	return report
 }

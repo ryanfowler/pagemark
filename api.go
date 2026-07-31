@@ -7,7 +7,6 @@ package pagemark
 
 import (
 	"io"
-	"log/slog"
 
 	"github.com/ryanfowler/pagemark/internal/engine"
 	"golang.org/x/net/html"
@@ -16,22 +15,16 @@ import (
 // Public result and configuration types are aliases so values can cross the
 // API boundary without conversion or duplicated definitions.
 type (
-	PageType         = engine.PageType
-	Document         = engine.Document
-	Section          = engine.Section
-	Link             = engine.Link
-	Image            = engine.Image
-	WarningCode      = engine.WarningCode
-	Warning          = engine.Warning
-	Stats            = engine.Stats
-	PageCandidate    = engine.PageCandidate
-	BlockDiagnostic  = engine.BlockDiagnostic
-	DiagnosticReport = engine.DiagnosticReport
-	SelectionMode    = engine.SelectionMode
-	URLPolicy        = engine.URLPolicy
-	Option           = engine.Option
-	LimitResource    = engine.LimitResource
-	LimitError       = engine.LimitError
+	PageType      = engine.PageType
+	Document      = engine.Document
+	Section       = engine.Section
+	Link          = engine.Link
+	Image         = engine.Image
+	SelectionMode = engine.SelectionMode
+	URLPolicy     = engine.URLPolicy
+	Option        = engine.Option
+	LimitResource = engine.LimitResource
+	LimitError    = engine.LimitError
 )
 
 const (
@@ -47,10 +40,6 @@ const (
 	SelectionBalanced  = engine.SelectionBalanced
 	SelectionPrecision = engine.SelectionPrecision
 	SelectionRecall    = engine.SelectionRecall
-
-	WarningOutputTruncated   = engine.WarningOutputTruncated
-	WarningFallbackUsed      = engine.WarningFallbackUsed
-	WarningRelaxedExtraction = engine.WarningRelaxedExtraction
 
 	LimitInputBytes = engine.LimitInputBytes
 	LimitElements   = engine.LimitElements
@@ -79,11 +68,6 @@ func ExtractNode(root *html.Node, pageURL string, opts ...Option) (*Document, er
 	return engine.ExtractNode(root, pageURL, opts...)
 }
 
-// ExtractDetailedBytes extracts content and returns an experimental diagnostic report.
-func ExtractDetailedBytes(input []byte, pageURL string, opts ...Option) (*Document, *DiagnosticReport, error) {
-	return engine.ExtractDetailedBytes(input, pageURL, opts...)
-}
-
 // DefaultURLPolicy returns the default link and image URL policy.
 func DefaultURLPolicy() URLPolicy { return engine.DefaultURLPolicy() }
 
@@ -95,4 +79,3 @@ func WithIncludeLinks(v bool) Option           { return engine.WithIncludeLinks(
 func WithIncludeImages(v bool) Option          { return engine.WithIncludeImages(v) }
 func WithIncludeTables(v bool) Option          { return engine.WithIncludeTables(v) }
 func WithURLPolicy(v URLPolicy) Option         { return engine.WithURLPolicy(v) }
-func WithLogger(v *slog.Logger) Option         { return engine.WithLogger(v) }
