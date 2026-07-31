@@ -3,18 +3,18 @@
   "mozilla_commit": "ab4027a8b37669745016869a37a504727992b2ba",
   "fixture_count": 130,
   "aggregate": {
-    "precision_min": 0.9439,
-    "recall_min": 0.9198,
-    "f1_min": 0.9317,
+    "precision_min": 0.9488,
+    "recall_min": 0.9197,
+    "f1_min": 0.934,
     "extraction_errors_max": 3
   },
   "metadata": {
     "byline": {
-      "matches_min": 74,
+      "matches_min": 75,
       "compared": 130
     },
     "excerpt": {
-      "matches_min": 64,
+      "matches_min": 66,
       "compared": 128
     },
     "lang": {
@@ -140,9 +140,9 @@
       }
     },
     "ars-1": {
-      "precision": 0.9676375404530745,
+      "precision": 0.9755301794453507,
       "recall": 0.9835526315789473,
-      "f1": 0.9755301794453507,
+      "f1": 0.9795249795249795,
       "metadata": {
         "byline": true,
         "excerpt": true,
@@ -153,9 +153,9 @@
       }
     },
     "article-author-tag": {
-      "precision": 0.9859689040576413,
+      "precision": 1,
       "recall": 1,
-      "f1": 0.9929348863853351,
+      "f1": 1,
       "metadata": {
         "byline": true,
         "excerpt": true,
@@ -309,9 +309,9 @@
       }
     },
     "cnet": {
-      "precision": 0.8002481389578163,
+      "precision": 0.8123425692695214,
       "recall": 1,
-      "f1": 0.8890420399724328,
+      "f1": 0.896455872133426,
       "metadata": {
         "byline": true,
         "excerpt": true,
@@ -326,7 +326,7 @@
       "recall": 0.9923076923076923,
       "f1": 0.9052631578947369,
       "metadata": {
-        "byline": true,
+        "byline": false,
         "excerpt": true,
         "lang": true,
         "publishedTime": false,
@@ -430,7 +430,7 @@
       "recall": 0.8957345971563981,
       "f1": 0.9450000000000001,
       "metadata": {
-        "byline": false,
+        "byline": true,
         "excerpt": true,
         "lang": true,
         "publishedTime": true,
@@ -469,8 +469,8 @@
       "recall": 1,
       "f1": 0.9587704318126371,
       "metadata": {
-        "byline": false,
-        "excerpt": false,
+        "byline": true,
+        "excerpt": true,
         "lang": true,
         "publishedTime": true,
         "siteName": true,
@@ -547,7 +547,7 @@
       "recall": 0.9975980784627703,
       "f1": 0.8731604765241767,
       "metadata": {
-        "byline": true,
+        "byline": false,
         "excerpt": true,
         "lang": true,
         "publishedTime": true,
@@ -569,9 +569,9 @@
       }
     },
     "herald-sun-1": {
-      "precision": 0.9166666666666666,
-      "recall": 0.0547945205479452,
-      "f1": 0.10340775558166862,
+      "precision": 1,
+      "recall": 0.0460772104607721,
+      "f1": 0.08809523809523809,
       "metadata": {
         "byline": false,
         "excerpt": true,
@@ -691,7 +691,7 @@
       "f1": 0.9700499168053245,
       "metadata": {
         "byline": true,
-        "excerpt": false,
+        "excerpt": true,
         "lang": false,
         "publishedTime": true,
         "siteName": true,
@@ -738,9 +738,9 @@
       }
     },
     "lemonde-1": {
-      "precision": 0.8449023861171366,
-      "recall": 0.9854522454142948,
-      "f1": 0.9097810218978102,
+      "precision": 0.9305389221556887,
+      "recall": 0.9829222011385199,
+      "f1": 0.9560135342971394,
       "metadata": {
         "byline": false,
         "excerpt": true,
@@ -764,9 +764,9 @@
       }
     },
     "lifehacker-post-comment-load": {
-      "precision": 0.8623936816524909,
+      "precision": 0.9488636363636364,
       "recall": 1,
-      "f1": 0.9261131952373185,
+      "f1": 0.9737609329446064,
       "metadata": {
         "byline": true,
         "excerpt": true,
@@ -777,9 +777,9 @@
       }
     },
     "lifehacker-working": {
-      "precision": 0.8626557277423276,
+      "precision": 0.949180875961217,
       "recall": 1,
-      "f1": 0.9262642740619903,
+      "f1": 0.9739279588336193,
       "metadata": {
         "byline": true,
         "excerpt": true,
@@ -803,9 +803,9 @@
       }
     },
     "lwn-1": {
-      "precision": 0.9706556625401193,
+      "precision": 0.9753513015434232,
       "recall": 1,
-      "f1": 0.9851093531875291,
+      "f1": 0.9875218658892129,
       "metadata": {
         "byline": false,
         "excerpt": false,
@@ -972,9 +972,9 @@
       }
     },
     "nytimes-1": {
-      "precision": 0.9830508474576272,
-      "recall": 0.9938800489596084,
-      "f1": 0.9884357881923312,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
       "metadata": {
         "byline": false,
         "excerpt": true,
@@ -985,11 +985,11 @@
       }
     },
     "nytimes-2": {
-      "precision": 0.9888089528377298,
-      "recall": 0.9880191693290735,
-      "f1": 0.9884139033160209,
+      "precision": 1,
+      "recall": 0.9920127795527156,
+      "f1": 0.9959903769045709,
       "metadata": {
-        "byline": false,
+        "byline": true,
         "excerpt": true,
         "lang": true,
         "publishedTime": false,
@@ -1089,9 +1089,9 @@
       }
     },
     "quanta-1": {
-      "precision": 0.9634146341463414,
+      "precision": 0.9640024405125076,
       "recall": 1,
-      "f1": 0.9813664596273292,
+      "f1": 0.9816713264989126,
       "metadata": {
         "byline": false,
         "excerpt": false,
@@ -1193,9 +1193,9 @@
       }
     },
     "royal-road": {
-      "precision": 0.965467208357516,
-      "recall": 0.6526088662220478,
-      "f1": 0.7787921348314607,
+      "precision": 0.9729411764705882,
+      "recall": 0.6488819144762652,
+      "f1": 0.7785361261473288,
       "metadata": {
         "byline": false,
         "excerpt": false,
@@ -1375,9 +1375,9 @@
       }
     },
     "telegraph": {
-      "precision": 0.8835125448028673,
+      "precision": 0.8866906474820144,
       "recall": 0.9762376237623762,
-      "f1": 0.9275634995296331,
+      "f1": 0.9293119698397738,
       "metadata": {
         "byline": false,
         "excerpt": true,
@@ -1427,9 +1427,9 @@
       }
     },
     "tmz-1": {
-      "precision": 0.8540540540540541,
-      "recall": 0.9937106918238994,
-      "f1": 0.9186046511627908,
+      "precision": 0.8532608695652174,
+      "recall": 0.9874213836477987,
+      "f1": 0.9154518950437318,
       "metadata": {
         "byline": true,
         "excerpt": true,
@@ -1609,9 +1609,9 @@
       }
     },
     "wikipedia-2": {
-      "precision": 0.9679970279163571,
-      "recall": 0.9904963614641034,
-      "f1": 0.9791174575907235,
+      "precision": 0.9679868337226587,
+      "recall": 0.9901705224285869,
+      "f1": 0.9789530201342281,
       "metadata": {
         "byline": false,
         "excerpt": false,
@@ -1687,9 +1687,9 @@
       }
     },
     "yahoo-3": {
-      "precision": 0.8641304347826086,
+      "precision": 0.8784530386740331,
       "recall": 0.9408284023668639,
-      "f1": 0.9008498583569405,
+      "f1": 0.9085714285714286,
       "metadata": {
         "byline": false,
         "excerpt": true,
@@ -1700,9 +1700,9 @@
       }
     },
     "yahoo-4": {
-      "precision": 0.5508021390374331,
+      "precision": 0.5597826086956522,
       "recall": 1,
-      "f1": 0.7103448275862069,
+      "f1": 0.7177700348432056,
       "metadata": {
         "byline": false,
         "excerpt": true,

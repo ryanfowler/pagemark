@@ -109,7 +109,8 @@ func (a *analysis) score(pt PageType, profile scoringProfile) {
 			// the document shell (for example, "toc-available"). They describe
 			// available chrome, not every descendant's content region.
 			if tag != "html" && tag != "body" && hasBoilerplateToken(p) &&
-				!(tag == "article" && a.substantialArticleScope(p)) {
+				!(tag == "article" && a.substantialArticleScope(p)) &&
+				!(pt == PageTypeDocumentation && headingDocumentsBoilerplate(p)) {
 				// This is only a weak class/id signal. Structural auxiliary decisions
 				// above remain absolute in every profile.
 				if profile == scoringPrimary || !a.strongArticleProseEvidence(b) {

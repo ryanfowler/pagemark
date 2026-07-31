@@ -52,6 +52,22 @@ func TestArticleRegionReconstructsSiblingSectionsInOrder(t *testing.T) {
 	}
 }
 
+func TestSharedArticleWrapperIsNotClassifiedFromAuxiliaryHeading(t *testing.T) {
+	source := `<html><head><title>Particle report</title><meta property="og:type" content="article"></head><body><main><div id="postContent" class="post"><div class="local-toolbar"><h6>Share</h6><div><a href="/one"><time>One</time></a></div><div><a href="/two"><time>Two</time></a></div></div><div class="post__content"><h1>Particle report</h1><p>The first paragraph explains the experiment in enough detail to establish the primary article body for extraction.</p><p>The second paragraph reports the result and why it matters to the researchers who performed the work.</p></div><section class="related-articles"><h2>Related articles</h2><article class="card"><h3><a href="/other-one">Other one</a></h3></article><article class="card"><h3><a href="/other-two">Other two</a></h3></article></section></div></main></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/particle-report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "first paragraph explains") || !strings.Contains(doc.Text, "second paragraph reports") {
+		t.Fatalf("shared wrapper hid the article body: %q", doc.Text)
+	}
+	for _, unwanted := range []string{"Share", "Other one", "Other two"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("auxiliary content %q was retained: %q", unwanted, doc.Text)
+		}
+	}
+}
+
 func TestArticleRegionJoinsThreeIndependentCandidates(t *testing.T) {
 	source := `<html><head><meta property="og:type" content="article"><title>Joined report</title></head><body><div class="shell">
 <div><h1>Joined report</h1><p>The opening finding gives useful context here.</p></div>

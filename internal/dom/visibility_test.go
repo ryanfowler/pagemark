@@ -92,6 +92,27 @@ func TestDialogVisibilityFollowsOpenAttribute(t *testing.T) {
 	}
 }
 
+func TestHiddenUtilityClass(t *testing.T) {
+	for _, class := range []string{"hidden", "error hidden text-center", "HIDDEN"} {
+		n := &html.Node{Type: html.ElementNode, Data: "p", Attr: []html.Attribute{{Key: "class", Val: class}}}
+		if !Hidden(n) {
+			t.Errorf("class %q reported visible", class)
+		}
+	}
+	for _, class := range []string{"not-hidden", "hidden-message", "visually-hidden", "hidden md:block", "hidden lg:flex", "hidden max-md:grid"} {
+		n := &html.Node{Type: html.ElementNode, Data: "p", Attr: []html.Attribute{{Key: "class", Val: class}}}
+		if Hidden(n) {
+			t.Errorf("class %q reported hidden", class)
+		}
+	}
+	for _, class := range []string{"hidden md:hidden", "hidden group-hover:block"} {
+		n := &html.Node{Type: html.ElementNode, Data: "p", Attr: []html.Attribute{{Key: "class", Val: class}}}
+		if !Hidden(n) {
+			t.Errorf("class %q reported visible", class)
+		}
+	}
+}
+
 func TestHiddenAcceptsAtomizedMixedCaseManualNodes(t *testing.T) {
 	tests := []struct {
 		name string

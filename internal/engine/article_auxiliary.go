@@ -67,7 +67,7 @@ var auxiliaryLabels = map[string]bool{
 	"follow on social media": true,
 	"recommended for you":    true,
 	"you may also like":      true, "you may also enjoy": true, "read next": true, "more stories": true,
-	"latest stories": true, "see also": true,
+	"latest stories": true, "see also": true, "next article": true, "previous article": true,
 }
 
 // These short labels are strong boilerplate signals on articles, but can name
@@ -110,7 +110,7 @@ func irrelevantNode(n *html.Node) bool {
 		return false
 	}
 	if tag == "nav" || tag == "footer" || hasDataMarker(n, "site-footer") || hasExactClass(n, "article-footer") ||
-		isEmptyRecordList(n) ||
+		isCopyrightNotice(n) || isScriptRequirementNotice(n) || isEmptyRecordList(n) ||
 		isPageFooterConvention(n) || hasClassConvention(n, "step-nav") || hasExactClass(n, "crawler-linkback-list") ||
 		hasExactClass(n, "post-likes") || hasClassPrefix(n, "jetpack-likes-widget") ||
 		hasExactClass(n, "mw-editsection") || hasExactClass(n, "printfooter") || hasExactClass(n, "catlinks") ||
@@ -120,11 +120,15 @@ func irrelevantNode(n *html.Node) bool {
 		return true
 	}
 	role := strings.ToLower(attrValue(n, "role"))
-	if containsAny(role, "navigation", "complementary", "contentinfo", "menu") {
+	if containsAny(role, "navigation", "complementary", "contentinfo", "menu") ||
+		role == "dialog" || role == "alertdialog" {
+		return true
+	}
+	if isCookieConsentRegion(n) {
 		return true
 	}
 	if isTableOfContentsRegion(n) || isLinkedImageMasthead(n) || isOversizedContributorRoll(n) ||
-		elementContainsAny(n, "banner") && controls(n) > 0 {
+		isConventionallyNamedNavigation(n) || elementContainsAny(n, "banner") && controls(n) > 0 {
 		return true
 	}
 	if elementContainsAny(n, navigationStructureTokens...) && !headingDocumentsStructure(n) && hasNavigationShape(n) {
@@ -174,10 +178,83 @@ func irrelevantNode(n *html.Node) bool {
 	return false
 }
 
+func isScriptRequirementNotice(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	tag := strings.ToLower(n.Data)
+	if tag != "p" && tag != "div" && tag != "section" && tag != "noscript" {
+		return false
+	}
+	text := strings.ToLower(normalizeText(nodeText(n)))
+	if utf8.RuneCountInString(text) > 300 || !strings.Contains(text, "enable javascript") ||
+		(!strings.Contains(text, "web application") && !strings.Contains(text, "run this app") &&
+			!strings.Contains(text, "requires javascript")) {
+		return false
+	}
+	if tag == "noscript" {
+		return true
+	}
+	// The same words can be authored documentation. Treat them as an application
+	// shell notice only when they occur outside semantic primary content.
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type == html.ElementNode && (strings.EqualFold(p.Data, "main") || strings.EqualFold(p.Data, "article")) {
+			return false
+		}
+	}
+	return true
+}
+
+func isCopyrightNotice(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "p") {
+		return false
+	}
+	// Image credits can begin with © but continue with the article's opening
+	// prose. Never infer a footer notice from a paragraph in a semantic or
+	// conventionally named article body.
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		if strings.EqualFold(p.Data, "article") || isConventionalArticleBody(p) ||
+			strings.EqualFold(attrValue(p, "itemprop"), "articleBody") {
+			return false
+		}
+	}
+	text := normalizeText(nodeText(n))
+	textRunes := utf8.RuneCountInString(text)
+	if text == "" || textRunes > 300 {
+		return false
+	}
+	lower := strings.ToLower(text)
+	allRights := strings.Contains(lower, "all rights reserved")
+	copyrightLead := strings.HasPrefix(lower, "copyright ") && strings.Contains(text, "©")
+	// A year makes a short credit line look like conventional footer furniture,
+	// but it is common for a longer article opening to begin with a dated image
+	// attribution. Keep the date signal limited to standalone-length notices.
+	conciseDatedNotice := textRunes <= 64 && containsCopyrightYear(lower)
+	datedCopyrightLead := strings.HasPrefix(lower, "copyright ") && conciseDatedNotice
+	attributionLead := strings.HasPrefix(text, "©") &&
+		(strings.Contains(lower, "copyright") || strings.Contains(lower, "trademark") || strings.Contains(lower, "registered"))
+	leadingDatedMark := strings.HasPrefix(text, "©") && conciseDatedNotice
+	return copyrightLead || attributionLead || datedCopyrightLead || leadingDatedMark ||
+		allRights && strings.Contains(text, "©")
+}
+
+func containsCopyrightYear(text string) bool {
+	for i := 0; i+4 <= len(text); i++ {
+		if (text[i:i+2] == "19" || text[i:i+2] == "20") &&
+			text[i+2] >= '0' && text[i+2] <= '9' && text[i+3] >= '0' && text[i+3] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
 // A generic .footer outside primary semantic content is page furniture. The
 // ancestor check preserves documentation for footer-named components.
 func isPageFooterConvention(n *html.Node) bool {
-	if !hasExactClass(n, "footer") {
+	if !hasExactClass(n, "footer") && !hasClassPrefix(n, "footer") && !hasClassPrefix(n, "site-footer") {
 		return false
 	}
 	for p := n.Parent; p != nil; p = p.Parent {
@@ -186,6 +263,36 @@ func isPageFooterConvention(n *html.Node) bool {
 		}
 	}
 	return true
+}
+
+// isCookieConsentRegion recognizes explicitly named consent UI rather than
+// penalizing ordinary prose that happens to discuss cookies. Requiring both a
+// consent subject and a panel-shaped marker keeps examples inside authored
+// articles and documentation eligible.
+func isCookieConsentRegion(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	insideMain := false
+	for p := n; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		if strings.EqualFold(p.Data, "article") {
+			return false
+		}
+		insideMain = insideMain || strings.EqualFold(p.Data, "main")
+	}
+	identifier := strings.ToLower(attrValue(n, "id") + " " + attrValue(n, "class"))
+	subject := containsAny(identifier, "cookie", "consent")
+	panel := containsAny(identifier, "banner", "dialog", "modal", "notice", "preferences", "popup", "pop-up")
+	if !subject || !panel {
+		return false
+	}
+	// Inside a broad application main, naming alone is ambiguous with authored
+	// documentation. Real consent UI has controls; an explanatory section with
+	// the same class and heading does not.
+	return !insideMain || controls(n) > 0
 }
 
 func hasClassPrefix(n *html.Node, prefix string) bool {
@@ -246,6 +353,20 @@ func tocStateSegment(segment string) bool {
 
 func tocStatePrefixSegment(segment string) bool {
 	return segment == "has" || segment == "with"
+}
+
+func isConventionallyNamedNavigation(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode || !hasNavigationShape(n) {
+		return false
+	}
+	for class := range strings.FieldsSeq(strings.ToLower(attrValue(n, "class"))) {
+		class = strings.Trim(class, "_-")
+		if class == "nav" || class == "navbar" || strings.HasPrefix(class, "nav-") ||
+			strings.HasPrefix(class, "nav_") || strings.HasSuffix(class, "-nav") || strings.HasSuffix(class, "_nav") {
+			return true
+		}
+	}
+	return false
 }
 
 // Image-only headings linked to the site root are publication wordmarks, not
@@ -411,6 +532,27 @@ func hasTrailingArticleRegionClass(n *html.Node) bool {
 	return false
 }
 
+// headingDocumentsBoilerplate reports when a boilerplate-looking identifier
+// names the subject of an authored documentation section. This keeps sections
+// such as cookie-consent-notice while ordinary consent widgets without a
+// matching explanatory heading retain their score penalty.
+func headingDocumentsBoilerplate(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	heading := firstRegionHeading(n)
+	if heading == "" {
+		return false
+	}
+	identifier := strings.ToLower(attrValue(n, "id") + " " + attrValue(n, "class"))
+	for _, subject := range badTokens {
+		if strings.Contains(identifier, subject) && containsWordSequence(heading, subject) {
+			return true
+		}
+	}
+	return false
+}
+
 func headingDocumentsStructure(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode || !strings.EqualFold(n.Data, "section") {
 		return false
@@ -564,12 +706,49 @@ func (a *analysis) conventionalArticleBodyAncestor(n *html.Node) *html.Node {
 		// Classification needs a narrower signal than structural article-body
 		// protection. Generic post/content tokens are common on forum wrappers,
 		// and post-content commonly names an opening message.
-		publicationBody := hasCompactClass(p, "entrycontent", "articlecontent")
+		publicationBody := a.isPublicationArticleContent(p)
 		if publicationBody && a.commentRecordCount(p) < 2 && !a.inferenceAuxiliaryBlock(p) {
 			return p
 		}
 	}
 	return nil
+}
+
+func (a *analysis) isPublicationArticleContent(n *html.Node) bool {
+	return n != nil && (hasCompactClass(n, "entrycontent", "articlecontent") || a.isPublicationPostContent(n))
+}
+
+// isPublicationPostContent disambiguates the widely shared post-content class.
+// A lone opening forum message is not article structure, while a substantial
+// local prose scope backed by publication metadata is.
+func (a *analysis) isPublicationPostContent(n *html.Node) bool {
+	return n != nil && hasCompactClass(n, "postcontent") &&
+		(a.meta.articleType || a.meta.articlePublished || a.meta.headline) &&
+		a.substantialArticleScope(n) && !a.hasSurroundingDiscussionRecords(n)
+}
+
+// hasSurroundingDiscussionRecords distinguishes a publisher body from a
+// substantial forum opening post. The replies are normally siblings of the
+// post or of one of its wrappers, so counting only descendants of post-content
+// misses exactly the evidence needed for this decision.
+func (a *analysis) hasSurroundingDiscussionRecords(n *html.Node) bool {
+	count := 0
+	for branch := n; branch != nil && branch.Parent != nil; branch = branch.Parent {
+		for sibling := branch.Parent.FirstChild; sibling != nil && count < 2; sibling = sibling.NextSibling {
+			if sibling == branch || sibling.Type != html.ElementNode || hardHidden(sibling) {
+				continue
+			}
+			count += a.commentRecordCount(sibling)
+		}
+		if count >= 2 {
+			return true
+		}
+		if branch.Parent.Type == html.ElementNode &&
+			(strings.EqualFold(branch.Parent.Data, "main") || strings.EqualFold(branch.Parent.Data, "body")) {
+			break
+		}
+	}
+	return false
 }
 
 func isConventionalArticleBody(n *html.Node) bool {
@@ -1065,8 +1244,11 @@ func (a *analysis) articleAuxiliaryNodeUncached(n *html.Node) bool {
 			!hasSubstantiveContentBeforeDescendant(n, isMarkedCard) {
 			return true
 		}
-		if (hasAuxiliaryHeading(n) || hasDeepLeadingAuxiliaryHeading(n)) && countLinkedRecords(n, 2) >= 2 {
-			// Broad “Recommended …” and “Related …” labels are common
+		if !a.hasArticleBodyDescendant(n) &&
+			(hasAuxiliaryHeading(n) || hasDeepLeadingAuxiliaryHeading(n)) && countLinkedRecords(n, 2) >= 2 {
+			// Do not classify a shared article wrapper from a toolbar or a trailing
+			// recommendation heading. Its narrower auxiliary children are visited
+			// independently. Broad “Recommended …” and “Related …” labels are common
 			// editorial headings. Linked records alone do not make such a
 			// section promotional when it belongs to the primary article.
 			if !isBroadEditorialAuxiliaryHeading(firstRegionHeading(n)) || !hasNonCardArticleAncestor(n) {
@@ -1991,7 +2173,7 @@ func (a *analysis) isArticleCommentRegion(n *html.Node) (result bool) {
 	// sufficiently specific on article pages. “Responses” and “replies” are
 	// ambiguous (for example, survey responses), so they require the heading or
 	// repeated-record evidence checked below.
-	if containsAny(tokens, "comments", "commentlist") ||
+	if containsAny(tokens, "comments", "commentlist") || hasCompactClass(n, "commentbox") ||
 		(containsAny(tokens, "comment") && containsAny(tokens, "list")) ||
 		containsAny(tokens, "discussion") && hasArticleDiscussionHeading(n) {
 		return true
