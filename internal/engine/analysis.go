@@ -35,22 +35,22 @@ type articleRegionEvidence struct {
 	documentOrder    int
 }
 
-// scoringProfile is deliberately internal. Relaxation is an article recovery
-// mechanism, not a general-purpose extraction mode.
+// nodeState contains memoized policy decisions. Immutable DOM facts belong in
+// evidenceIndex instead of this classification cache.
 type nodeState struct {
-	hidden, irrelevant, irrelevantAncestor, baseAuxiliary, articleAuxiliary uint8
-	inferenceAuxiliary, discussionBody                                      uint8
-	subscriptionEvidence                                                    uint8
-	articleComment, commentCount                                            uint8
-	articleDescendant, semanticBefore, semanticAfter                        uint8
-	articleProseBefore, selfReference                                       uint8
-	articleCardCount, substantialArticle                                    uint8
-	inferenceTokens                                                         uint16
+	irrelevant, irrelevantAncestor, baseAuxiliary, articleAuxiliary uint8
+	inferenceAuxiliary                                              uint8
+	articleComment, commentCount                                    uint8
+	semanticBefore, semanticAfter                                   uint8
+	articleProseBefore, selfReference                               uint8
+	articleCardCount, substantialArticle                            uint8
+	inferenceTokens                                                 uint16
 }
 
 type analysis struct {
 	o                                                options
 	root                                             *html.Node
+	evidence                                         *evidenceIndex
 	pageURL, base                                    *url.URL
 	elements, textBytes, maxDepth                    int
 	blocks                                           []block
@@ -77,29 +77,4 @@ type metadata struct {
 	titlePriority, descriptionPriority, authorPriority, publishedPriority                                   uint8
 	articlePublished, articleType, schemaDiscussion, schemaDocumentation                                    bool
 	schemaProduct, schemaListing, schemaService, headline, microdataListing, titleFromHeading               bool
-}
-
-// index counts the bounded source resources and records the maximum tree depth.
-func (a *analysis) index(n *html.Node, depth int) error {
-	if depth > a.maxDepth {
-		a.maxDepth = depth
-	}
-	if a.o.maxDepth > 0 && depth > a.o.maxDepth {
-		return &LimitError{Resource: LimitDepth, Count: int64(depth), Max: int64(a.o.maxDepth)}
-	}
-	if n.Type == html.ElementNode {
-		a.elements++
-		if a.o.maxElements > 0 && a.elements > a.o.maxElements {
-			return &LimitError{Resource: LimitElements, Count: int64(a.elements), Max: int64(a.o.maxElements)}
-		}
-	}
-	if n.Type == html.TextNode {
-		a.textBytes += len(n.Data)
-	}
-	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-		if err := a.index(ch, depth+1); err != nil {
-			return err
-		}
-	}
-	return nil
 }

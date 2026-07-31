@@ -175,12 +175,16 @@ func (a *analysis) inferType(wantCandidates bool) (PageType, float64, []PageCand
 		scores[PageTypeDocumentation] += 3
 	}
 	sectionCount := 0
-	walk(a.root, func(n *html.Node) bool {
-		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "section") {
-			sectionCount++
-		}
-		return true
-	})
+	if a.evidence != nil {
+		sectionCount = a.evidence.sections
+	} else {
+		walk(a.root, func(n *html.Node) bool {
+			if n.Type == html.ElementNode && strings.EqualFold(n.Data, "section") {
+				sectionCount++
+			}
+			return true
+		})
+	}
 	if sectionCount >= 3 {
 		scores[PageTypeService] += 3
 	}

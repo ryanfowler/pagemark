@@ -175,18 +175,16 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	if o.diagnostics {
 		a.diag = &diagnosticState{ProfileVersion: "1", Fallback: "primary"}
 	}
-	if err := a.index(root, 0); err != nil {
+	evidence, err := buildEvidence(root, o)
+	if err != nil {
 		return nil, err
 	}
-	// Most classification passes eventually memoize nearly every element. Size
-	// the unified state table now that index has counted them, avoiding repeated
-	// map growth and short-lived old bucket arrays on large documents.
+	a.evidence = evidence
+	a.elements, a.textBytes, a.maxDepth = evidence.elements, evidence.textBytes, evidence.maxDepth
+	// Classification results are mutable policy decisions. Keep them in a table
+	// separate from the immutable DOM evidence built above.
 	a.nodeStates = make(map[*html.Node]nodeState, a.elements)
 	a.findBase()
-	// Index subtree evidence before metadata extraction: microdata filtering uses
-	// auxiliary-region detection, and subscription checks otherwise rescan large
-	// wrappers once for every descendant.
-	a.indexSubtreeEvidence(root)
 	a.extractMetadata()
 	a.segment(root, false)
 	a.detectTextListingPre()
