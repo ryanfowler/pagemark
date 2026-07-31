@@ -2235,9 +2235,14 @@ func (a *analysis) isSubscriptionRegion(n *html.Node) bool {
 		// Heading normalization may supply a cloned tree.
 		return isSubscriptionRegion(n)
 	}
-	evidence := a.nodeStates[n].subscriptionEvidence
-	return evaluateSubscriptionRegion(n, evidence&subtreeHasForm != 0,
-		evidence&subtreeHasEmail != 0, evidence&subtreeHasSubscriptionForm != 0)
+	if a.evidence == nil {
+		return isSubscriptionRegion(n)
+	}
+	controlCount, _ := a.evidence.controlCount(n)
+	return evaluateSubscriptionRegion(n,
+		a.evidence.has(n, evidenceForm),
+		a.evidence.has(n, evidenceEmailInput),
+		a.evidence.has(n, evidenceSubscriptionForm), controlCount)
 }
 
 func isSubscriptionRegion(n *html.Node) bool {
@@ -2262,7 +2267,7 @@ func isSubscriptionRegion(n *html.Node) bool {
 		}
 		return true
 	})
-	return evaluateSubscriptionRegion(n, hasForm, hasEmail, subscriptionForm)
+	return evaluateSubscriptionRegion(n, hasForm, hasEmail, subscriptionForm, controls(n))
 }
 
 func subscriptionContainer(n *html.Node) bool {
@@ -2277,7 +2282,7 @@ func subscriptionContainer(n *html.Node) bool {
 	}
 }
 
-func evaluateSubscriptionRegion(n *html.Node, hasForm, hasEmail, subscriptionForm bool) bool {
+func evaluateSubscriptionRegion(n *html.Node, hasForm, hasEmail, subscriptionForm bool, controlCount int) bool {
 	attributeMarker := subscriptionAttributeMarker(n)
 	// Text collection and heading discovery are comparatively expensive on large
 	// wrappers. Neither matters without a form or an explicit marker.
@@ -2296,7 +2301,7 @@ func evaluateSubscriptionRegion(n *html.Node, hasForm, hasEmail, subscriptionFor
 		return formEvidence && cta
 	}
 
-	if !hasForm || (!hasEmail && controls(n) < 2) {
+	if !hasForm || (!hasEmail && controlCount < 2) {
 		return false
 	}
 	// CTA labels are needed only when the surrounding text and form action did
@@ -2874,35 +2879,26 @@ func (a *analysis) hasArticleBodyDescendant(root *html.Node) bool {
 	if root == nil || hardHidden(root) {
 		return false
 	}
-	if state := a.nodeStates[root].articleDescendant; state != 0 {
-		return state == 2
+	if a.evidence != nil {
+		if _, indexed := a.evidence.nodes[root]; indexed {
+			return a.evidence.has(root, evidenceArticleBodyDescendant)
+		}
 	}
 	found := false
-	for ch := root.FirstChild; ch != nil && !found; ch = ch.NextSibling {
-		if hardHidden(ch) || ch.Type != html.ElementNode {
-			continue
-		}
-		semanticArticle := strings.EqualFold(ch.Data, "article") &&
-			!elementContainsAny(ch, "card", "comment", "reply")
-		// WordPress and several other publishing systems predate widespread use
-		// of <article>. Their conventional *-content wrappers are equivalent
-		// evidence that this subtree contains the primary article body. Inspect
-		// attributes in place to avoid constructing a token string for every node.
-		// Older and server-rendered templates often use entry-content or
-		// camelCase articleContent wrappers instead of semantic article markup.
-		conventionalArticleBody := isConventionalArticleBody(ch)
-		if semanticArticle || conventionalArticleBody {
-			found = true
-			break
-		}
-		found = a.hasArticleBodyDescendant(ch)
+	for child := root.FirstChild; child != nil && !found; child = child.NextSibling {
+		walk(child, func(current *html.Node) bool {
+			if hardHidden(current) {
+				return false
+			}
+			if current.Type != html.ElementNode {
+				return true
+			}
+			semanticArticle := strings.EqualFold(current.Data, "article") &&
+				!elementContainsAny(current, "card", "comment", "reply")
+			found = semanticArticle || isConventionalArticleBody(current)
+			return !found
+		})
 	}
-	state := a.nodeStates[root]
-	state.articleDescendant = 1
-	if found {
-		state.articleDescendant = 2
-	}
-	a.nodeStates[root] = state
 	return found
 }
 

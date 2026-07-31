@@ -48,7 +48,7 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 				return
 			}
 		}
-		if isGenericContainer(tag) && !hasPostBody && !hasBlockDescendant(n) {
+		if isGenericContainer(tag) && !hasPostBody && !a.hasBlockDescendant(n) {
 			text := normalizeText(nodeText(n))
 			visual := a.o.includeImages && hasMeaningfulVisual(n)
 			if utf8.RuneCountInString(text) >= 12 || visual {
@@ -70,7 +70,7 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 	// Normal block segmentation would silently lose that text. Recover each such
 	// inline run as a synthetic paragraph while retaining the source container as
 	// its ancestry for scoring and auxiliary checks.
-	if n.Type == html.ElementNode && isGenericContainer(strings.ToLower(n.Data)) && hasBlockDescendant(n) &&
+	if n.Type == html.ElementNode && isGenericContainer(strings.ToLower(n.Data)) && a.hasBlockDescendant(n) &&
 		(strings.EqualFold(n.Data, "article") || strings.EqualFold(n.Data, "main") ||
 			elementContainsAny(n, "article", "content", "entry", "post", "story", "body")) {
 		a.segmentDirectFlow(n, excluded)
@@ -105,7 +105,7 @@ func (a *analysis) segmentDirectFlow(parent *html.Node, excluded bool) {
 		boundary := a.hidden(ch)
 		if ch.Type == html.ElementNode {
 			tag := strings.ToLower(ch.Data)
-			boundary = boundary || isBlockTag(tag) || isGenericContainer(tag) || hasBlockDescendant(ch) ||
+			boundary = boundary || isBlockTag(tag) || isGenericContainer(tag) || a.hasBlockDescendant(ch) ||
 				tag == "aside" || tag == "header" || tag == "footer" || tag == "nav" || isVisualElement(ch)
 		}
 		if boundary {
@@ -437,84 +437,46 @@ func (a *analysis) hasDiscussionBodyDescendant(n *html.Node) bool {
 	if n == nil {
 		return false
 	}
-	return a.nodeStates[n].discussionBody == 2
-}
-
-const (
-	subtreeHasForm uint8 = 1 << iota
-	subtreeHasEmail
-	subtreeHasSubscriptionForm
-)
-
-// indexSubtreeEvidence performs one post-order pass for properties queried on
-// many nested containers. Only positive results are recorded, avoiding a large
-// hash-map entry for every element on pages without these features.
-func (a *analysis) indexSubtreeEvidence(n *html.Node) (bool, uint8) {
-	if n == nil {
-		return false, 0
-	}
-	if n.Type == html.ElementNode {
-		hidden := hardHidden(n)
-		state := a.nodeStates[n]
-		state.hidden = 1
-		if hidden {
-			state.hidden = 2
-		}
-		a.nodeStates[n] = state
-		if hidden {
-			return false, 0
+	if a.evidence != nil {
+		if _, indexed := a.evidence.nodes[n]; indexed {
+			return a.evidence.has(n, evidenceDiscussionBodyDescendant)
 		}
 	}
-	bodyBelow := false
-	var subscription uint8
-	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-		// Text and comment nodes cannot contribute structural evidence.
-		if ch.Type == html.ElementNode {
-			body, evidence := a.indexSubtreeEvidence(ch)
-			bodyBelow = bodyBelow || body
-			subscription |= evidence
-		}
-	}
-	if n.Type == html.ElementNode {
-		switch strings.ToLower(n.Data) {
-		case "form":
-			subscription |= subtreeHasForm
-			if subscriptionAttributeMarker(n) || containsSubscriptionWord(attrValue(n, "action")) {
-				subscription |= subtreeHasSubscriptionForm
-			}
-		case "input":
-			if strings.EqualFold(strings.TrimSpace(attrValue(n, "type")), "email") {
-				subscription |= subtreeHasEmail
-			}
-		}
-	}
-	if bodyBelow || subscription != 0 {
-		state := a.nodeStates[n]
-		if bodyBelow {
-			state.discussionBody = 2
-		}
-		state.subscriptionEvidence = subscription
-		a.nodeStates[n] = state
-	}
-	return bodyBelow || isDiscussionBodyContainer(n), subscription
-}
-
-func hasBlockDescendant(n *html.Node) bool {
 	found := false
-	for ch := n.FirstChild; ch != nil && !found; ch = ch.NextSibling {
-		walk(ch, func(x *html.Node) bool {
-			if dom.Hidden(x) {
+	for child := n.FirstChild; child != nil && !found; child = child.NextSibling {
+		walk(child, func(current *html.Node) bool {
+			if hardHidden(current) {
 				return false
 			}
-			if x.Type == html.ElementNode && isBlockTag(strings.ToLower(x.Data)) {
-				found = true
-				return false
-			}
+			found = isDiscussionBodyContainer(current)
 			return !found
 		})
 	}
 	return found
 }
+
+func (a *analysis) hasBlockDescendant(n *html.Node) bool {
+	if n == nil {
+		return false
+	}
+	if a.evidence != nil {
+		if _, indexed := a.evidence.nodes[n]; indexed {
+			return a.evidence.has(n, evidenceBlockDescendant)
+		}
+	}
+	found := false
+	for child := n.FirstChild; child != nil && !found; child = child.NextSibling {
+		walk(child, func(current *html.Node) bool {
+			if hardHidden(current) {
+				return false
+			}
+			found = current.Type == html.ElementNode && isBlockTag(strings.ToLower(current.Data))
+			return !found
+		})
+	}
+	return found
+}
+
 func isBlockTag(tag string) bool {
 	switch tag {
 	case "h1", "h2", "h3", "h4", "h5", "h6", "p", "pre", "blockquote", "ul", "ol", "dl", "table", "figure", "hr":
@@ -524,14 +486,16 @@ func isBlockTag(tag string) bool {
 }
 func hardHidden(n *html.Node) bool { return dom.Hidden(n) }
 
-// hidden returns the visibility decision recorded by the extraction evidence
-// pass. Synthetic and late-added nodes fall back to direct evaluation.
+// hidden returns the visibility fact recorded by the immutable evidence pass.
+// Synthetic and late-added nodes fall back to direct evaluation.
 func (a *analysis) hidden(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	if state := a.nodeStates[n].hidden; state != 0 {
-		return state == 2
+	if a.evidence != nil {
+		if _, indexed := a.evidence.nodes[n]; indexed {
+			return a.evidence.has(n, evidenceHidden)
+		}
 	}
 	return hardHidden(n)
 }
