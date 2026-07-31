@@ -38,8 +38,8 @@ func TestDocumentTitleIsSeparatedFromEveryContentView(t *testing.T) {
 			t.Fatalf("title leaked into sections: %#v", doc.Sections)
 		}
 	}
-	if doc.Stats.OutputBytes != len(doc.Markdown) || !strings.HasPrefix(doc.Markdown, "The body preserves") || !strings.Contains(doc.Markdown, "## Findings") {
-		t.Fatalf("body views or statistics are inconsistent: stats=%#v\n%s", doc.Stats, doc.Markdown)
+	if !strings.HasPrefix(doc.Markdown, "The body preserves") || !strings.Contains(doc.Markdown, "## Findings") {
+		t.Fatalf("body views are inconsistent:\n%s", doc.Markdown)
 	}
 
 	if doc.Title == "" && !strings.Contains(doc.Markdown, "Field report") {
@@ -565,20 +565,18 @@ func TestShortRenderedRepositoryMarkdownRemainsAuthoritative(t *testing.T) {
 <article class="markdown-body" itemprop="text"><h1>Tiny</h1><p>Small useful tool.</p></article>
 <section><p>Additional project chrome contains enough selectable prose to make a generic article fallback attractive, but it must remain outside the result.</p></section>
 </main></body></html>`
-	doc, err := ExtractBytes([]byte(html), "https://github.com/acme/tiny/")
+	doc, err := ExtractBytes([]byte(html), "https://github.com/acme/tiny/", withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if doc.Title != "Tiny" || doc.Markdown != "Small useful tool." {
 		t.Fatalf("short rendered document was not authoritative:\n%s", doc.Markdown)
 	}
-	if doc.PageType != PageTypeArticle || doc.Quality >= .42 {
-		t.Fatalf("test did not exercise the low-quality article path: type=%q quality=%v", doc.PageType, doc.Quality)
+	if doc.PageType != PageTypeArticle || doc.diagnostic == nil || doc.diagnostic.Quality >= .42 {
+		t.Fatalf("test did not exercise the low-quality article path: type=%q diagnostics=%#v", doc.PageType, doc.diagnostic)
 	}
-	for _, warning := range doc.Warnings {
-		if warning.Code == "fallback" {
-			t.Fatalf("short rendered document triggered fallback: %#v", doc.Warnings)
-		}
+	if doc.diagnostic.Fallback != "primary" {
+		t.Fatalf("short rendered document triggered fallback: %#v", doc.diagnostic)
 	}
 }
 
@@ -1318,8 +1316,8 @@ func TestSemanticArticleFallbackQualityIgnoresExcludedComments(t *testing.T) {
 	if withComments.Markdown != withoutComments.Markdown {
 		t.Fatalf("excluded comments changed output:\nwithout:\n%s\nwith:\n%s", withoutComments.Markdown, withComments.Markdown)
 	}
-	if withComments.Quality != withoutComments.Quality {
-		t.Fatalf("quality without comments = %v, with comments = %v", withoutComments.Quality, withComments.Quality)
+	if withComments.diagnostic.Quality != withoutComments.diagnostic.Quality {
+		t.Fatalf("quality without comments = %v, with comments = %v", withoutComments.diagnostic.Quality, withComments.diagnostic.Quality)
 	}
 	if strings.Contains(withComments.Text, "reader comment") {
 		t.Fatalf("excluded comment was emitted: %s", withComments.Text)
@@ -1976,7 +1974,7 @@ func TestLongNarrativeOutweighsEmbeddedRecordSections(t *testing.T) {
 				t.Fatal(err)
 			}
 			if doc.PageType != PageTypeArticle {
-				t.Fatalf("page type = %q (score %.3f), want article", doc.PageType, doc.PageTypeScore)
+				t.Fatalf("page type = %q, want article", doc.PageType)
 			}
 		})
 	}
@@ -2118,12 +2116,12 @@ func TestDominantProductWrapperInfersProductOnNeutralURL(t *testing.T) {
 
 func TestExplicitPageTypeOverridesNarrativeInference(t *testing.T) {
 	html := `<main><h1>Long analysis</h1><p>This long analysis explains the complete history and the evidence behind the final decision in a conventional article structure.</p><p>A second substantial paragraph continues the narrative and records the practical consequences for readers.</p></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/blog/analysis", WithPageType(PageTypeListing))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/blog/analysis", WithPageType(PageTypeListing), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.PageType != PageTypeListing || doc.PageTypeScore != 1 {
-		t.Fatalf("page type = %q score %.3f, want explicit listing with score 1", doc.PageType, doc.PageTypeScore)
+	if doc.PageType != PageTypeListing || doc.diagnostic == nil || doc.diagnostic.PageTypeScore != 1 {
+		t.Fatalf("page type = %q diagnostics=%#v, want explicit listing with score 1", doc.PageType, doc.diagnostic)
 	}
 }
 
@@ -3501,7 +3499,7 @@ func TestEmptyCommentsDoNotReduceShortArticleQuality(t *testing.T) {
 	extract := func(extra string) *Document {
 		t.Helper()
 		html := `<html><body><article><p>` + prose + `</p></article>` + extra + `</body></html>`
-		doc, err := ExtractBytes([]byte(html), "https://example.com/articles/short")
+		doc, err := ExtractBytes([]byte(html), "https://example.com/articles/short", withDiagnostics())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3509,8 +3507,8 @@ func TestEmptyCommentsDoNotReduceShortArticleQuality(t *testing.T) {
 	}
 	withoutWidget := extract("")
 	withWidget := extract(`<section class="comments"><p>No comments yet.</p><button>Open discussion</button></section>`)
-	if withWidget.Quality != withoutWidget.Quality {
-		t.Fatalf("quality without widget = %v, with widget = %v", withoutWidget.Quality, withWidget.Quality)
+	if withWidget.diagnostic.Quality != withoutWidget.diagnostic.Quality {
+		t.Fatalf("quality without widget = %v, with widget = %v", withoutWidget.diagnostic.Quality, withWidget.diagnostic.Quality)
 	}
 	if strings.Contains(withWidget.Text, "No comments yet") {
 		t.Fatalf("empty comments were restored: %s", withWidget.Text)
@@ -3841,15 +3839,15 @@ func TestListingDoesNotTruncateRecords(t *testing.T) {
 		paragraphs.WriteString(`.</p>`)
 	}
 	html := `<main><h1>Long article</h1>` + paragraphs.String() + `<h2>What comes next?</h2><p>A final prose paragraph follows the section heading.</p></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(doc.Text, "number 7") || !strings.Contains(doc.Text, "What comes next?") {
 		t.Fatalf("prose was truncated: %s", doc.Text)
 	}
-	if doc.Stats.SelectedBlocks != 10 {
-		t.Fatalf("selected blocks = %d, want 10", doc.Stats.SelectedBlocks)
+	if doc.diagnostic == nil || doc.diagnostic.Stats.SelectedBlocks != 10 {
+		t.Fatalf("diagnostics = %#v, want 10 selected blocks", doc.diagnostic)
 	}
 }
 
@@ -3924,7 +3922,7 @@ func TestAccessibleSVGInternalsRemainOpaque(t *testing.T) {
 		<svg role="img" aria-label="Request lifecycle"><text>` + internal + `</text><a href="/internal-link"><text>hidden link</text></a></svg>
 		<p>Following prose explains the request lifecycle after the diagram.</p>
 	</article>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithIncludeImages(true))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithIncludeImages(true), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3934,12 +3932,12 @@ func TestAccessibleSVGInternalsRemainOpaque(t *testing.T) {
 	if strings.Contains(doc.Markdown, "INTERNAL") || strings.Contains(doc.Text, "INTERNAL") || strings.Contains(doc.Markdown, "internal-link") {
 		t.Fatalf("SVG internals affected extraction:\n%s\ntext=%q", doc.Markdown, doc.Text)
 	}
-	baseline, err := ExtractBytes([]byte(strings.Replace(html, internal, "", 1)), "https://example.com/article", WithPageType(PageTypeArticle), WithIncludeImages(true))
+	baseline, err := ExtractBytes([]byte(strings.Replace(html, internal, "", 1)), "https://example.com/article", WithPageType(PageTypeArticle), WithIncludeImages(true), withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.Quality != baseline.Quality || doc.PageType != baseline.PageType {
-		t.Fatalf("SVG internals changed analysis: quality %v vs %v, type %v vs %v", doc.Quality, baseline.Quality, doc.PageType, baseline.PageType)
+	if doc.diagnostic.Quality != baseline.diagnostic.Quality || doc.PageType != baseline.PageType {
+		t.Fatalf("SVG internals changed analysis: quality %v vs %v, type %v vs %v", doc.diagnostic.Quality, baseline.diagnostic.Quality, doc.PageType, baseline.PageType)
 	}
 }
 
@@ -4078,9 +4076,9 @@ func TestDetailedExtractionMatchesOrdinaryExtraction(t *testing.T) {
 	if detailed.Markdown != ordinary.Markdown || detailed.Text != ordinary.Text {
 		t.Fatalf("detailed extraction changed content:\nordinary=%q\n detailed=%q", ordinary.Markdown, detailed.Markdown)
 	}
-	if report.Quality != detailed.Quality || report.PageTypeScore != detailed.PageTypeScore ||
-		report.Stats.OutputBytes != len(detailed.Markdown) {
-		t.Fatalf("report does not match document: %#v", report)
+	if report.Quality <= 0 || report.PageTypeScore <= 0 ||
+		report.Stats.InputBytes != len(source) || report.Stats.OutputBytes != len(detailed.Markdown) {
+		t.Fatalf("incomplete detailed report: %#v", report)
 	}
 }
 
@@ -4096,15 +4094,8 @@ func TestOutputLimitDoesNotBecomeNoContent(t *testing.T) {
 	if doc.Text != "" {
 		t.Fatalf("unexpected text from content that did not fit: %q", doc.Text)
 	}
-	foundWarning := false
-	for _, warning := range doc.Warnings {
-		if warning.Code == WarningOutputTruncated {
-			foundWarning = true
-			break
-		}
-	}
-	if !foundWarning {
-		t.Fatalf("missing truncation warning: %#v", doc.Warnings)
+	if !doc.Truncated {
+		t.Fatal("document did not report truncation")
 	}
 }
 
@@ -4133,15 +4124,8 @@ func TestOutputLimitFindsContentAfterOversizedThematicBreak(t *testing.T) {
 	if doc == nil || doc.Text != "" || len(doc.Markdown) > 1 {
 		t.Fatalf("unexpected bounded output: %#v", doc)
 	}
-	foundWarning := false
-	for _, warning := range doc.Warnings {
-		if warning.Code == WarningOutputTruncated {
-			foundWarning = true
-			break
-		}
-	}
-	if !foundWarning {
-		t.Fatalf("missing truncation warning: %#v", doc.Warnings)
+	if !doc.Truncated {
+		t.Fatal("document did not report truncation")
 	}
 }
 
@@ -4157,8 +4141,8 @@ func TestOutputLimitIsUTF8Safe(t *testing.T) {
 	if d.Title != "Title" || strings.Contains(d.Markdown, "Title") {
 		t.Fatalf("title was not separated: title=%q Markdown=%q", d.Title, d.Markdown)
 	}
-	if len(d.Warnings) == 0 {
-		t.Fatal("missing truncation warning")
+	if !d.Truncated {
+		t.Fatal("document did not report truncation")
 	}
 }
 
@@ -4508,15 +4492,15 @@ func TestContainsWordSequence(t *testing.T) {
 
 func TestNoscriptFallbackForScriptDrivenPage(t *testing.T) {
 	source := []byte(`<!doctype html><html><head><title>Forum thread - Example Forum</title></head><body><header><a href="/">Example Forum</a></header><main id="app"></main><noscript><main><h1>Forum thread</h1><article><p>This is the complete server-rendered fallback post, with enough useful prose to be selected instead of the empty application shell.</p><p>A second paragraph makes clear that this fallback is substantive primary content.</p></article></main></noscript></body></html>`)
-	doc, err := ExtractBytes(source, "https://example.com/thread/1")
+	doc, err := ExtractBytes(source, "https://example.com/thread/1", withDiagnostics())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if doc.Title != "Forum thread" || !strings.Contains(doc.Text, "complete server-rendered fallback post") {
 		t.Fatalf("noscript fallback was not recovered: title=%q text=%q", doc.Title, doc.Text)
 	}
-	if len(doc.Warnings) == 0 || doc.Warnings[len(doc.Warnings)-1].Code != "fallback" {
-		t.Fatalf("noscript fallback warning missing: %+v", doc.Warnings)
+	if doc.diagnostic == nil || doc.diagnostic.Fallback != "noscript" {
+		t.Fatalf("noscript fallback diagnostics missing: %+v", doc.diagnostic)
 	}
 }
 

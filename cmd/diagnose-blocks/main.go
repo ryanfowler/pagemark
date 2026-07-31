@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ryanfowler/pagemark"
+	"github.com/ryanfowler/pagemark/internal/engine"
 )
 
 func main() {
@@ -18,7 +18,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	_, report, err := pagemark.ExtractDetailedBytes(source, os.Args[2])
+	_, report, err := engine.ExtractDetailedBytes(source, os.Args[2])
 	if err != nil {
 		panic(err)
 	}

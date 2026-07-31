@@ -101,8 +101,8 @@ func TestInputAndOutputOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(limited.Warnings) == 0 || limited.Warnings[0].Code != WarningOutputTruncated {
-		t.Fatalf("small output limit did not truncate: %#v", limited.Warnings)
+	if !limited.Truncated {
+		t.Fatal("small output limit did not truncate")
 	}
 	doc, err := ExtractBytes(source, "", WithMaxOutputBytes(-1))
 	if err != nil {

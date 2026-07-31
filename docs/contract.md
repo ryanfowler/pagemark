@@ -21,8 +21,7 @@ limits are fixed internal safety bounds. The input-byte limit applies to
 `Extract` and `ExtractBytes`, not `ExtractNode`, whose DOM is already parsed. A
 DOM or input limit returns a `LimitError`. The output-byte limit is nonfatal for
 substantive content. If no selected substantive content block fits, Pagemark
-returns a `Document` with bounded empty output and a `WarningOutputTruncated`
-warning.
+returns a `Document` with bounded empty output and `Truncated` set to true.
 
 ## Output
 
@@ -53,10 +52,10 @@ fields permit HTTP and HTTPS and remove credentials before returning a result.
 guaranteed to be a valid timestamp.
 
 The durable result contract consists of source and canonical URLs, metadata,
-page type, Markdown, text, sections, links, images, and warnings. Page-type
-scores, quality heuristics, block scores, fallback names, and detailed counters
-are experimental diagnostics. Request them with `ExtractDetailedBytes`;
-`DiagnosticReport` may change in a minor release.
+page type, Markdown, text, sections, links, images, and the truncation flag.
+Page-type scores, quality heuristics, block scores, fallback names, and detailed
+counters are internal algorithm diagnostics. They are not part of the public
+contract.
 
 ## Safety
 

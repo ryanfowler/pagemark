@@ -47,11 +47,6 @@ type Document struct {
 	PublishedTime string `json:"published_time,omitempty"`
 	// PageType is the detected or specified page shape.
 	PageType PageType `json:"page_type"`
-	// PageTypeScore is the page-type confidence from 0 through 1.
-	// An explicit page type has a score of 1.
-	//
-	// Deprecated: use DiagnosticReport.PageTypeScore from ExtractDetailedBytes.
-	PageTypeScore float64 `json:"page_type_score"`
 	// Markdown is the selected content as restricted Markdown.
 	Markdown string `json:"markdown"`
 	// Text is the selected content as plain text.
@@ -62,21 +57,11 @@ type Document struct {
 	Links []Link `json:"links,omitempty"`
 	// Images contains the useful images that occur in Markdown.
 	Images []Image `json:"images,omitempty"`
-	// Quality measures observable output properties from 0 through 1.
-	// It does not measure trust or factual accuracy.
-	//
-	// Deprecated: use DiagnosticReport.Quality from ExtractDetailedBytes.
-	Quality float64 `json:"quality"`
-	// Warnings contains nonfatal extraction conditions.
-	Warnings []Warning `json:"warnings,omitempty"`
+	// Truncated reports whether the output byte limit omitted content.
+	Truncated bool `json:"truncated,omitempty"`
 
-	// diagnostic is populated only during ExtractDetailedBytes and is never
-	// exposed through the public result.
+	// diagnostic is populated only during internal diagnostic extraction.
 	diagnostic *diagnosticState
-	// Stats contains extraction counts.
-	//
-	// Deprecated: use DiagnosticReport.Stats from ExtractDetailedBytes.
-	Stats Stats `json:"stats"`
 }
 
 // Section contains one selected section as plain text.
@@ -103,25 +88,8 @@ type Image struct {
 	URL string `json:"url,omitempty"`
 }
 
-// WarningCode identifies a nonfatal extraction condition.
-type WarningCode string
-
-const (
-	WarningOutputTruncated   WarningCode = "output-truncated"
-	WarningFallbackUsed      WarningCode = "fallback"
-	WarningRelaxedExtraction WarningCode = "relaxed-article-extraction"
-)
-
-// Warning reports a nonfatal extraction condition.
-type Warning struct {
-	// Code is a short machine-readable identifier.
-	Code WarningCode `json:"code"`
-	// Message describes the condition.
-	Message string `json:"message"`
-}
-
-// Stats contains extraction counts.
-type Stats struct {
+// diagnosticStats contains extraction counts for internal diagnostics.
+type diagnosticStats struct {
 	// InputBytes is the HTML byte count for Extract or ExtractBytes.
 	// It is zero for ExtractNode.
 	InputBytes int `json:"input_bytes"`
@@ -145,6 +113,9 @@ type diagnosticState struct {
 	PageCandidates []PageCandidate
 	Blocks         []BlockDiagnostic
 	RejectedLinks  []string
+	Stats          diagnosticStats
+	Quality        float64
+	PageTypeScore  float64
 }
 
 // PageCandidate contains one possible page type and its raw score.
@@ -179,7 +150,7 @@ type DiagnosticReport struct {
 	PageCandidates []PageCandidate   `json:"page_candidates,omitempty"`
 	Blocks         []BlockDiagnostic `json:"blocks,omitempty"`
 	RejectedLinks  []string          `json:"rejected_links,omitempty"`
-	Stats          Stats             `json:"stats"`
+	Stats          diagnosticStats   `json:"stats"`
 	Quality        float64           `json:"quality"`
 	PageTypeScore  float64           `json:"page_type_score"`
 }
