@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ryanfowler/pagemark/internal/markdown"
+	"github.com/ryanfowler/pagemark/internal/urlutil"
 	"golang.org/x/net/html"
 )
 
@@ -135,7 +136,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	var page *url.URL
 	if rawURL != "" {
 		u, err := url.Parse(rawURL)
-		if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		if err != nil || !urlutil.IsHierarchicalHTTP(u) {
 			return nil, ErrInvalidURL
 		}
 		u.User = nil
