@@ -298,7 +298,7 @@ func TestExtractStructuresAndSafety(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"**this API** safely", "````\ngo test\n```\n````", "- First", "| Name | Value |", "https://example.com/docs/next"} {
+	for _, want := range []string{"**this API** safely", "~~~\ngo test\n```\n~~~", "- First", "| Name | Value |", "https://example.com/docs/next"} {
 		if !strings.Contains(doc.Markdown, want) {
 			t.Errorf("Markdown does not contain %q:\n%s", want, doc.Markdown)
 		}
