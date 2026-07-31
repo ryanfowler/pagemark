@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ryanfowler/pagemark"
+	"github.com/ryanfowler/pagemark/internal/urlutil"
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/charset"
 )
@@ -223,7 +224,7 @@ func metaCharsetMatches(label, detectedName string) bool {
 
 func parsePageURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
+	if err != nil || !urlutil.IsHierarchicalHTTP(u) || u.User != nil {
 		return nil, errors.New("pagemark: URL must be an absolute HTTP or HTTPS URL without credentials")
 	}
 	return u, nil

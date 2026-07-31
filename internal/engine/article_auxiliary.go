@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ryanfowler/pagemark/internal/dom"
+	"github.com/ryanfowler/pagemark/internal/urlutil"
 	"golang.org/x/net/html"
 )
 
@@ -1166,7 +1167,7 @@ func comparablePageURL(raw string, base *url.URL) string {
 	if base != nil {
 		u = base.ResolveReference(u)
 	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	if !urlutil.IsHierarchicalHTTP(u) {
 		return ""
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
@@ -1604,7 +1605,7 @@ func isOrganizationLink(raw string, base *url.URL) bool {
 	if base != nil {
 		u = base.ResolveReference(u)
 	}
-	if u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https" {
+	if u.Scheme != "" && !urlutil.IsHierarchicalHTTP(u) {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())

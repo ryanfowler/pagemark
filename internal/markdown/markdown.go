@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ryanfowler/pagemark/internal/dom"
+	"github.com/ryanfowler/pagemark/internal/urlutil"
 	"golang.org/x/net/html"
 )
 
@@ -1625,8 +1626,10 @@ func (c *converter) safeURL(raw string) (string, bool) {
 	if !allowed {
 		return "", false
 	}
-	if (scheme == "http" || scheme == "https") && (u.Host == "" || u.Opaque != "") {
-		return "", false
+	if scheme == "http" || scheme == "https" {
+		if !urlutil.IsHierarchicalHTTP(u) {
+			return "", false
+		}
 	}
 	if c.cfg.Policy.StripTracking {
 		q := u.Query()

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -3800,6 +3801,22 @@ func TestMalformedHTTPDestinationIsPlainText(t *testing.T) {
 	}
 	if strings.Contains(doc.Markdown, "](http:") || !strings.Contains(doc.Text, "Label") {
 		t.Fatal(doc.Markdown)
+	}
+}
+
+func TestFindBaseUsesFirstBaseHrefEvenWhenInvalid(t *testing.T) {
+	root, err := html.Parse(strings.NewReader(`<html><head><base href="http://:80/path"><base href="https://injected.example/"></head><body></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := url.Parse("https://document.example/article")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &analysis{root: root, pageURL: page, base: page}
+	a.findBase()
+	if got := a.base.String(); got != page.String() {
+		t.Fatalf("base = %q, want document URL %q", got, page)
 	}
 }
 

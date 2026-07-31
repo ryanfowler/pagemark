@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ryanfowler/pagemark/internal/urlutil"
 	"golang.org/x/net/html"
 )
 
@@ -816,13 +817,20 @@ func hasAncestorItemprop(n *html.Node, value string) bool {
 	return false
 }
 func (a *analysis) findBase() {
+	found := false
 	walk(a.root, func(n *html.Node) bool {
-		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "base") {
-			if u, err := url.Parse(attrValue(n, "href")); err == nil {
+		if found {
+			return false
+		}
+		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "base") && hasHTMLAttr(n, "href") {
+			// HTML uses the first base element with an href. An invalid first
+			// element must not allow a later element to replace the document URL.
+			found = true
+			if u, err := url.Parse(strings.TrimSpace(attrValue(n, "href"))); err == nil {
 				if a.pageURL != nil {
 					u = a.pageURL.ResolveReference(u)
 				}
-				if u.Scheme == "http" || u.Scheme == "https" {
+				if urlutil.IsHierarchicalHTTP(u) {
 					a.base = u
 				}
 			}
@@ -839,7 +847,7 @@ func (a *analysis) resolveMetadataURL(s string) string {
 	if a.base != nil {
 		u = a.base.ResolveReference(u)
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
+	if !urlutil.IsHierarchicalHTTP(u) {
 		return ""
 	}
 	u.User = nil
