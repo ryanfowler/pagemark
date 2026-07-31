@@ -86,6 +86,7 @@ type Result struct {
 	EmittedBlocks        int
 	EmittedContentBlocks int
 	Truncated            bool
+	DiscardedContent     bool
 }
 type LinkValue struct{ Text, URL string }
 type ImageValue struct{ Alt, URL string }
@@ -2216,6 +2217,7 @@ func pruneEmptySections(n *Node) bool {
 	return true
 }
 
+// hasSubstantiveBlock reports actual plain content, not syntax-only Markdown.
 func hasSubstantiveBlock(n *Node) bool {
 	if n == nil {
 		return false
@@ -2228,7 +2230,10 @@ func hasSubstantiveBlock(n *Node) bool {
 		}
 		return false
 	}
-	return n.Kind != Heading && n.Kind != ThematicBreak && hasRenderedContent(n)
+	if n.Kind == Heading || n.Kind == ThematicBreak {
+		return false
+	}
+	return strings.TrimSpace(plain(n)) != ""
 }
 
 // hasRenderedContent answers the common emptiness question without serializing
@@ -2289,8 +2294,20 @@ func render(doc *Node, max int, pruneHeadings bool) Result {
 		blocks = pruneStandaloneHeadings(blocks)
 	}
 	blocks = collapseAdjacentControls(blocks)
-	used, truncated := 0, false
-	for _, n := range blocks {
+	used, truncated, discardedContent := 0, false, false
+	markTruncated := func(index int) {
+		truncated = true
+		// Rendering stops at the first block that does not fit. A heading or
+		// thematic break can therefore hide substantive blocks later in the
+		// selection; include those blocks in the discarded-content signal.
+		for _, n := range blocks[index:] {
+			if hasSubstantiveBlock(n) {
+				discardedContent = true
+				return
+			}
+		}
+	}
+	for index, n := range blocks {
 		// Ordinary blocks must be rendered and trimmed before the separator is
 		// charged. Code blocks are the exception: preflight them first so a large
 		// fence is never allocated merely to discover that it cannot fit.
@@ -2302,7 +2319,7 @@ func render(doc *Node, max int, pruneHeadings bool) Result {
 				budget -= 2
 			}
 			if budget < 0 {
-				truncated = true
+				markTruncated(index)
 				break
 			}
 			rendered, fits = renderBlockBudget(n, 0, budget)
@@ -2310,7 +2327,7 @@ func render(doc *Node, max int, pruneHeadings bool) Result {
 			rendered = renderBlock(n, 0)
 		}
 		if !fits {
-			truncated = true
+			markTruncated(index)
 			break
 		}
 		s := strings.TrimSpace(rendered)
@@ -2324,7 +2341,7 @@ func render(doc *Node, max int, pruneHeadings bool) Result {
 		// Keep this as the authoritative check for ordinary blocks. It uses the
 		// same trimmed representation that is appended to the final output.
 		if max > 0 && used+add > max {
-			truncated = true
+			markTruncated(index)
 			break
 		}
 		markdownBlocks = append(markdownBlocks, s)
@@ -2349,7 +2366,8 @@ func render(doc *Node, max int, pruneHeadings bool) Result {
 	return Result{
 		Markdown: md, Text: clean(strings.Join(keptText, "\n")),
 		Links: links, Images: images, Sections: retainedSections(keptNodes),
-		EmittedBlocks: len(keptNodes), EmittedContentBlocks: contentBlocks, Truncated: truncated,
+		EmittedBlocks: len(keptNodes), EmittedContentBlocks: contentBlocks,
+		Truncated: truncated, DiscardedContent: discardedContent,
 	}
 }
 
