@@ -428,9 +428,8 @@ func isDiscussionBodyContainer(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode || !isGenericContainer(strings.ToLower(n.Data)) {
 		return false
 	}
-	tokens := elementTokens(n)
-	bodyToken := containsAny(tokens, "body", "content", "text")
-	return bodyToken && containsAny(tokens, "post", "comment", "answer", "reply", "message")
+	return elementContainsAny(n, "body", "content", "text") &&
+		elementContainsAny(n, "post", "comment", "answer", "reply", "message")
 }
 
 func (a *analysis) hasDiscussionBodyDescendant(n *html.Node) bool {

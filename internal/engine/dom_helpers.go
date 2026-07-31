@@ -76,7 +76,43 @@ func walkVisibleReverse(n *html.Node, f func(*html.Node)) {
 	}
 	f(n)
 }
+
+// normalizeTextFast checks whether s is already normalized (single ASCII
+// spaces between words, no leading/trailing whitespace). When it is, the
+// original string is returned without allocation.
+func normalizeTextFast(s string) (string, bool) {
+	if len(s) == 0 {
+		return "", true
+	}
+	// Reject leading whitespace.
+	if s[0] == ' ' || htmlSpace(s[0]) {
+		return "", false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= utf8.RuneSelf {
+			return "", false
+		}
+		// htmlSpace covers tab, newline, form feed, and carriage return.
+		if c == ' ' || htmlSpace(c) {
+			// Must be a single ASCII space.
+			if c != ' ' {
+				return "", false
+			}
+			// Reject consecutive spaces and trailing space.
+			if i+1 >= len(s) || s[i+1] == ' ' || htmlSpace(s[i+1]) {
+				return "", false
+			}
+		}
+	}
+	return s, true
+}
+
 func normalizeText(s string) string {
+	// Fast path: already single-spaced ASCII text.
+	if normal, ok := normalizeTextFast(s); ok {
+		return normal
+	}
 	start := 0
 	for start < len(s) {
 		space, size := textRuneSpace(s[start:])

@@ -83,6 +83,7 @@ func (m *memoizedCount) store(value int) {
 type nodeState struct {
 	irrelevant, irrelevantAncestor, baseAuxiliary, articleAuxiliary memoizedBool
 	inferenceAuxiliary                                              memoizedBool
+	boilerplateTokenCheck                                           memoizedBool
 	articleComment                                                  memoizedBool
 	commentCount                                                    memoizedCount
 	semanticBefore, semanticAfter                                   memoizedBool

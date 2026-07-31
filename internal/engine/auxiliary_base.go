@@ -22,6 +22,33 @@ func hasBoilerplateToken(n *html.Node) bool {
 	if elementContainsAny(n, badTokens...) {
 		return true
 	}
+	return hasBoilerplateTokenAttributes(n)
+}
+
+// hasBoilerplateTokenNode is the memoized version of hasBoilerplateToken for
+// use inside a scoring analysis pass. It avoids re-scanning the same element's
+// attributes during every block's scoring iteration.
+func (a *analysis) hasBoilerplateTokenNode(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	if value, known := a.nodeStates[n].boilerplateTokenCheck.value(); known {
+		return value
+	}
+	result := hasBoilerplateToken(n)
+	state := a.nodeStates[n]
+	state.boilerplateTokenCheck.store(result)
+	a.nodeStates[n] = state
+	return result
+}
+
+// hasBoilerplateTokenAttributes is the slow attribute-scanning part of
+// hasBoilerplateToken, factored out so the memoized wrapper can skip the fast
+// elementContainsAny path.
+func hasBoilerplateTokenAttributes(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
 	for _, attr := range []string{"id", "class", "role"} {
 		value := attrValue(n, attr)
 		for start := 0; start < len(value); {
