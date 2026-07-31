@@ -979,6 +979,98 @@ func TestRealYankoFixtureSuppressesSerializedImagesWithoutLosingArticle(t *testi
 	}
 }
 
+func TestGenericPublisherMastheadDoesNotOverrideArticle(t *testing.T) {
+	source := `<html><head><meta property="og:title" content="Actual story"></head><body><div class="masthead"><h1>Example Site</h1><img src="/logo.png" alt="Example Site"></div><article><h1>Actual story</h1><p>The actual story contains substantive reporting and context that should become the extracted article.</p></article></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/articles/story")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Title != "Actual story" || strings.Contains(doc.Text, "Example Site") || !strings.Contains(doc.Text, "substantive reporting") {
+		t.Fatalf("generic publisher masthead was retained: title=%q text=%s", doc.Title, doc.Text)
+	}
+}
+
+func TestArticleMastheadPreservesAuthoredHeroContent(t *testing.T) {
+	source := `<main><div class="article-masthead"><h1>How extraction works</h1><img src="/hero.jpg" alt="A page of HTML"><p class="standfirst">This introductory standfirst explains the extraction approach and gives readers the context needed before the article body begins.</p></div><div class="article-body"><p>The body continues with implementation details and examples for readers who want to understand the method.</p></div></main>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/articles/extraction")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Title != "How extraction works" || !strings.Contains(doc.Text, "introductory standfirst") || !strings.Contains(doc.Text, "implementation details") {
+		t.Fatalf("article masthead was classified as site chrome: title=%q text=%s", doc.Title, doc.Text)
+	}
+}
+
+func TestFilterPageContainerDoesNotHideResults(t *testing.T) {
+	source := `<main class="filter-page"><h1>Search results</h1><form class="filter-form"><label>Topic <select><option>All</option></select></label></form><section class="results"><article><h2>First result</h2><p>The first result contains useful information for the reader.</p></article><article><h2>Second result</h2><p>The second result contains another useful summary.</p></article></section></main>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/search")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"First result", "useful information", "Second result", "another useful summary"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("filter-page container hid result content %q: %s", want, doc.Text)
+		}
+	}
+
+	generic, err := ExtractBytes([]byte(`<div class="filters"><form><input name="q"></form><main><h1>Filtered results</h1><article><h2>Useful record</h2><p>This substantive record must survive its generic filters wrapper.</p></article></main></div>`), "https://example.com/search?q=x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(generic.Text, "substantive record must survive") {
+		t.Fatalf("generic filters wrapper hid the page: %s", generic.Text)
+	}
+
+	short, err := ExtractBytes([]byte(`<div class="filters"><form><input name="q"></form><ul class="results"><li><a href="/first">First result</a></li><li><a href="/second">Second result</a></li></ul></div>`), "https://example.com/search?q=x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(short.Text, "First result") || !strings.Contains(short.Text, "Second result") {
+		t.Fatalf("short result list was hidden by its filters wrapper: %s", short.Text)
+	}
+}
+
+func TestAuthoredLinkParagraphsAreNotBreadcrumbs(t *testing.T) {
+	for _, links := range []string{
+		`<a href="/docs">Documentation</a> | <a href="/guides">Guides</a> | <a href="/api">API</a>`,
+		`<a href="/docs">Documentation</a> | <a href="/guides">Guides</a> | <a href="/api">API Reference</a> | <a href="/examples">Examples</a>`,
+	} {
+		t.Run(fmt.Sprintf("%d links", strings.Count(links, "<a ")), func(t *testing.T) {
+			source := `<main><h1>Component links</h1><p>` + links + `</p><p>This page explains how the linked resources fit together for developers.</p></main>`
+			doc, err := ExtractBytes([]byte(source), "https://example.com/docs/components", WithPageType(PageTypeDocumentation))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"Documentation", "Guides", "API", "Examples"} {
+				if strings.Count(links, want) > 0 && !strings.Contains(doc.Text, want) {
+					t.Errorf("authored link paragraph was mistaken for a breadcrumb, missing %q: %s", want, doc.Text)
+				}
+			}
+		})
+	}
+}
+
+func TestRealFidderyFixtureDropsTrailingArticleControlsAndTaxonomy(t *testing.T) {
+	source, err := os.ReadFile("../../testdata/real-fiddery-menu-article.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := ExtractBytes(source, "https://fiddery.com/blog/ugly-ai-menu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"I stopped by a Filipino and Hawaiian restaurant", "revamped their menu with AI"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("missing real Fiddlery-derived article content %q: %s", want, doc.Text)
+		}
+	}
+	for _, unwanted := range []string{"[Previous]", "[Next]", "#food", "#life"} {
+		if strings.Contains(doc.Markdown, unwanted) {
+			t.Errorf("article navigation or taxonomy survived as %q:\n%s", unwanted, doc.Markdown)
+		}
+	}
+}
+
 func TestRealHashcloakFramerFixturePreservesHeadingsCodeAndOneBreadcrumb(t *testing.T) {
 	source, err := os.ReadFile("../../testdata/real-hashcloak-framer-article.html")
 	if err != nil {
