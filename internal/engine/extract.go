@@ -106,7 +106,7 @@ func extractBytes(input []byte, pageURL string, o options) (*Document, error) {
 // ExtractNode returns useful content from a parsed HTML tree.
 // It does not change root. Do not change root during extraction.
 // pageURL can be empty. A nonempty pageURL must be an absolute HTTP or HTTPS URL.
-// WithMaxInputBytes and Limits.InputBytes do not apply to this function.
+// WithMaxInputBytes does not apply to this function.
 func ExtractNode(root *html.Node, pageURL string, opts ...Option) (*Document, error) {
 	o, err := applyOptions(opts)
 	if err != nil {
@@ -175,7 +175,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	// rather than relying on score penalties that long card copy can overcome.
 	a.pageType = pageType
 	a.score(pageType, scoringPrimary)
-	selected, repeatedExcluded, repeatedDropped := a.selectedNodes(pageType)
+	selected := a.selectedNodes()
 	winningProfile := scoringPrimary.name()
 	// Rendered Markdown documents are already an explicit primary-content
 	// boundary. Selecting their complete root both removes surrounding project
@@ -185,8 +185,6 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	authored := renderedMarkdownDocument(root)
 	if authored != nil {
 		selected = []*html.Node{authored}
-		repeatedExcluded = nil
-		repeatedDropped = 0
 		for i := range a.blocks {
 			inside := nodeWithin(a.blocks[i].node, authored)
 			a.blocks[i].selected = inside
@@ -201,7 +199,7 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 			winner := primary
 			for _, profile := range []scoringProfile{scoringRelaxedLabels, scoringRelaxedThreshold} {
 				a.score(pageType, profile)
-				nodes, _, _ := a.selectedNodes(pageType)
+				nodes := a.selectedNodes()
 				candidate := a.makeExtractionAttempt(profile, nodes)
 				if betterArticleAttempt(winner, candidate) {
 					winner = candidate
@@ -216,23 +214,18 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	fallback := winningProfile
 	if len(selected) == 0 {
 		selected = a.semanticFallback()
-		repeatedExcluded = nil
-		repeatedDropped = 0
 		fallback = "semantic-main"
 	}
 	quality := a.quality(selected)
 	if authored == nil && (pageType == PageTypeArticle || pageType == PageTypeGeneric) && quality < .42 {
 		if article, articleQuality := a.semanticArticleFallback(); article != nil {
 			selected = []*html.Node{article}
-			repeatedExcluded = nil
-			repeatedDropped = 0
 			fallback = "semantic-article"
 			quality = articleQuality
 		}
 	}
 	// Region reconstruction is deliberately a bounded article fallback. Normal
-	// block extraction, non-article page types, and repeated-item limiting keep
-	// their existing paths.
+	// block extraction and non-article page types keep their existing paths.
 	if authored == nil && pageType == PageTypeArticle {
 		currentChars, _, _ := a.nodeSetBlockEvidence(selected)
 		unexpectedlyShort := currentChars < 450
@@ -247,8 +240,6 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 				}
 				if material && regionLinks*2 < max(1, regionChars) && regionQuality >= quality-.05 {
 					selected = region
-					repeatedExcluded = nil
-					repeatedDropped = 0
 					fallback = "article-region"
 					quality = regionQuality
 				}
@@ -257,15 +248,11 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 	}
 	if len(selected) == 0 {
 		selected = a.highRecall()
-		repeatedExcluded = nil
-		repeatedDropped = 0
 		fallback = "high-recall"
 		quality = .2
 	}
 	if len(selected) == 0 && a.meta.description != "" {
 		selected = metadataNodes(a.meta)
-		repeatedExcluded = nil
-		repeatedDropped = 0
 		fallback = "metadata"
 		quality = .15
 	}
@@ -284,9 +271,9 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		visualAuxiliary := o.includeImages && isVisualElement(n) && !meaningfulVisual(n)
 		titleHeading := a.contentTitle != "" && isHeadingTag(strings.ToLower(n.Data)) &&
 			(titleEquivalent(articleHeadingText(n), a.contentTitle, a.meta.site) || titleEquivalent(nodeText(n), a.contentTitle, a.meta.site))
-		return titleHeading || a.titleExcluded[n] || a.hasIrrelevantAncestor(n) || repeatedExcluded[n] || discussionAuxiliary || visualAuxiliary
+		return titleHeading || a.titleExcluded[n] || a.hasIrrelevantAncestor(n) || discussionAuxiliary || visualAuxiliary
 	}
-	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxLinks: o.maxLinks, MaxImages: o.maxImages, MaxTableCells: o.maxTableCells, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: o.urlPolicy.AllowedSchemes, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude, PruneEmptyHeadings: true}
+	cfg := markdown.Config{Base: a.base, Links: o.includeLinks, Images: o.includeImages, Tables: o.includeTables, MaxBytes: o.maxOutput, Policy: markdown.URLPolicy{Schemes: o.urlPolicy.AllowedSchemes, MaxLength: o.urlPolicy.MaxLength, StripTracking: o.urlPolicy.StripTracking}, Exclude: exclude, PruneEmptyHeadings: true}
 	if a.textListingPre != nil {
 		cfg.TextPreformatted = func(n *html.Node) bool { return n == a.textListingPre }
 	}
@@ -368,9 +355,6 @@ func extractNode(root *html.Node, rawURL string, o options) (*Document, error) {
 		}
 	}
 	doc.Stats.SelectedBlocks = mr.EmittedBlocks
-	if repeatedDropped > 0 {
-		doc.Warnings = append(doc.Warnings, Warning{WarningRepeatedItemsTruncated, fmt.Sprintf("The repeated-item limit dropped %d selected content items.", repeatedDropped)})
-	}
 	if mr.Truncated {
 		doc.Warnings = append(doc.Warnings, Warning{WarningOutputTruncated, "The output reached the configured byte limit."})
 	}

@@ -14,15 +14,15 @@ Pagemark does not fetch the page. It does not run JavaScript. Supply rendered HT
 
 Decode non-UTF-8 input before extraction.
 
-Pagemark limits input bytes, tree size, tree depth, attributes, text, links,
-images, table cells, repeated items, and output bytes. Public `Limits` fields
-use `0` for the package default, a positive value for an explicit limit, and
-`-1` for unlimited. Limits do not control whether links, images, or tables are
-included. The input-byte limit applies to `Extract` and `ExtractBytes`, not
-`ExtractNode`, whose DOM is already parsed. A tree or input limit returns a
-`LimitError`. The output-byte limit is nonfatal for substantive content. If
-no selected substantive content block fits, Pagemark returns a `Document` with
-bounded empty output and a `WarningOutputTruncated` warning.
+Pagemark limits input bytes, DOM elements, DOM depth, and output bytes. The
+public input and output options use `0` for the package default, a positive
+value for an explicit limit, and `-1` for unlimited. DOM element and depth
+limits are fixed internal safety bounds. The input-byte limit applies to
+`Extract` and `ExtractBytes`, not `ExtractNode`, whose DOM is already parsed. A
+DOM or input limit returns a `LimitError`. The output-byte limit is nonfatal for
+substantive content. If no selected substantive content block fits, Pagemark
+returns a `Document` with bounded empty output and a `WarningOutputTruncated`
+warning.
 
 ## Output
 

@@ -30,23 +30,13 @@ Use `SelectionBalanced` for the default behavior. Unknown modes return
 
 ## Limits
 
-Replace advanced individual limit options:
+The public resource options are `WithMaxInputBytes` and
+`WithMaxOutputBytes`. Zero selects the package default, a positive value sets
+the limit, and `-1` means unlimited. Values below `-1` are invalid.
 
-```go
-pagemark.WithLimits(pagemark.Limits{
-	Elements: 100_000,
-	Depth:    128,
-	Images:   20,
-})
-```
-
-For every field, `0` means the package default, a positive value sets the
-limit, and `-1` means unlimited. Values below `-1` are invalid. Options apply
-in order. `WithMaxInputBytes` and `WithMaxOutputBytes` remain as conveniences.
-
-Link, image, and table inclusion is independent from their limits. Use
-`WithIncludeLinks`, `WithIncludeImages`, or `WithIncludeTables` to disable a
-feature.
+DOM element and depth limits remain fixed internal safety bounds. Use
+`WithIncludeLinks`, `WithIncludeImages`, and `WithIncludeTables` to control
+output features.
 
 ## URL policy
 
@@ -101,9 +91,8 @@ current API.
   `WithProfile`, `WithFavorPrecision`, `WithFavorRecall`, advanced individual
   limit options, and `WithIncludeMetadata` were removed directly. Only the
   legacy diagnostics option and fields have a temporary compatibility path.
-- `Limits` uses exactly one convention: `0` is the package default, positive
-  values are explicit limits, and `-1` is unlimited. Values below `-1` fail
-  validation. Later functional options win.
+- Public resource configuration is limited to input and output byte bounds.
+  DOM element and depth bounds are fixed internal safety limits.
 - `ExtractDetailedBytes` enables diagnostics inside the existing extraction
   pass and builds `DiagnosticReport`. Diagnostic state remains internal to the
   extraction engine, avoiding a second extraction pipeline and import-cycle

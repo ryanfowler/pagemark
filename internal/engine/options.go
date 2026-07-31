@@ -3,7 +3,6 @@ package engine
 import (
 	"fmt"
 	"log/slog"
-	"math"
 	"strings"
 )
 
@@ -20,21 +19,6 @@ const (
 	SelectionRecall
 )
 
-// Limits controls extraction resource limits. A zero field uses the package
-// default, a positive field sets that limit, and -1 makes that resource
-// unlimited.
-type Limits struct {
-	// InputBytes does not apply to ExtractNode because its DOM is already parsed.
-	InputBytes    int64
-	Elements      int
-	Depth         int
-	OutputBytes   int
-	Links         int
-	Images        int
-	TableCells    int
-	RepeatedItems int
-}
-
 // URLPolicy controls link and image URLs from the Markdown converter.
 // It applies to Markdown links and images, Document.Links, and Document.Images.
 // It does not apply to Document.URL or Document.CanonicalURL.
@@ -50,27 +34,23 @@ type URLPolicy struct {
 }
 
 const (
-	defaultMaxInputBytes    int64 = 10 << 20
-	defaultMaxElements            = 200000
-	defaultMaxDepth               = 256
-	defaultMaxOutputBytes         = 2 << 20
-	defaultMaxLinks               = 1000
-	defaultMaxImages              = 100
-	defaultMaxTableCells          = 10000
-	defaultMaxRepeatedItems       = 200
-	defaultURLMaxLength           = 4096
+	defaultMaxInputBytes  int64 = 10 << 20
+	defaultMaxElements          = 200000
+	defaultMaxDepth             = 256
+	defaultMaxOutputBytes       = 2 << 20
+	defaultURLMaxLength         = 4096
 )
 
 type options struct {
-	pageType                                                         PageType
-	selectionMode                                                    SelectionMode
-	maxInput                                                         int64
-	maxElements, maxDepth, maxAttributes, maxAttributeBytes, maxText int
-	maxOutput, maxLinks, maxImages, maxTableCells, maxRepeated       int
-	includeLinks, includeImages, includeTables                       bool
-	urlPolicy                                                        URLPolicy
-	customURLPolicy, diagnostics                                     bool
-	logger                                                           *slog.Logger
+	pageType                                   PageType
+	selectionMode                              SelectionMode
+	maxInput                                   int64
+	maxElements, maxDepth                      int
+	maxOutput                                  int
+	includeLinks, includeImages, includeTables bool
+	urlPolicy                                  URLPolicy
+	customURLPolicy, diagnostics               bool
+	logger                                     *slog.Logger
 }
 
 var defaultAllowedSchemes = []string{"http", "https"}
@@ -87,9 +67,7 @@ func DefaultURLPolicy() URLPolicy {
 func defaultOptions() options {
 	return options{
 		maxInput: defaultMaxInputBytes, maxElements: defaultMaxElements, maxDepth: defaultMaxDepth,
-		maxAttributes: 1000000, maxAttributeBytes: 8 << 20, maxText: 20 << 20,
-		maxOutput: defaultMaxOutputBytes, maxLinks: defaultMaxLinks, maxImages: defaultMaxImages,
-		maxTableCells: defaultMaxTableCells, maxRepeated: defaultMaxRepeatedItems,
+		maxOutput:    defaultMaxOutputBytes,
 		includeLinks: true, includeImages: true, includeTables: true,
 		urlPolicy: URLPolicy{AllowedSchemes: defaultAllowedSchemes, MaxLength: defaultURLMaxLength},
 	}
@@ -105,22 +83,6 @@ func WithPageType(v PageType) Option { return func(o *options) { o.pageType = v 
 // WithSelectionMode sets the content-selection tradeoff.
 func WithSelectionMode(v SelectionMode) Option {
 	return func(o *options) { o.selectionMode = v }
-}
-
-// WithLimits replaces all public resource limits. Options apply in order.
-// Each zero field uses the package default, a positive field sets the limit,
-// and -1 makes that resource unlimited.
-func WithLimits(v Limits) Option {
-	return func(o *options) {
-		o.maxInput = limit64(v.InputBytes, defaultMaxInputBytes)
-		o.maxElements = limit(v.Elements, defaultMaxElements)
-		o.maxDepth = limit(v.Depth, defaultMaxDepth)
-		o.maxOutput = limit(v.OutputBytes, defaultMaxOutputBytes)
-		o.maxLinks = limit(v.Links, defaultMaxLinks)
-		o.maxImages = limit(v.Images, defaultMaxImages)
-		o.maxTableCells = limit(v.TableCells, defaultMaxTableCells)
-		o.maxRepeated = limit(v.RepeatedItems, defaultMaxRepeatedItems)
-	}
 }
 
 func limit(v, defaultValue int) int {
@@ -201,10 +163,6 @@ func (o *options) validate() error {
 		{"elements", int64(o.maxElements)},
 		{"depth", int64(o.maxDepth)},
 		{"output bytes", int64(o.maxOutput)},
-		{"links", int64(o.maxLinks)},
-		{"images", int64(o.maxImages)},
-		{"table cells", int64(o.maxTableCells)},
-		{"repeated items", int64(o.maxRepeated)},
 	} {
 		if item.value < -1 {
 			return invalidOption("%s limit is %d; values below -1 are invalid", item.name, item.value)
@@ -262,13 +220,7 @@ func (o *options) normalizeUnlimited() {
 	if o.maxInput == -1 {
 		o.maxInput = 0
 	}
-	normalizeUnlimitedLimit(&o.maxElements, 0)
-	normalizeUnlimitedLimit(&o.maxDepth, 0)
 	normalizeUnlimitedLimit(&o.maxOutput, 0)
-	normalizeUnlimitedLimit(&o.maxRepeated, 0)
-	normalizeUnlimitedLimit(&o.maxLinks, math.MaxInt)
-	normalizeUnlimitedLimit(&o.maxImages, math.MaxInt)
-	normalizeUnlimitedLimit(&o.maxTableCells, math.MaxInt)
 	if o.urlPolicy.MaxLength == -1 {
 		o.urlPolicy.MaxLength = 0
 	}

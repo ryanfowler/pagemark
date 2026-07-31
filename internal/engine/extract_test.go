@@ -2021,21 +2021,19 @@ func TestNeutralRecordsUnderResultsWrapperInferListing(t *testing.T) {
 		`<article><h2>Second match</h2><p>The second matching page has another descriptive summary.</p></article>` +
 		`<article><h2>Third match</h2><p>The third matching page completes the result set.</p></article>` +
 		`</div></div></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/search?q=match", WithLimits(Limits{RepeatedItems: 2}))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/search?q=match")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if doc.PageType != PageTypeListing {
 		t.Fatalf("page type = %q, want listing", doc.PageType)
 	}
-	for _, want := range []string{"First match", "Second match"} {
+	for _, want := range []string{"First match", "Second match", "Third match"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing retained result %q: %s", want, doc.Text)
 		}
 	}
-	if strings.Contains(doc.Text, "Third match") {
-		t.Errorf("neutral result records did not use repeated-item handling: %s", doc.Text)
-	}
+
 }
 
 func TestArticleWrapperInferenceDoesNotCacheAuthorProfileAsRelevant(t *testing.T) {
@@ -2071,21 +2069,19 @@ func TestPaginationItemsDoNotOverrideGenericListingRecords(t *testing.T) {
 		`<div><h2>Third result</h2><p>The third generic result completes the result set.</p></div>` +
 		`<nav aria-label="Pagination"><ul><li><a href="?page=1">1</a></li><li><a href="?page=2">2</a></li></ul></nav>` +
 		`</div></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/search?q=result", WithLimits(Limits{RepeatedItems: 2}))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/search?q=result")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if doc.PageType != PageTypeListing {
 		t.Fatalf("page type = %q, want listing", doc.PageType)
 	}
-	for _, want := range []string{"First result", "Second result"} {
+	for _, want := range []string{"First result", "Second result", "Third result"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing retained result %q: %s", want, doc.Text)
 		}
 	}
-	if strings.Contains(doc.Text, "Third result") {
-		t.Errorf("pagination items displaced generic result records: %s", doc.Text)
-	}
+
 }
 
 func TestNestedMetadataListsDoNotOverrideGenericListingRecords(t *testing.T) {
@@ -2094,21 +2090,19 @@ func TestNestedMetadataListsDoNotOverrideGenericListingRecords(t *testing.T) {
 		`<div><h2>Second project</h2><p>The second project is a command line tool.</p><ul><li>Rust</li><li>CLI</li></ul></div>` +
 		`<div><h2>Third project</h2><p>The third project exposes an application interface.</p><ul><li>Java</li><li>API</li></ul></div>` +
 		`</div></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/search/projects", WithLimits(Limits{RepeatedItems: 2}))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/search/projects")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if doc.PageType != PageTypeListing {
 		t.Fatalf("page type = %q, want listing", doc.PageType)
 	}
-	for _, want := range []string{"First project", "Second project"} {
+	for _, want := range []string{"First project", "Second project", "Third project"} {
 		if !strings.Contains(doc.Text, want) {
 			t.Errorf("missing retained result %q: %s", want, doc.Text)
 		}
 	}
-	if strings.Contains(doc.Text, "Third project") {
-		t.Errorf("nested metadata lists displaced generic result records: %s", doc.Text)
-	}
+
 }
 
 func TestDominantProductWrapperInfersProductOnNeutralURL(t *testing.T) {
@@ -3839,7 +3833,7 @@ func TestURLControlCharactersAreRejected(t *testing.T) {
 	}
 }
 
-func TestMaxRepeatedDoesNotTruncateProseSiblings(t *testing.T) {
+func TestListingDoesNotTruncateRecords(t *testing.T) {
 	var paragraphs strings.Builder
 	for i := 0; i < 8; i++ {
 		paragraphs.WriteString(`<p>Prose paragraph with enough useful content number `)
@@ -3847,74 +3841,15 @@ func TestMaxRepeatedDoesNotTruncateProseSiblings(t *testing.T) {
 		paragraphs.WriteString(`.</p>`)
 	}
 	html := `<main><h1>Long article</h1>` + paragraphs.String() + `<h2>What comes next?</h2><p>A final prose paragraph follows the section heading.</p></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle), WithLimits(Limits{RepeatedItems: 3}))
+	doc, err := ExtractBytes([]byte(html), "https://example.com/article", WithPageType(PageTypeArticle))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(doc.Text, "number 7") || !strings.Contains(doc.Text, "What comes next?") {
 		t.Fatalf("prose was truncated: %s", doc.Text)
 	}
-	for _, warning := range doc.Warnings {
-		if warning.Code == "repeated-items-truncated" {
-			t.Fatalf("unexpected repetition warning: %#v", warning)
-		}
-	}
 	if doc.Stats.SelectedBlocks != 10 {
 		t.Fatalf("selected blocks = %d, want 10", doc.Stats.SelectedBlocks)
-	}
-}
-
-func TestMaxRepeatedLimitsListingRecordsAndWarns(t *testing.T) {
-	html := `<main><h1>Results</h1><div class="item"><p>First listed record.</p></div><div class="item"><p>Second listed record.</p></div><div class="item"><p>Third listed record.</p></div><div class="item"><p>Fourth listed record.</p></div></main>`
-	doc, err := ExtractBytes([]byte(html), "https://example.com/results", WithPageType(PageTypeListing), WithLimits(Limits{RepeatedItems: 2}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(doc.Text, "First listed") || !strings.Contains(doc.Text, "Second listed") || strings.Contains(doc.Text, "Third listed") {
-		t.Fatalf("unexpected listing output: %s", doc.Text)
-	}
-	if doc.Title != "Results" || doc.Stats.SelectedBlocks != 2 { // two emitted records; title is metadata
-		t.Fatalf("title=%q selected blocks = %d, want title Results and 2 blocks", doc.Title, doc.Stats.SelectedBlocks)
-	}
-	if len(doc.Warnings) != 1 || doc.Warnings[0].Code != "repeated-items-truncated" {
-		t.Fatalf("missing repetition warning: %#v", doc.Warnings)
-	}
-}
-
-func TestMaxRepeatedLimitsRecordsInsideListsAndTables(t *testing.T) {
-	tests := []struct {
-		name, body, kept, dropped string
-	}{
-		{
-			name:    "list items",
-			body:    `<ul><li class="item">First list record</li><li class="item">Second list record</li><li class="item">Third list record</li></ul>`,
-			kept:    "Second list record",
-			dropped: "Third list record",
-		},
-		{
-			name:    "table rows",
-			body:    `<table><tr><th>Name</th><th>Value</th></tr><tr class="result"><td>First row</td><td>One</td></tr><tr class="result"><td>Second row</td><td>Two</td></tr><tr class="result"><td>Third row</td><td>Three</td></tr></table>`,
-			kept:    "Second row",
-			dropped: "Third row",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			html := `<main><h1>Results</h1>` + test.body + `</main>`
-			doc, err := ExtractBytes([]byte(html), "https://example.com/results", WithPageType(PageTypeListing), WithLimits(Limits{RepeatedItems: 2}))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(doc.Text, test.kept) || strings.Contains(doc.Text, test.dropped) {
-				t.Fatalf("unexpected output: %s", doc.Text)
-			}
-			if len(doc.Warnings) != 1 || doc.Warnings[0].Code != "repeated-items-truncated" {
-				t.Fatalf("missing repetition warning: %#v", doc.Warnings)
-			}
-			if doc.Title != "Results" || doc.Stats.SelectedBlocks != 1 { // list/table block; title is metadata
-				t.Fatalf("title=%q selected blocks = %d, want title Results and 1 block", doc.Title, doc.Stats.SelectedBlocks)
-			}
-		})
 	}
 }
 
@@ -4065,7 +4000,7 @@ func TestLimitsAndInvalidURL(t *testing.T) {
 	if !errors.Is(e, ErrInvalidURL) {
 		t.Fatalf("got %v", e)
 	}
-	_, e = ExtractBytes([]byte(`<div><div><p>deep text here</p></div></div>`), "", WithLimits(Limits{Depth: 2}))
+	_, e = ExtractBytes([]byte(`<div><div><p>deep text here</p></div></div>`), "", func(o *options) { o.maxDepth = 2 })
 	if !errors.Is(e, ErrLimit) {
 		t.Fatalf("got %v", e)
 	}
@@ -4081,7 +4016,7 @@ func TestMaxInt64InputLimitDoesNotOverflowReaderBound(t *testing.T) {
 		t.Fatalf("reader content = %q", doc.Text)
 	}
 
-	doc, err = ExtractBytes(source, "", WithLimits(Limits{InputBytes: math.MaxInt64}))
+	doc, err = ExtractBytes(source, "", WithMaxInputBytes(math.MaxInt64))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4322,7 +4257,7 @@ func FuzzExtract(f *testing.F) {
 		if len(b) > 100000 {
 			t.Skip()
 		}
-		d, e := ExtractBytes(b, "https://example.com", WithLimits(Limits{Elements: 5000, Depth: 100}), WithMaxInputBytes(100000), WithMaxOutputBytes(10000))
+		d, e := ExtractBytes(b, "https://example.com", func(o *options) { o.maxElements = 5000; o.maxDepth = 100 }, WithMaxInputBytes(100000), WithMaxOutputBytes(10000))
 		if e == nil {
 			if len(d.Markdown) > 10000 {
 				t.Fatal("output limit")

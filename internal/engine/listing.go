@@ -432,21 +432,3 @@ func (a *analysis) inferenceListingWrapperRecords(wrapper *html.Node) map[*html.
 	a.listingWrapperRecords[wrapper] = records
 	return records
 }
-
-func (a *analysis) descendantListingRecords(n *html.Node) (records []*html.Node) {
-	var visit func(*html.Node)
-	visit = func(parent *html.Node) {
-		for ch := parent.FirstChild; ch != nil; ch = ch.NextSibling {
-			if hardHidden(ch) || a.isIrrelevantNode(ch) {
-				continue
-			}
-			if isListingRecordElement(ch) || a.inferenceListingRecord(ch) == ch {
-				records = append(records, ch)
-				continue
-			}
-			visit(ch)
-		}
-	}
-	visit(n)
-	return records
-}

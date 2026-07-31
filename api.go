@@ -28,7 +28,6 @@ type (
 	BlockDiagnostic  = engine.BlockDiagnostic
 	DiagnosticReport = engine.DiagnosticReport
 	SelectionMode    = engine.SelectionMode
-	Limits           = engine.Limits
 	URLPolicy        = engine.URLPolicy
 	Option           = engine.Option
 	LimitResource    = engine.LimitResource
@@ -49,17 +48,13 @@ const (
 	SelectionPrecision = engine.SelectionPrecision
 	SelectionRecall    = engine.SelectionRecall
 
-	WarningOutputTruncated        = engine.WarningOutputTruncated
-	WarningRepeatedItemsTruncated = engine.WarningRepeatedItemsTruncated
-	WarningFallbackUsed           = engine.WarningFallbackUsed
-	WarningRelaxedExtraction      = engine.WarningRelaxedExtraction
+	WarningOutputTruncated   = engine.WarningOutputTruncated
+	WarningFallbackUsed      = engine.WarningFallbackUsed
+	WarningRelaxedExtraction = engine.WarningRelaxedExtraction
 
-	LimitInputBytes     = engine.LimitInputBytes
-	LimitElements       = engine.LimitElements
-	LimitDepth          = engine.LimitDepth
-	LimitAttributes     = engine.LimitAttributes
-	LimitAttributeBytes = engine.LimitAttributeBytes
-	LimitTextBytes      = engine.LimitTextBytes
+	LimitInputBytes = engine.LimitInputBytes
+	LimitElements   = engine.LimitElements
+	LimitDepth      = engine.LimitDepth
 )
 
 var (
@@ -94,7 +89,6 @@ func DefaultURLPolicy() URLPolicy { return engine.DefaultURLPolicy() }
 
 func WithPageType(v PageType) Option           { return engine.WithPageType(v) }
 func WithSelectionMode(v SelectionMode) Option { return engine.WithSelectionMode(v) }
-func WithLimits(v Limits) Option               { return engine.WithLimits(v) }
 func WithMaxInputBytes(v int64) Option         { return engine.WithMaxInputBytes(v) }
 func WithMaxOutputBytes(v int) Option          { return engine.WithMaxOutputBytes(v) }
 func WithIncludeLinks(v bool) Option           { return engine.WithIncludeLinks(v) }

@@ -51,7 +51,7 @@ type analysis struct {
 	o                                                options
 	root                                             *html.Node
 	pageURL, base                                    *url.URL
-	elements, attrs, attrBytes, textBytes, maxDepth  int
+	elements, textBytes, maxDepth                    int
 	blocks                                           []block
 	meta                                             metadata
 	pageType                                         PageType
@@ -91,22 +91,9 @@ func (a *analysis) index(n *html.Node, depth int) error {
 		if a.o.maxElements > 0 && a.elements > a.o.maxElements {
 			return &LimitError{Resource: LimitElements, Count: int64(a.elements), Max: int64(a.o.maxElements)}
 		}
-		a.attrs += len(n.Attr)
-		for _, x := range n.Attr {
-			a.attrBytes += len(x.Key) + len(x.Val)
-		}
-		if a.o.maxAttributes > 0 && a.attrs > a.o.maxAttributes {
-			return &LimitError{Resource: LimitAttributes, Count: int64(a.attrs), Max: int64(a.o.maxAttributes)}
-		}
-		if a.o.maxAttributeBytes > 0 && a.attrBytes > a.o.maxAttributeBytes {
-			return &LimitError{Resource: LimitAttributeBytes, Count: int64(a.attrBytes), Max: int64(a.o.maxAttributeBytes)}
-		}
 	}
 	if n.Type == html.TextNode {
 		a.textBytes += len(n.Data)
-		if a.o.maxText > 0 && a.textBytes > a.o.maxText {
-			return &LimitError{Resource: LimitTextBytes, Count: int64(a.textBytes), Max: int64(a.o.maxText)}
-		}
 	}
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
 		if err := a.index(ch, depth+1); err != nil {
