@@ -122,7 +122,7 @@ func (e *evidenceIndex) visit(n *html.Node, depth int, o options) (subtreeEviden
 	if isBlockTag(tag) {
 		result.flags |= evidenceBlockDescendant
 	}
-	facts := nodeEvidence{flags: result.flags, controls: result.controls}
+	facts := nodeEvidence(result)
 	// Shape flags describe proper descendants. The result returned to the parent
 	// also contains facts contributed by this element.
 	const descendantShape = evidenceDiscussionBodyDescendant | evidenceArticleBodyDescendant | evidenceBlockDescendant
