@@ -46,6 +46,57 @@ func TestDocumentTitleIsSeparatedFromEveryContentView(t *testing.T) {
 	}
 }
 
+func TestNonArticlePanelsAndPageFooterAreExcluded(t *testing.T) {
+	source := `<html><head><title>Field notes</title><meta property="og:type" content="article"></head><body><main><article><h1>Field notes</h1><p>The field notes contain a substantive observation from the primary report.</p><p>A second paragraph provides enough context to identify the authored article.</p></article><div class="cookie-consent-notice"><h2>Cookie preferences</h2><p>We use cookies and similar tracking technologies. Choose which cookies to allow.</p><button>Accept all</button><button>Reject all</button></div><center><p>© 2026 Example Publishing</p></center><p>Copyright 2026 Example Publishing</p></main><div role="dialog"><h2>Use your social network</h2><p>Forgot your password?</p></div><details class="CommentBox" open><summary><h3>Reader response</h3></summary><p>Posted by a reader</p><div><p>This substantive reader response belongs to the comments, not the article.</p></div></details><div class="footer-section-wrapper"><h2>Company</h2><p>This long corporate footer statement should not become article prose.</p></div></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/field-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "substantive observation") || !strings.Contains(doc.Text, "second paragraph") {
+		t.Fatalf("article prose missing: %q", doc.Text)
+	}
+	for _, unwanted := range []string{"social network", "password", "cookies", "Cookie preferences", "tracking technologies", "Accept all", "Reader response", "substantive reader response", "Company", "corporate footer", "© 2026 Example Publishing", "Copyright 2026 Example Publishing"} {
+		if strings.Contains(doc.Text, unwanted) {
+			t.Errorf("panel or footer text %q leaked into output: %q", unwanted, doc.Text)
+		}
+	}
+}
+
+func TestCopyrightAttributionDoesNotRemoveArticleOpening(t *testing.T) {
+	source := `<html><head><title>Market report</title><meta property="og:type" content="article"></head><body><main><h1>Market report</h1><p>© 2024 Example Images The opening report explains the market change, the evidence behind it, and what readers need to know about the result.</p><p>The follow-up paragraph supplies additional substantive context for the published report.</p></main></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://example.com/reports/market")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "© 2024 Example Images") || !strings.Contains(doc.Text, "opening report explains") {
+		t.Fatalf("image attribution removed article prose: %q", doc.Text)
+	}
+}
+
+func TestAuthoredNoticesRemainInPrimaryContent(t *testing.T) {
+	source := `<html><head><title>Application requirements</title></head><body><main><h1>Application requirements</h1><p>To run this app as a web application, enable JavaScript before starting the local development server.</p><p>Copyright notices often state “all rights reserved,” but that wording is not required and has a specific legal history explained in this guide.</p><section class="privacy-notice"><h2>Privacy notice</h2><p>This privacy notice explains how the application stores account records and how users can request deletion.</p></section><section class="cookie-consent-notice"><h2>Cookie consent notice</h2><p>This section documents how cookie consent notices work and how applications should present them accessibly.</p></section></main></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://docs.example.com/application", WithPageType(PageTypeDocumentation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"enable JavaScript", "Copyright notices", "all rights reserved", "Privacy notice", "request deletion", "Cookie consent notice", "present them accessibly"} {
+		if !strings.Contains(doc.Text, want) {
+			t.Errorf("authored content %q was removed: %q", want, doc.Text)
+		}
+	}
+}
+
+func TestJavaScriptRequirementUsesMetadataFallback(t *testing.T) {
+	source := `<html><head><title>Status update</title><meta name="description" content="The complete status update explains the project decision and the next steps for maintainers."></head><body><div class="application"><p>To use the web application, please enable JavaScript. Alternatively, try one of the native apps for your platform.</p></div></body></html>`
+	doc, err := ExtractBytes([]byte(source), "https://social.example/@author/123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Text, "complete status update") || strings.Contains(doc.Text, "enable JavaScript") {
+		t.Fatalf("metadata did not replace the script requirement: %q", doc.Text)
+	}
+}
+
 func TestSparseHomepageRecoversAccessibleHero(t *testing.T) {
 	source := `<html><head><title>Paper Reader</title></head><body><header><h1><picture><img src="/logo.png" alt="Paper Reader"></picture></h1><p>Paper Reader is a document viewer for electronic paper devices, with support for common book, document, archive, and plain-text formats.</p></header><ul><li><a href="/guide">User guide</a></li><li><a href="/download">Download</a></li></ul></body></html>`
 	doc, err := ExtractBytes([]byte(source), "https://paper-reader.example/")
@@ -3423,6 +3474,10 @@ func TestDiscussionWrappersDoNotCountAsConventionalArticleBodies(t *testing.T) {
 		{
 			name: "post-content opening message",
 			body: `<main><div class="post-content"><p>The opening message introduces a community proposal and explains the question participants should consider.</p></div><ol class="comments">` + comments.String() + `</ol></main>`,
+		},
+		{
+			name: "substantial post-content opening message",
+			body: `<main><div class="post-content"><p>The opening message introduces a community proposal with enough substantive background to explain the question that participants should consider.</p><p>A second paragraph adds the author's reasoning and clarifies the tradeoffs that the replies discuss.</p></div><ol class="comments">` + comments.String() + `</ol></main>`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

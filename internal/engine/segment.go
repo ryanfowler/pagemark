@@ -29,8 +29,11 @@ func (a *analysis) segment(n *html.Node, excluded bool) {
 		// Forum software often puts a post's prose directly in a generic div,
 		// using <br> (and occasionally <hr>) rather than paragraphs. Prefer the
 		// innermost explicitly marked body over its wrappers and enclosing table.
+		// The ambiguous post-content convention is also common on publishers; keep
+		// its paragraph structure when local prose and article metadata agree.
+		discussionBody := isDiscussionBodyContainer(n) && !a.isPublicationArticleContent(n)
 		hasPostBody := a.hasDiscussionBodyDescendant(n)
-		if isDiscussionBodyContainer(n) && !hasPostBody {
+		if discussionBody && !hasPostBody {
 			text := normalizeText(nodeText(n))
 			if text != "" {
 				a.appendBlock(n, "generic", text, false)

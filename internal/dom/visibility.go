@@ -87,6 +87,7 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 	}
 	open := false
 	style := ""
+	utilityHidden, responsiveUtilityVisible := false, false
 	for _, a := range n.Attr {
 		key := a.Key
 		// Parsed HTML has canonical lowercase names, so dispatch those directly.
@@ -94,7 +95,7 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 		// common attributes such as class and href to one switch and a short ASCII
 		// scan instead of comparing them with every visibility key.
 		switch key {
-		case "hidden", "inert", "open", "aria-hidden", "aria-modal", "style":
+		case "hidden", "inert", "open", "aria-hidden", "aria-modal", "style", "class":
 		default:
 			// A mixed-case spelling can only match one of the visibility keys
 			// when its length matches. Reject the many class, data, href, and
@@ -115,6 +116,8 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 				continue
 			}
 			switch {
+			case strings.EqualFold(key, "class"):
+				key = "class"
 			case strings.EqualFold(key, "hidden"):
 				key = "hidden"
 			case strings.EqualFold(key, "inert"):
@@ -146,7 +149,19 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 			}
 		case "style":
 			style = a.Val
+		case "class":
+			// Utility-first and component frameworks conventionally use an exact
+			// hidden class as their display:none primitive. A responsive display
+			// utility means the element is nevertheless visible at some viewport,
+			// and extraction does not commit to the smallest viewport.
+			for class := range strings.FieldsSeq(a.Val) {
+				utilityHidden = utilityHidden || strings.EqualFold(class, "hidden")
+				responsiveUtilityVisible = responsiveUtilityVisible || responsiveDisplayUtility(class)
+			}
 		}
+	}
+	if utilityHidden && !responsiveUtilityVisible {
+		return true
 	}
 	// A dialog is not rendered until its boolean open attribute is present.
 	if (n.Data == "dialog" || len(n.Data) == len("dialog") && strings.EqualFold(n.Data, "dialog")) && !open {
@@ -156,6 +171,33 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 		return false
 	}
 	return hiddenStyle(style)
+}
+
+func responsiveDisplayUtility(class string) bool {
+	last := strings.LastIndexByte(class, ':')
+	if last < 0 {
+		return false
+	}
+	display := strings.TrimPrefix(class[last+1:], "!")
+	switch display {
+	case "block", "inline", "inline-block", "flex", "inline-flex", "grid", "inline-grid", "table", "table-row", "table-cell", "contents", "flow-root", "list-item":
+	default:
+		return false
+	}
+	variants := class[:last]
+	for len(variants) > 0 {
+		variant := variants
+		if colon := strings.IndexByte(variants, ':'); colon >= 0 {
+			variant, variants = variants[:colon], variants[colon+1:]
+		} else {
+			variants = ""
+		}
+		if variant == "sm" || variant == "md" || variant == "lg" || variant == "xl" || variant == "2xl" ||
+			strings.HasPrefix(variant, "min-") || strings.HasPrefix(variant, "max-") {
+			return true
+		}
+	}
+	return false
 }
 
 func equalFoldTrimmedTrue(value string) bool {
