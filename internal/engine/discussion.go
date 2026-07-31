@@ -78,12 +78,11 @@ func isPlausibleDiscussionRecord(n *html.Node) bool {
 	default:
 		return false
 	}
-	tokens := elementTokens(n)
 	itemtype := strings.ToLower(attrValue(n, "itemtype"))
 	// A generic .question class is common in FAQs, surveys, and forms. It only
 	// identifies a discussion record when backed by Question microdata; QAPage
 	// schema and explicit primary thread structure are scored separately.
-	marked := containsAny(tokens, "comment", "answer", "post", "reply", "message") ||
+	marked := elementContainsAny(n, "comment", "answer", "post", "reply", "message") ||
 		containsAny(itemtype, "comment", "answer", "question")
 	if !marked {
 		return false
@@ -93,9 +92,9 @@ func isPlausibleDiscussionRecord(n *html.Node) bool {
 	// with “share your feedback” or similar UI text. All supported record tags
 	// are eligible, but form/status wrappers and input widgets are not. Ordinary
 	// per-comment action buttons do not negate otherwise substantive prose.
-	explicitRecord := (containsAny(tokens, "comment", "answer", "reply", "message") ||
+	explicitRecord := (elementContainsAny(n, "comment", "answer", "reply", "message") ||
 		containsAny(itemtype, "comment", "answer", "question")) &&
-		!containsAny(tokens, "form", "status", "prompt", "cta", "control") &&
+		!elementContainsAny(n, "form", "status", "prompt", "cta", "control") &&
 		!hasDiscussionRecordControls(n)
 	if explicitRecord && (hasCommentRecordProse(n) || commentRecordTextLength(n) >= 20) {
 		return true
@@ -426,10 +425,9 @@ func isDiscussionControlNode(n *html.Node) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
-	tokens := elementTokens(n)
-	return containsAny(tokens, "rating", "forumjump") || hasExactClass(n, "comments-link") ||
-		(containsAny(tokens, "thread") && containsAny(tokens, "tools")) ||
-		(containsAny(tokens, "post") && containsAny(tokens, "menu"))
+	return elementContainsAny(n, "rating", "forumjump") || hasExactClass(n, "comments-link") ||
+		(elementContainsAny(n, "thread") && elementContainsAny(n, "tools")) ||
+		(elementContainsAny(n, "post") && elementContainsAny(n, "menu"))
 }
 
 func isDiscussionControlBlock(n *html.Node) bool {
@@ -452,9 +450,8 @@ func (a *analysis) hasStandaloneMessageAncestor(n *html.Node) bool {
 		if p.Type != html.ElementNode || !isGenericContainer(strings.ToLower(p.Data)) {
 			continue
 		}
-		tokens := elementTokens(p)
-		if containsAny(tokens, "message") &&
-			!containsAny(tokens, "body", "content", "text", "post", "comment", "answer", "reply") &&
+		if elementContainsAny(p, "message") &&
+			!elementContainsAny(p, "body", "content", "text", "post", "comment", "answer", "reply") &&
 			!a.hasDiscussionBodyDescendant(p) {
 			return true
 		}

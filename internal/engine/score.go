@@ -107,7 +107,7 @@ func (a *analysis) score(pt PageType, profile scoringProfile) {
 			// Feature flags and global UI state are often stored as classes on
 			// the document shell (for example, "toc-available"). They describe
 			// available chrome, not every descendant's content region.
-			if tag != "html" && tag != "body" && hasBoilerplateToken(p) &&
+			if tag != "html" && tag != "body" && a.hasBoilerplateTokenNode(p) &&
 				!(tag == "article" && a.substantialArticleScope(p)) &&
 				!(pt == PageTypeDocumentation && headingDocumentsBoilerplate(p)) {
 				// This is only a weak class/id signal. Structural auxiliary decisions
@@ -119,7 +119,7 @@ func (a *analysis) score(pt PageType, profile scoringProfile) {
 					a.addReason(b, "article evidence overrides weak label")
 				}
 			}
-			if pt == PageTypeDiscussion && containsAny(elementTokens(p), "comment", "comments", "answer", "post", "thread") {
+			if pt == PageTypeDiscussion && elementContainsAny(p, "comment", "comments", "answer", "post", "thread") {
 				score += 2
 			}
 			if pt == PageTypeListing || pt == PageTypeCollection {
@@ -500,7 +500,7 @@ func (a *analysis) plausibleArticleBridge(b *block, region *html.Node) bool {
 		}
 		tag := strings.ToLower(p.Data)
 		if tag == "aside" || tag == "header" || tag == "footer" || tag == "nav" ||
-			isAdvertisementRegion(p) || hasBoilerplateToken(p) || isListingRecordElement(p) {
+			isAdvertisementRegion(p) || a.hasBoilerplateTokenNode(p) || isListingRecordElement(p) {
 			return false
 		}
 	}

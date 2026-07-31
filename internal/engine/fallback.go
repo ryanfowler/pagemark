@@ -420,7 +420,7 @@ func (a *analysis) highRecall() []*html.Node {
 		for p := b.node; p != nil; p = p.Parent {
 			if p.Type == html.ElementNode {
 				t := strings.ToLower(p.Data)
-				if t == "footer" || t == "nav" || t == "header" && p != heroHeader || hasBoilerplateToken(p) {
+				if t == "footer" || t == "nav" || t == "header" && p != heroHeader || a.hasBoilerplateTokenNode(p) {
 					bad = true
 					break
 				}

@@ -3,4 +3,6 @@ benchmarks/reports/*.json
 benchmarks/reports/*.csv
 .DS_Store
 *.test
+*.cpu
+*.mem
 .audit/

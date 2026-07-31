@@ -24,14 +24,13 @@ func (a *analysis) isArticleCommentRegion(n *html.Node) (result bool) {
 		a.nodeStates[n] = state
 	}()
 
-	tokens := elementTokens(n)
 	// Plural comment markers and established comment-list conventions are
-	// sufficiently specific on article pages. “Responses” and “replies” are
+	// sufficiently specific on article pages. "Responses" and "replies" are
 	// ambiguous (for example, survey responses), so they require the heading or
 	// repeated-record evidence checked below.
-	if containsAny(tokens, "comments", "commentlist") || hasCompactClass(n, "commentbox") ||
-		(containsAny(tokens, "comment") && containsAny(tokens, "list")) ||
-		containsAny(tokens, "discussion") && hasArticleDiscussionHeading(n) {
+	if elementContainsAny(n, "comments", "commentlist") || hasCompactClass(n, "commentbox") ||
+		(elementContainsAny(n, "comment") && elementContainsAny(n, "list")) ||
+		elementContainsAny(n, "discussion") && hasArticleDiscussionHeading(n) {
 		return true
 	}
 

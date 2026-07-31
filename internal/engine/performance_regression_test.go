@@ -263,3 +263,82 @@ func TestMarketingInteractionsStreamsNormalizedLabels(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeTextFastMatchesNormalizeText(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"empty", ""},
+		{"single word", "hello"},
+		{"already normal", "this is normal text"},
+		{"leading space", " leading space"},
+		{"trailing space", "trailing space "},
+		{"double space", "double  space"},
+		{"tab between", "tab\tbetween"},
+		{"newline between", "line1\nline2"},
+		{"non-ascii", "caf\u00e9 au lait"},
+		{"mixed case", "Mixed Case Text"},
+		{"single char", "x"},
+		{"punctuation", "hello, world!"},
+		{"multiple spaces", "a    b"},
+		{"only spaces", "   "},
+		{"tab at start", "\tleading tab"},
+		{"cr between", "line1\r\nline2"},
+		{"form feed", "a\fb"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fastResult, fastOK := normalizeTextFast(tt.input)
+			normalResult := normalizeText(tt.input)
+			if fastOK && fastResult != normalResult {
+				t.Fatalf("normalizeTextFast(%q) = (%q, true) but normalizeText(%q) = %q",
+					tt.input, fastResult, tt.input, normalResult)
+			}
+			_ = normalResult
+		})
+	}
+}
+
+func TestHasBoilerplateTokenAttributes(t *testing.T) {
+	tests := []struct {
+		name string
+		html string
+		want bool
+	}{
+		{"no attributes", `<div>content</div>`, false},
+		{"social class", `<div class="social-media">content</div>`, true},
+		{"social id", `<div id="social-follow">content</div>`, true},
+		{"social in compound", `<div class="social-impact">content</div>`, false},
+		{"follow in class", `<div class="social-follow-links">content</div>`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root, err := html.Parse(strings.NewReader(tt.html))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var div *html.Node
+			var find func(*html.Node)
+			find = func(n *html.Node) {
+				if div != nil {
+					return
+				}
+				if n.Type == html.ElementNode && n.Data == "div" {
+					div = n
+					return
+				}
+				for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+					find(ch)
+				}
+			}
+			find(root)
+			if div == nil {
+				t.Fatal("div element not found")
+			}
+			if got := hasBoilerplateTokenAttributes(div); got != tt.want {
+				t.Errorf("hasBoilerplateTokenAttributes() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

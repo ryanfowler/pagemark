@@ -256,14 +256,13 @@ func (a *analysis) articleAuxiliaryNodeUncached(n *html.Node) bool {
 		if isArticleAuxiliaryLabel(regionHeading) {
 			return true
 		}
-		tokens := elementTokens(n)
 		itemtype := strings.ToLower(attrValue(n, "itemtype"))
 		// Author profiles commonly precede the article in a sidebar. Microformats
 		// use h-card while schema.org uses Person; neither is article content when
 		// the profile sits outside the semantic article.
-		personProfile := containsAny(itemtype, "person") || containsAny(tokens, "h-card")
+		personProfile := containsAny(itemtype, "person") || elementContainsAny(n, "h-card")
 		if !hasNonCardArticleAncestor(n) && (personProfile ||
-			(tag == "aside" && containsAny(tokens, "author", "byline", "bio", "profile"))) {
+			(tag == "aside" && elementContainsAny(n, "author", "byline", "bio", "profile"))) {
 			return true
 		}
 		if isRelatedCardRegion(n) && !a.hasArticleBodyDescendant(n) &&
