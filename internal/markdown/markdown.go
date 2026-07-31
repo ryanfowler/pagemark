@@ -425,7 +425,7 @@ func (c *converter) inlines(n *html.Node) []*Node {
 func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 	var out []*Node
 	var walk func(*html.Node)
-	var walkSiblings func([]*html.Node)
+	var walkSiblingChain func(*html.Node)
 	walk = func(x *html.Node) {
 		if c.skip(x) {
 			return
@@ -540,15 +540,11 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 			}
 			return
 		}
-		var children []*html.Node
-		for ch := x.FirstChild; ch != nil; ch = ch.NextSibling {
-			children = append(children, ch)
-		}
-		walkSiblings(children)
+		walkSiblingChain(x.FirstChild)
 	}
-	walkSiblings = func(nodes []*html.Node) {
+	walkSiblingChain = func(first *html.Node) {
 		var previous *html.Node
-		for _, n := range nodes {
+		for n := first; n != nil; n = n.NextSibling {
 			if previous != nil && c.inlineBoundary(previous, n) {
 				out = append(out, &Node{Kind: Text, Value: " "})
 			}
@@ -556,7 +552,16 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 			previous = n
 		}
 	}
-	walkSiblings(nodes)
+	// The input can be a filtered, noncontiguous set, so only nested child
+	// traversal can use the DOM sibling chain directly.
+	var previous *html.Node
+	for _, n := range nodes {
+		if previous != nil && c.inlineBoundary(previous, n) {
+			out = append(out, &Node{Kind: Text, Value: " "})
+		}
+		walk(n)
+		previous = n
+	}
 	// Compact in place: out is no longer needed, and allocating another pointer
 	// slice here is expensive because every converted inline container takes this
 	// path.

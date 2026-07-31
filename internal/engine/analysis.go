@@ -32,6 +32,7 @@ type articleRegionEvidence struct {
 	linkedChars      int
 	strongParagraphs int
 	selectedBlocks   int
+	documentOrder    int
 }
 
 // scoringProfile is deliberately internal. Relaxation is an article recovery
