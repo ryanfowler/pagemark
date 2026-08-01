@@ -8,6 +8,14 @@ import (
 	"golang.org/x/net/html"
 )
 
+func TestCleanFastPathPreservesUnicodeWhitespaceSemantics(t *testing.T) {
+	for _, input := range []string{"\vtext", "text\v"} {
+		if got := clean(input); strings.ContainsRune(got, '\v') {
+			t.Fatalf("clean(%q) = %q, contains vertical tab", input, got)
+		}
+	}
+}
+
 func convertHTML(t *testing.T, source string) Result {
 	t.Helper()
 	base, _ := url.Parse("https://example.com/base/")
