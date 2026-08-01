@@ -40,7 +40,7 @@ pub(crate) fn extract_validated(
     let dom = dom::parse(html)?;
     let primary = extract_dom(&dom, page.clone(), options);
     let primary_size = primary.as_ref().map_or(0, |doc| doc.text.chars().count());
-    if primary_size < 120 && html.to_ascii_lowercase().contains("<noscript") {
+    if primary_size < 120 && contains_ascii_case_insensitive(html, "<noscript") {
         if let Ok(fallback_dom) = dom::parse_with_scripting(html, false) {
             if let Ok(fallback) = extract_dom(&fallback_dom, page.clone(), options) {
                 let fallback_size = fallback.text.chars().count();
@@ -120,15 +120,9 @@ fn select_root(dom: &Dom, mode: SelectionMode, page_type: PageType) -> Option<No
     let body = dom.find_first(document, |id| dom.tag(id) == Some("body"))?;
     if page_type == PageType::Listing {
         let lists = find_all(dom, body, |id| {
-            let value = format!(
-                "{} {}",
-                dom.attr(id, "id").unwrap_or(""),
-                dom.attr(id, "class").unwrap_or("")
-            )
-            .to_ascii_lowercase();
-            value.contains("document-list")
-                || value.contains("results-list")
-                || value.contains("search-results")
+            attr_contains(dom, id, "document-list")
+                || attr_contains(dom, id, "results-list")
+                || attr_contains(dom, id, "search-results")
         });
         if let Some(best) = largest_text(dom, &lists) {
             return Some(best);
@@ -173,14 +167,8 @@ fn select_root(dom: &Dom, mode: SelectionMode, page_type: PageType) -> Option<No
             return Some(best);
         }
         let detached_lede = dom.find_first(body, |id| {
-            let tokens = format!(
-                "{} {}",
-                dom.attr(id, "id").unwrap_or(""),
-                dom.attr(id, "class").unwrap_or("")
-            )
-            .to_ascii_lowercase();
-            (tokens.contains("article") || tokens.contains("headline"))
-                && (tokens.contains("lede") || tokens.contains("headline"))
+            (attr_contains(dom, id, "article") || attr_contains(dom, id, "headline"))
+                && (attr_contains(dom, id, "lede") || attr_contains(dom, id, "headline"))
         });
         if detached_lede.is_some() {
             return Some(body);
@@ -242,12 +230,6 @@ fn auxiliary(dom: &Dom, id: NodeId) -> bool {
     if matches!(tag, "nav" | "footer" | "aside") {
         return true;
     }
-    let tokens = format!(
-        "{} {}",
-        dom.attr(id, "id").unwrap_or(""),
-        dom.attr(id, "class").unwrap_or("")
-    )
-    .to_ascii_lowercase();
     [
         "card",
         "comment",
@@ -262,11 +244,7 @@ fn auxiliary(dom: &Dom, id: NodeId) -> bool {
         "footer",
     ]
     .iter()
-    .any(|token| {
-        tokens
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|v| v == *token)
-    })
+    .any(|token| has_ascii_token(dom, id, token))
 }
 
 fn has_useful_image(dom: &Dom, root: NodeId) -> bool {
@@ -338,17 +316,7 @@ fn classify(dom: &Dom, root: NodeId, metadata: &Metadata, page: Option<&Url>) ->
             "section" => sections += 1,
             _ => {}
         }
-        let tokens = format!(
-            "{} {}",
-            dom.attr(id, "class").unwrap_or(""),
-            dom.attr(id, "id").unwrap_or("")
-        )
-        .to_ascii_lowercase();
-        let token_is = |wanted: &str| {
-            tokens
-                .split(|c: char| !c.is_alphanumeric())
-                .any(|token| token == wanted)
-        };
+        let token_is = |wanted: &str| has_token(dom, id, wanted);
         let discussion_record = ["comment", "reply", "answer", "message", "post"]
             .iter()
             .any(|value| token_is(value))
@@ -358,11 +326,7 @@ fn classify(dom: &Dom, root: NodeId, metadata: &Metadata, page: Option<&Url>) ->
             discussion_records += 1;
             discussion_chars += text_len;
         }
-        if ["card", "result", "item"].iter().any(|v| {
-            tokens
-                .split(|c: char| !c.is_alphanumeric())
-                .any(|t| t == *v)
-        }) {
+        if ["card", "result", "item"].iter().any(|v| token_is(v)) {
             listing_records += 1;
         }
         if dom
@@ -454,18 +418,9 @@ fn classify(dom: &Dom, root: NodeId, metadata: &Metadata, page: Option<&Url>) ->
 fn ancestor_has_discussion_token(dom: &Dom, id: NodeId) -> bool {
     let mut parent = dom.parent(id);
     while let Some(node) = parent {
-        let values = format!(
-            "{} {}",
-            dom.attr(node, "class").unwrap_or(""),
-            dom.attr(node, "id").unwrap_or("")
-        );
-        if values
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|token| {
-                ["comment", "reply", "answer", "message", "post"]
-                    .iter()
-                    .any(|wanted| token.eq_ignore_ascii_case(wanted))
-            })
+        if ["comment", "reply", "answer", "message", "post"]
+            .iter()
+            .any(|wanted| has_ascii_token(dom, node, wanted))
         {
             return true;
         }
@@ -587,7 +542,7 @@ fn ancestor_attribute_contains(dom: &Dom, id: NodeId, wanted: &str) -> bool {
         if [dom.attr(node, "id"), dom.attr(node, "class")]
             .into_iter()
             .flatten()
-            .any(|value| value.to_ascii_lowercase().contains(wanted))
+            .any(|value| contains_ascii_case_insensitive(value, wanted))
         {
             return true;
         }
@@ -656,7 +611,7 @@ fn resolve_title(
                     .strip_prefix(&social)
                     .is_some_and(|suffix| suffix.starts_with(' '))
         }) {
-            value = dom.text(visible);
+            value = dom.text(visible).into_owned();
         }
     }
     let mut decorations = Vec::new();
@@ -736,14 +691,44 @@ fn punctuation_fold(value: &str) -> String {
         .join(" ")
 }
 
-#[allow(dead_code)]
-fn title_equivalent(a: &str, b: &str) -> bool {
-    a == b
-        || (!a.is_empty()
-            && !b.is_empty()
-            && (b
-                .strip_prefix(a)
-                .is_some_and(|rest| rest.trim_start().starts_with(['-', '|', '—', '–']))
-                || a.strip_prefix(b)
-                    .is_some_and(|rest| rest.trim_start().starts_with(['-', '|', '—', '–']))))
+fn contains_ascii_case_insensitive(value: &str, wanted: &str) -> bool {
+    wanted.is_empty()
+        || (wanted.len() <= value.len()
+            && value
+                .as_bytes()
+                .windows(wanted.len())
+                .any(|window| window.eq_ignore_ascii_case(wanted.as_bytes())))
+}
+
+fn attr_contains(dom: &Dom, id: NodeId, wanted: &str) -> bool {
+    [dom.attr(id, "id"), dom.attr(id, "class")]
+        .into_iter()
+        .flatten()
+        .any(|value| contains_ascii_case_insensitive(value, wanted))
+}
+
+fn has_token(dom: &Dom, id: NodeId, wanted: &str) -> bool {
+    has_token_with_separator(dom, id, wanted, |character| !character.is_alphanumeric())
+}
+
+fn has_ascii_token(dom: &Dom, id: NodeId, wanted: &str) -> bool {
+    has_token_with_separator(dom, id, wanted, |character| {
+        !character.is_ascii_alphanumeric()
+    })
+}
+
+fn has_token_with_separator(
+    dom: &Dom,
+    id: NodeId,
+    wanted: &str,
+    separator: impl Fn(char) -> bool + Copy,
+) -> bool {
+    [dom.attr(id, "id"), dom.attr(id, "class")]
+        .into_iter()
+        .flatten()
+        .any(|value| {
+            value
+                .split(separator)
+                .any(|token| token.eq_ignore_ascii_case(wanted))
+        })
 }

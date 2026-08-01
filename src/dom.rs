@@ -1,4 +1,10 @@
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+    },
+};
 
 use html5ever::{
     interface::{Attribute, ElementFlags, NodeOrText, QuirksMode, TreeSink},
@@ -9,6 +15,8 @@ use html5ever::{
 };
 
 use crate::{Error, LimitResource};
+
+const MAX_TEXT_CACHE_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct NodeId(pub(crate) u32);
@@ -31,6 +39,9 @@ pub(crate) struct Node {
     pub(crate) parent: Option<NodeId>,
     pub(crate) children: Vec<NodeId>,
     pub(crate) kind: NodeKind,
+    // Text is queried repeatedly by classification and rendering. Cache short
+    // subtree values so those probes do not rebuild the same String.
+    text_cache: OnceLock<String>,
 }
 
 #[derive(Debug)]
@@ -38,6 +49,7 @@ pub(crate) struct Dom {
     pub(crate) nodes: Vec<Node>,
     document: NodeId,
     parse_errors: Vec<Cow<'static, str>>,
+    text_cache_bytes: AtomicUsize,
 }
 
 impl Dom {
@@ -47,9 +59,11 @@ impl Dom {
                 parent: None,
                 children: Vec::new(),
                 kind: NodeKind::Document,
+                text_cache: OnceLock::new(),
             }],
             document: NodeId(0),
             parse_errors: Vec::new(),
+            text_cache_bytes: AtomicUsize::new(0),
         }
     }
 
@@ -59,6 +73,7 @@ impl Dom {
             parent: None,
             children: Vec::new(),
             kind,
+            text_cache: OnceLock::new(),
         });
         id
     }
@@ -106,15 +121,57 @@ impl Dom {
         self.nodes[id.0 as usize].parent
     }
 
-    pub(crate) fn text(&self, root: NodeId) -> String {
-        let mut values = Vec::new();
+    pub(crate) fn text(&self, root: NodeId) -> Cow<'_, str> {
+        if let Some(value) = self.nodes[root.0 as usize].text_cache.get() {
+            return Cow::Borrowed(value);
+        }
+        let value = self.compute_text(root);
+        // Large subtree strings have a high memory cost and are usually queried
+        // only once. Keep the cache bounded while retaining the common short
+        // paragraph/label fast path.
+        if value.len() <= 4096 {
+            let cache = &self.nodes[root.0 as usize].text_cache;
+            let cost = value.capacity();
+            let mut used = self.text_cache_bytes.load(Ordering::Relaxed);
+            loop {
+                let Some(next) = used.checked_add(cost) else {
+                    return Cow::Owned(value);
+                };
+                if next > MAX_TEXT_CACHE_BYTES {
+                    return Cow::Owned(value);
+                }
+                match self.text_cache_bytes.compare_exchange_weak(
+                    used,
+                    next,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(current) => used = current,
+                }
+            }
+            if cache.set(value).is_err() {
+                self.text_cache_bytes.fetch_sub(cost, Ordering::Relaxed);
+            }
+            return Cow::Borrowed(cache.get().expect("text cache was just initialized"));
+        }
+        Cow::Owned(value)
+    }
+
+    fn compute_text(&self, root: NodeId) -> String {
+        let mut normalizer = TextNormalizer::new(64);
+        let mut first = true;
         self.walk(root, &mut |id| {
-            if let NodeKind::Text(value) = &self.nodes[id.0 as usize].kind {
-                values.push(value.as_str());
+            if let NodeKind::Text(text) = &self.nodes[id.0 as usize].kind {
+                if !first {
+                    normalizer.push(' ');
+                }
+                first = false;
+                normalizer.push_str(text);
             }
             true
         });
-        normalize_text(&values.join(" "))
+        normalizer.finish()
     }
 
     pub(crate) fn raw_text(&self, root: NodeId) -> String {
@@ -329,24 +386,63 @@ fn enforce_bounds(dom: &Dom) -> Result<(), Error> {
 }
 
 pub(crate) fn normalize_text(value: &str) -> String {
-    let characters = value.chars().collect::<Vec<_>>();
-    let mut output = String::with_capacity(value.len());
-    let mut pending_space = false;
-    for (index, &character) in characters.iter().enumerate() {
-        let paired_nbsp = character == '\u{a0}'
-            && (index > 0 && characters[index - 1] == '\u{a0}'
-                || characters.get(index + 1) == Some(&'\u{a0}'));
-        if character.is_whitespace() && !paired_nbsp {
-            pending_space = !output.is_empty();
-            continue;
+    let mut normalizer = TextNormalizer::new(value.len());
+    normalizer.push_str(value);
+    normalizer.finish()
+}
+
+struct TextNormalizer {
+    output: String,
+    pending_space: bool,
+    previous: Option<char>,
+}
+
+impl TextNormalizer {
+    fn new(capacity: usize) -> Self {
+        Self {
+            output: String::with_capacity(capacity),
+            pending_space: false,
+            previous: None,
         }
-        if pending_space {
-            output.push(' ');
-            pending_space = false;
-        }
-        output.push(character);
     }
-    output
+
+    fn push(&mut self, character: char) {
+        let paired_nbsp = character == '\u{a0}' && self.previous == Some('\u{a0}');
+        if character.is_whitespace() && !paired_nbsp {
+            self.pending_space = !self.output.is_empty();
+            self.previous = Some(character);
+            return;
+        }
+        if self.pending_space {
+            self.output.push(' ');
+            self.pending_space = false;
+        }
+        self.output.push(character);
+        self.previous = Some(character);
+    }
+
+    fn push_str(&mut self, value: &str) {
+        let mut characters = value.chars();
+        while let Some(character) = characters.next() {
+            let paired_nbsp = character == '\u{a0}'
+                && (self.previous == Some('\u{a0}') || characters.clone().next() == Some('\u{a0}'));
+            if character.is_whitespace() && !paired_nbsp {
+                self.pending_space = !self.output.is_empty();
+                self.previous = Some(character);
+                continue;
+            }
+            if self.pending_space {
+                self.output.push(' ');
+                self.pending_space = false;
+            }
+            self.output.push(character);
+            self.previous = Some(character);
+        }
+    }
+
+    fn finish(self) -> String {
+        self.output
+    }
 }
 
 pub(crate) fn hidden(dom: &Dom, id: NodeId) -> bool {

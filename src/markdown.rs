@@ -62,7 +62,7 @@ pub(crate) fn render(
         && dom
             .find_first(root, |node| {
                 matches!(dom.tag(node), Some("h1" | "h2" | "h3"))
-                    && normalize_text(&dom.text(node)).eq_ignore_ascii_case("scan a product")
+                    && dom.text(node).eq_ignore_ascii_case("scan a product")
             })
             .is_some()
     {
@@ -121,7 +121,7 @@ impl Renderer<'_> {
             "pre" => self.code_block(id),
             "blockquote" => self.quote(id),
             "ul" if self.page_type == PageType::Discussion
-                && tokens_for(self.dom, id).contains("comments-list") =>
+                && attr_contains(self.dom, id, "comments-list") =>
             {
                 for &child in self.dom.children(id) {
                     self.collect(child);
@@ -177,22 +177,21 @@ impl Renderer<'_> {
         let is_heading = matches!(tag, Some("h1" | "h2" | "h3" | "h4" | "h5" | "h6"));
         let scan_heading = self.page_type == PageType::Product
             && is_heading
-            && normalize_text(&self.dom.text(id)).eq_ignore_ascii_case("scan a product");
+            && self.dom.text(id).eq_ignore_ascii_case("scan a product");
         let scan_container = self.page_type == PageType::Product
             && self
                 .dom
                 .find_first(id, |node| {
                     matches!(self.dom.tag(node), Some("h1" | "h2" | "h3"))
-                        && normalize_text(&self.dom.text(node))
-                            .eq_ignore_ascii_case("scan a product")
+                        && self.dom.text(node).eq_ignore_ascii_case("scan a product")
                 })
                 .is_some();
         if Some(id) == self.title_node
             || (self.page_type == PageType::Product
                 && is_heading
-                && self.title_node.is_some_and(|title| {
-                    normalize_text(&self.dom.text(title)) == normalize_text(&self.dom.text(id))
-                }))
+                && self
+                    .title_node
+                    .is_some_and(|title| self.dom.text(title) == self.dom.text(id)))
             || (hidden(self.dom, id) && !scan_heading && !scan_container)
         {
             return true;
@@ -291,76 +290,62 @@ impl Renderer<'_> {
         // Forms can contain the primary records on search and listing pages.
         // Prune their controls, not the complete structural wrapper.
         if self.page_type == PageType::Discussion {
-            let label = normalize_text(&self.dom.text(id)).to_ascii_lowercase();
-            if matches!(
-                label.as_str(),
-                "you must log in to reply." | "log in to reply"
-            ) {
+            let label = self.dom.text(id);
+            if label.eq_ignore_ascii_case("you must log in to reply.")
+                || label.eq_ignore_ascii_case("log in to reply")
+            {
                 return true;
             }
         }
-        let tokens = format!(
-            "{} {}",
-            self.dom.attr(id, "id").unwrap_or(""),
-            self.dom.attr(id, "class").unwrap_or("")
-        )
-        .to_ascii_lowercase();
+        let contains = |wanted: &str| attr_contains(self.dom, id, wanted);
+        let tokenized = |wanted: &str| has_token(self.dom, id, wanted);
         if dom_class_is(self.dom, id, "meta") {
             return true;
         }
         if tag == "header"
             && !["entry-header", "content-header", "article-header"]
                 .iter()
-                .any(|class| tokens.contains(class))
+                .any(|class| contains(class))
         {
             return true;
         }
         let author_sidebar = self.page_type == PageType::Article
             && contains_class_token(self.dom, id, "content-authors");
         let auxiliary = !author_sidebar
-            && (tokens
-                .split(|c: char| !c.is_ascii_alphanumeric())
-                .any(|token| {
-                    [
-                        "advert",
-                        "breadcrumb",
-                        "sitesub",
-                        "editsection",
-                        "navbox",
-                        "catlinks",
-                        "authority",
-                        "related",
-                        "recommended",
-                        "sidebar",
-                        "social",
-                        "share",
-                        "cookie",
-                        "rating",
-                        "byline",
-                        "action",
-                        "previous",
-                        "next",
-                        "back",
-                        "tools",
-                        "forumjump",
-                    ]
-                    .contains(&token)
-                        && !(self.page_type == PageType::Product && token == "action")
-                })
-                || tokens.contains("breadcrumb"));
-        let tokenized = |wanted: &str| {
-            tokens
-                .split(|c: char| !c.is_ascii_alphanumeric())
-                .any(|token| token == wanted)
-        };
-        let label = || normalize_text(&self.dom.text(id));
+            && ([
+                "advert",
+                "breadcrumb",
+                "sitesub",
+                "editsection",
+                "navbox",
+                "catlinks",
+                "authority",
+                "related",
+                "recommended",
+                "sidebar",
+                "social",
+                "share",
+                "cookie",
+                "rating",
+                "byline",
+                "action",
+                "previous",
+                "next",
+                "back",
+                "tools",
+                "forumjump",
+            ]
+            .iter()
+            .any(|token| {
+                tokenized(token) && !(self.page_type == PageType::Product && *token == "action")
+            }) || contains("breadcrumb"));
+        let label = || self.dom.text(id);
         let article_auxiliary = self.page_type == PageType::Article
             && ((matches!(tag, "h1" | "h2" | "h3")
-                && matches!(
-                    label().to_ascii_lowercase().as_str(),
-                    "comments" | "tags:" | "see also"
-                ))
-                || (tag == "p" && label().to_ascii_lowercase().starts_with("discuss on "))
+                && (label().eq_ignore_ascii_case("comments")
+                    || label().eq_ignore_ascii_case("tags:")
+                    || label().eq_ignore_ascii_case("see also")))
+                || (tag == "p" && starts_ascii_case_insensitive(&label(), "discuss on "))
                 || (tag == "p" && label().split_whitespace().all(|word| word.starts_with('#')))
                 || (tag == "ul" && label().eq_ignore_ascii_case("share:"))
                 || (tag == "a"
@@ -378,17 +363,17 @@ impl Renderer<'_> {
                 || inside_labeled_section(self.dom, id, "doi")
                 || inside_labeled_section(self.dom, id, "want to write"));
         let product_auxiliary = self.page_type == PageType::Product
-            && (tokens.contains("edit_button")
-                || tokens.contains("product_banner")
-                || tokens.contains("prodhead")
-                || tokens.contains("prodnav")
-                || (tag == "img" && tokens.contains("product_image"))
-                || tokens.contains("skip")
-                || tokens.contains("donation")
-                || tokens.contains("image_box")
-                || tokens.contains("alert-box")
-                || tokens.contains("field_categories")
-                || tokens.contains("match_title")
+            && (contains("edit_button")
+                || contains("product_banner")
+                || contains("prodhead")
+                || contains("prodnav")
+                || (tag == "img" && contains("product_image"))
+                || contains("skip")
+                || contains("donation")
+                || contains("image_box")
+                || contains("alert-box")
+                || contains("field_categories")
+                || contains("match_title")
                 || (self.page_type == PageType::Product
                     && ancestor_has_token(self.dom, id, "modal")
                     && !(tag == "h2" && label().eq_ignore_ascii_case("scan a product")))
@@ -396,56 +381,53 @@ impl Renderer<'_> {
                 || (tag == "div"
                     && label().starts_with("The analysis is based solely on the ingredients")));
         let discussion_control = self.page_type == PageType::Discussion
-            && (tokens.contains("announcement-banner")
-                || tokens.contains("question-header")
-                || tokens.contains("post-menu")
-                || tokens.contains("js-voting-container")
-                || tokens.contains("js-vote-count")
-                || (tag == "span" && tokens.contains("cool"))
-                || tokens.contains("post-layout--left")
-                || (tokens.contains("post-signature") && in_question_record(self.dom, id))
-                || (tokens.contains("pb8") && tokens.contains("bc-black-200"))
-                || tokens.contains("votecell")
-                || tokens.contains("post-issue")
-                || (tokens.contains("comment") && tokens.contains("score"))
-                || tokens.contains("native-comment-ad")
-                || tokens.contains("js-sort-preference-change")
-                || tokens.contains("js-bottom-notice")
-                || tokens.contains("post-likes")
-                || tokens.contains("comments-link")
-                || tokens.contains("crawler-linkback-list")
+            && (contains("announcement-banner")
+                || contains("question-header")
+                || contains("post-menu")
+                || contains("js-voting-container")
+                || contains("js-vote-count")
+                || (tag == "span" && contains("cool"))
+                || contains("post-layout--left")
+                || (contains("post-signature") && in_question_record(self.dom, id))
+                || (contains("pb8") && contains("bc-black-200"))
+                || contains("votecell")
+                || contains("post-issue")
+                || (contains("comment") && contains("score"))
+                || contains("native-comment-ad")
+                || contains("js-sort-preference-change")
+                || contains("js-bottom-notice")
+                || contains("post-likes")
+                || contains("comments-link")
+                || contains("crawler-linkback-list")
                 || (matches!(tag, "h2" | "h3") && label().eq_ignore_ascii_case("related topics"))
-                || tokens.contains("related-topics")
-                || tokens.contains("answer-sort")
-                || tokens.contains("js-you-can-comment-banner-anon")
-                || (tag == "label" && label().to_ascii_lowercase().starts_with("sorted by"))
-                || tokens.contains("comments-link"));
-        let tagged_auxiliary = (tag == "span" && tokens.contains("language-name"))
+                || contains("related-topics")
+                || contains("answer-sort")
+                || contains("js-you-can-comment-banner-anon")
+                || (tag == "label" && starts_ascii_case_insensitive(&label(), "sorted by"))
+                || contains("comments-link"));
+        let tagged_auxiliary = (tag == "span" && contains("language-name"))
             || (self.page_type == PageType::Documentation
                 && matches!(tag, "h2" | "h3")
                 && label().eq_ignore_ascii_case("examples"))
-            || tokens.contains("post-tags")
-            || (self.page_type == PageType::Discussion && tokens.contains("js-codeblock-lang"))
-            || tokens.contains("discourse-tags")
-            || tokens.contains("topic-title")
-            || tokens.contains("topic-list")
-            || tokens.contains("browser-compatibility")
-            || tokens.contains("browser_compatibility")
-            || (self.page_type != PageType::Product && tokens.contains("article-footer"))
-            || (self.page_type != PageType::Product && tokens.contains("page-footer"))
-            || tokens.contains("see-also")
-            || tokens.contains("help-improve")
-            || tokens.contains("learn-more")
-            || tokenized("browsers")
-            || (tokens.contains("learn-more"));
+            || contains("post-tags")
+            || (self.page_type == PageType::Discussion && contains("js-codeblock-lang"))
+            || contains("discourse-tags")
+            || contains("topic-title")
+            || contains("topic-list")
+            || contains("browser-compatibility")
+            || contains("browser_compatibility")
+            || (self.page_type != PageType::Product && contains("article-footer"))
+            || (self.page_type != PageType::Product && contains("page-footer"))
+            || contains("see-also")
+            || contains("help-improve")
+            || contains("learn-more")
+            || tokenized("browsers");
         let subscription_auxiliary = (tokenized("newsletter") || tokenized("subscribe"))
             && !(tokenized("example") || tokenized("demo"));
         let discussion_auxiliary = self.page_type != PageType::Discussion
-            && ["comment", "comments", "reply"].iter().any(|word| {
-                tokens
-                    .split(|c: char| !c.is_ascii_alphanumeric())
-                    .any(|token| token == *word)
-            });
+            && ["comment", "comments", "reply"]
+                .iter()
+                .any(|word| tokenized(word));
         auxiliary
             || article_auxiliary
             || tagged_auxiliary
@@ -1272,7 +1254,7 @@ impl Renderer<'_> {
         }
         let inferred_header = rows.first().is_some_and(|row| {
             row.len() > 1
-                && normalize_text(&self.dom.text(row[0])).is_empty()
+                && self.dom.text(row[0]).is_empty()
                 && row.iter().skip(1).all(|cell| {
                     self.dom
                         .find_first(*cell, |node| {
@@ -1708,24 +1690,40 @@ fn escape_label(value: &str) -> String {
         .replace('_', "\\_")
 }
 fn escape_text(value: &str) -> String {
-    let mut normalized = normalize_text(value);
     let collapsible = |character: char| character.is_whitespace() && character != '\u{a0}';
-    if !normalized.is_empty() && value.chars().next().is_some_and(collapsible) {
-        normalized.insert(0, ' ');
-    }
-    if !normalized.is_empty() && value.chars().next_back().is_some_and(collapsible) {
-        normalized.push(' ');
-    }
-    normalized.chars().fold(String::new(), |mut out, c| {
+    let leading_space = value.chars().next().is_some_and(collapsible);
+    let trailing_space = value.chars().next_back().is_some_and(collapsible);
+    let mut output = String::with_capacity(value.len());
+    let mut pending_space = false;
+    let mut previous = None;
+    let mut wrote = false;
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        let paired_nbsp = character == '\u{a0}'
+            && (previous == Some('\u{a0}') || characters.clone().next() == Some('\u{a0}'));
+        if character.is_whitespace() && !paired_nbsp {
+            pending_space = wrote;
+            previous = Some(character);
+            continue;
+        }
+        if pending_space || (!wrote && leading_space) {
+            output.push(' ');
+        }
+        pending_space = false;
         if matches!(
-            c,
+            character,
             '\\' | '`' | '*' | '_' | '{' | '}' | '[' | ']' | '<' | '>' | '#' | '|' | '&'
         ) {
-            out.push('\\');
+            output.push('\\');
         }
-        out.push(c);
-        out
-    })
+        output.push(character);
+        wrote = true;
+        previous = Some(character);
+    }
+    if wrote && trailing_space {
+        output.push(' ');
+    }
+    output
 }
 fn raw_pre_text(dom: &Dom, id: NodeId) -> String {
     fn append(dom: &Dom, id: NodeId, output: &mut String) {
@@ -1782,29 +1780,46 @@ fn ancestor_element(dom: &Dom, id: NodeId, predicate: impl Fn(NodeId) -> bool) -
     false
 }
 
-fn tokens_for(dom: &Dom, id: NodeId) -> String {
-    format!(
-        "{} {}",
-        dom.attr(id, "id").unwrap_or(""),
-        dom.attr(id, "class").unwrap_or("")
-    )
-    .to_ascii_lowercase()
+fn attr_contains(dom: &Dom, id: NodeId, wanted: &str) -> bool {
+    [dom.attr(id, "id"), dom.attr(id, "class")]
+        .into_iter()
+        .flatten()
+        .any(|value| contains_ascii_case_insensitive(value, wanted))
+}
+
+fn has_token(dom: &Dom, id: NodeId, wanted: &str) -> bool {
+    [dom.attr(id, "id"), dom.attr(id, "class")]
+        .into_iter()
+        .flatten()
+        .any(|value| {
+            value
+                .split(|character: char| !character.is_ascii_alphanumeric())
+                .any(|token| token.eq_ignore_ascii_case(wanted))
+        })
+}
+
+fn contains_ascii_case_insensitive(value: &str, wanted: &str) -> bool {
+    wanted.is_empty()
+        || (wanted.len() <= value.len()
+            && value
+                .as_bytes()
+                .windows(wanted.len())
+                .any(|window| window.eq_ignore_ascii_case(wanted.as_bytes())))
+}
+
+fn starts_ascii_case_insensitive(value: &str, wanted: &str) -> bool {
+    value
+        .get(..wanted.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(wanted))
 }
 
 fn in_question_record(dom: &Dom, id: NodeId) -> bool {
     let mut parent = dom.parent(id);
     while let Some(node) = parent {
-        let tokens = tokens_for(dom, node);
-        if tokens
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|token| token == "answer")
-        {
+        if has_token(dom, node, "answer") {
             return false;
         }
-        if tokens
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|token| token == "question")
-        {
+        if has_token(dom, node, "question") {
             return true;
         }
         parent = dom.parent(node);
@@ -1860,17 +1875,14 @@ fn oversized_link_roll(dom: &Dom, id: NodeId) -> bool {
         }
         links < 25
     });
-    links >= 25
-        && normalize_text(&dom.text(id))
-            .to_ascii_lowercase()
-            .contains("product page also edited by")
+    links >= 25 && contains_ascii_case_insensitive(&dom.text(id), "product page also edited by")
 }
 
 fn breadcrumb_like(dom: &Dom, id: NodeId) -> bool {
     if dom.tag(id) != Some("p") {
         return false;
     }
-    let text = normalize_text(&dom.text(id));
+    let text = dom.text(id);
     if !text.contains('|') && !text.contains('›') && !text.contains('»') {
         return false;
     }
@@ -1910,8 +1922,10 @@ fn token_attr(dom: &Dom, id: NodeId, wanted: &str) -> bool {
 }
 
 fn decorative_image(dom: &Dom, id: NodeId, alt: &str) -> bool {
-    let lower = alt.to_ascii_lowercase();
-    if lower == "avatar" || lower == "logo" || lower == "icon" {
+    if alt.eq_ignore_ascii_case("avatar")
+        || alt.eq_ignore_ascii_case("logo")
+        || alt.eq_ignore_ascii_case("icon")
+    {
         return true;
     }
     let dimension = |key| {

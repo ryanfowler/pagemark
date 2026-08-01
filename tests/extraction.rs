@@ -108,6 +108,20 @@ fn options_override_type_and_features() {
 }
 
 #[test]
+fn discussion_login_prompt_is_excluded_case_insensitively() {
+    let options = Options {
+        page_type: Some(PageType::Discussion),
+        ..Options::default()
+    };
+    let html = r#"<main><h1>Topic</h1>
+        <div class="message"><p>YOU MUST LOG IN TO REPLY.</p></div>
+        <p>This is the useful discussion content.</p></main>"#;
+    let doc = extract(html, None, &options).unwrap();
+    assert!(!doc.markdown.contains("MUST LOG IN TO REPLY"));
+    assert!(doc.markdown.contains("useful discussion content"));
+}
+
+#[test]
 fn arbitrary_bytes_never_panic() {
     for length in 0..512 {
         let bytes: Vec<u8> = (0..length)
