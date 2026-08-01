@@ -78,11 +78,23 @@ func (a *analysis) semanticArticleFallback() (*html.Node, float64) {
 // auxiliary descendants inside a selected ancestor do not make a reconstructed
 // region appear better than the content the converter will retain.
 func (a *analysis) nodeSetBlockEvidence(nodes []*html.Node) (chars, links, blocks int) {
+	if len(nodes) == 0 {
+		return 0, 0, 0
+	}
+	// The selected set is often made of many sibling blocks. Scanning every
+	// selected root for every block turns this accounting pass quadratic. Index
+	// the roots once, then walk the (usually shallow) ancestry of each block.
+	roots := make(map[*html.Node]struct{}, len(nodes))
+	for _, root := range nodes {
+		if root != nil {
+			roots[root] = struct{}{}
+		}
+	}
 	for i := range a.blocks {
 		b := &a.blocks[i]
 		inside := false
-		for _, root := range nodes {
-			if nodeWithin(b.node, root) {
+		for current := b.node; current != nil; current = current.Parent {
+			if _, ok := roots[current]; ok {
 				inside = true
 				break
 			}

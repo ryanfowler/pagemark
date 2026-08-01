@@ -572,14 +572,32 @@ func (c *converter) inlineNodes(nodes []*html.Node) []*Node {
 	}
 	// Compact in place: out is no longer needed, and allocating another pointer
 	// slice here is expensive because every converted inline container takes this
-	// path.
+	// path. Merge each adjacent text run in one pass. Repeatedly concatenating
+	// into the first node makes a long run of inline wrappers quadratic and also
+	// creates a short-lived string for every wrapper.
 	merged := out[:0]
-	for _, n := range out {
-		if n.Kind == Text && len(merged) > 0 && merged[len(merged)-1].Kind == Text {
-			merged[len(merged)-1].Value = inlineText(merged[len(merged)-1].Value + n.Value)
+	for i := 0; i < len(out); {
+		n := out[i]
+		if n.Kind != Text {
+			merged = append(merged, n)
+			i++
 			continue
 		}
+		end, size := i+1, len(n.Value)
+		for end < len(out) && out[end].Kind == Text {
+			size += len(out[end].Value)
+			end++
+		}
+		if end > i+1 {
+			var text strings.Builder
+			text.Grow(size)
+			for j := i; j < end; j++ {
+				text.WriteString(out[j].Value)
+			}
+			n.Value = inlineText(text.String())
+		}
 		merged = append(merged, n)
+		i = end
 	}
 	return merged
 }
@@ -593,9 +611,16 @@ func (c *converter) mathRepresentation(n *html.Node) (string, bool) {
 		return "", false
 	}
 	tag := strings.ToLower(n.Data)
+	// Most inline elements have no class or role attributes. Avoid scanning
+	// their attributes twice just to prove that they are not math wrappers.
+	role := attr(n, "role")
+	class := attr(n, "class")
+	if tag != "math" && tag != "mjx-container" && role == "" && class == "" {
+		return "", false
+	}
 	isMath := tag == "math" || tag == "mjx-container" ||
-		strings.EqualFold(strings.TrimSpace(attr(n, "role")), "math") ||
-		hasClassToken(n, "katex") || hasClassToken(n, "mathjax")
+		strings.EqualFold(strings.TrimSpace(role), "math") ||
+		hasAnyClassTokenValue(class, "katex", "mathjax")
 	if !isMath {
 		return "", false
 	}
@@ -830,9 +855,15 @@ func (c *converter) firstMathDescendantOrSelf(n *html.Node, match func(*html.Nod
 }
 
 func hasClassToken(n *html.Node, want string) bool {
-	for class := range strings.FieldsSeq(attr(n, "class")) {
-		if strings.EqualFold(class, want) {
-			return true
+	return hasAnyClassTokenValue(attr(n, "class"), want)
+}
+
+func hasAnyClassTokenValue(value string, wanted ...string) bool {
+	for class := range strings.FieldsSeq(value) {
+		for _, want := range wanted {
+			if strings.EqualFold(class, want) {
+				return true
+			}
 		}
 	}
 	return false
@@ -1884,6 +1915,17 @@ func tokenToNode(token html.Token) *html.Node {
 // by the previous regexp. It returns a slice of s without allocating when the
 // input is already normalized, which is the common case for HTML text nodes.
 func clean(s string) string {
+	// HTML text nodes are usually plain ASCII words. Return them directly
+	// without UTF-8 boundary checks when no trimming or collapsing is needed.
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= utf8.RuneSelf || asciiSpace(c) || c == '\v' {
+			goto slow
+		}
+	}
+	return s
+
+slow:
 	start := 0
 	for start < len(s) {
 		r, size := utf8.DecodeRuneInString(s[start:])

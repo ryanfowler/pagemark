@@ -66,6 +66,11 @@ func hiddenByAttributesMode(n *html.Node, includeARIAHidden bool) bool {
 	if n == nil || n.Type != html.ElementNode {
 		return false
 	}
+	// Attribute-free elements are the common case. Apart from an unopened
+	// dialog, they cannot carry an attribute-based visibility rule.
+	if len(n.Attr) == 0 {
+		return n.Data == "dialog"
+	}
 	open := false
 	style := ""
 	utilityHidden := false
