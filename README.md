@@ -1,197 +1,97 @@
 # Pagemark
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/ryanfowler/pagemark.svg)](https://pkg.go.dev/github.com/ryanfowler/pagemark)
+Pagemark extracts useful content from HTML as compact Markdown, plain text, and
+metadata. It supports articles, documentation, discussions, products, listings,
+collections, services, and generic pages.
 
-Pagemark extracts the useful content from an HTML page. It returns compact Markdown, plain text, and page metadata.
-
-Pagemark supports articles, documentation, discussions, products, listings, collections, and service pages. It can keep content from more than one page region.
-
-Pagemark does not fetch pages. It does not run JavaScript. If a page needs JavaScript, supply the rendered HTML.
+Pagemark does not fetch pages or run JavaScript. Supply rendered HTML when a
+page requires JavaScript.
 
 ## Installation
 
-Pagemark requires Go 1.25 or a later version.
+Add Pagemark and the URL parser to your `Cargo.toml`:
 
-```sh
-go get github.com/ryanfowler/pagemark
+```toml
+[dependencies]
+pagemark = "0.1"
+url = "2"
 ```
 
 ## Quick start
 
-```go
-package main
+```rust
+use pagemark::{extract, Options};
+use url::Url;
 
-import (
-	"fmt"
-	"strings"
+fn main() -> Result<(), pagemark::Error> {
+    let html = "<main><h1>Guide</h1><p>Install the tool.</p></main>";
+    let page_url = Url::parse("https://example.com/guide").expect("static URL is valid");
+    let document = extract(html, Some(&page_url), &Options::default())?;
 
-	"github.com/ryanfowler/pagemark"
-)
-
-func main() {
-	source := `<main><h1>Guide</h1><p>Install the tool.</p></main>`
-	doc, err := pagemark.Extract(strings.NewReader(source), "https://example.com/guide")
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(doc.Title)
-	fmt.Println(doc.Markdown)
+    println!("{}", document.title.as_deref().unwrap_or("Untitled"));
+    println!("{}", document.markdown);
+    Ok(())
 }
 ```
 
-Use one of these functions:
-
-- `Extract` reads UTF-8 HTML from an `io.Reader`.
-- `ExtractBytes` reads UTF-8 HTML from a byte slice.
-- `ExtractNode` reads a tree produced by `x/net/html`. It does not change the tree.
-
-The page URL is optional. If you set it, use an absolute HTTP or HTTPS URL. Pagemark uses it to resolve relative links.
+`extract_bytes` accepts UTF-8 bytes and enforces the input limit before parsing.
+The page URL is optional, but when supplied it must be an absolute HTTP or
+HTTPS URL. Credentials are removed from returned page and canonical URLs.
 
 ## Result
 
-`Extract` returns a `Document`. The main fields are:
+`Document` contains:
 
-- `Title`: the document title.
-- `Markdown`: the selected content as Markdown.
-- `Text`: the selected content as plain text.
-- `Sections`: a plain-text view of the selected sections.
-- `Links` and `Images`: the safe resources that occur in the output.
-- `PageType`: the detected page shape.
-- `Truncated`: whether the output byte limit omitted content.
-
-The title is separate from the content. Pagemark does not repeat it in `Markdown`, `Text`, or `Sections`.
-`PublishedTime` is the unparsed source metadata value and is not guaranteed to
-use RFC 3339.
-
-Images are enabled by default. Pagemark records image URLs, but it does not fetch the images. Use `WithIncludeImages(false)` for text-only output.
+- optional title, description, author, site name, language, and publication time;
+- detected or requested `PageType`;
+- restricted Markdown without raw HTML;
+- plain text and heading-based sections;
+- safe links and useful images retained in the output; and
+- a `truncated` flag when the output limit omits complete blocks.
 
 ## Options
 
-Pass options after the page URL:
+`Options::default()` enables links, images, and tables, uses balanced selection,
+and detects the page type automatically. Options are configured directly:
 
-```go
-doc, err := pagemark.ExtractBytes(
-	source,
-	pageURL,
-	pagemark.WithPageType(pagemark.PageTypeDocumentation),
-	pagemark.WithMaxOutputBytes(512<<10),
-	pagemark.WithIncludeImages(false),
-)
+```rust
+use pagemark::{Limit, Options, PageType, SelectionMode};
+
+let options = Options {
+    page_type: Some(PageType::Documentation),
+    selection_mode: SelectionMode::Precision,
+    max_output_bytes: Limit::Max(512 * 1024),
+    include_images: false,
+    ..Options::default()
+};
 ```
 
-Pagemark detects the page type by default. Use `WithPageType` only when you know the page type. The page type changes content scores. It does not change safety rules or parser limits.
+`Limit::Default` uses the 10 MiB input and 2 MiB output defaults. Use
+`Limit::Unlimited` to disable a configurable limit. DOM element and depth limits
+are always enforced.
 
-Use these options to control output:
+`SelectionMode::Precision` usually selects less auxiliary content;
+`SelectionMode::Recall` usually selects more plausible content.
 
-- `WithIncludeLinks`
-- `WithIncludeImages`
-- `WithIncludeTables`
-- `WithSelectionMode`
+`UrlPolicy` controls links and images emitted in content. By default it permits
+only HTTP and HTTPS URLs, rejects credentials and control characters, and limits
+URLs to 4,096 bytes:
 
-Selection is balanced by default. Use `SelectionPrecision` to usually select
-less content or `SelectionRecall` to usually select more:
-
-```go
-doc, err := pagemark.ExtractBytes(
-	source,
-	pageURL,
-	pagemark.WithSelectionMode(pagemark.SelectionPrecision),
-)
+```rust
+let mut options = Options::default();
+options.url_policy.allowed_schemes = vec!["https".into()];
+options.url_policy.strip_tracking = true;
 ```
 
-## Resource bounds
+## Safety
 
-Pagemark exposes two resource options:
-
-| Resource | Default | Option |
-| --- | ---: | --- |
-| Input | 10 MiB | `WithMaxInputBytes` |
-| Markdown output | 2 MiB | `WithMaxOutputBytes` |
-
-Zero selects the default. A positive value sets the limit. `-1` disables the
-limit. Values below `-1` return `ErrInvalidOption`. Options apply in order, so
-a later option overrides an earlier one.
-
-Pagemark also applies fixed internal limits to DOM elements and DOM depth. An
-input or DOM limit returns a `LimitError`. The Markdown byte limit keeps
-complete blocks and sets `Document.Truncated` if it omits content. The
-input-byte limit applies to `Extract` and `ExtractBytes`, not `ExtractNode`,
-whose DOM is already parsed.
-
-Use `WithIncludeLinks`, `WithIncludeImages`, and `WithIncludeTables` to control
-output features. These options are independent of resource bounds.
-
-Check errors with `errors.Is` and `errors.As`:
-
-```go
-var limit *pagemark.LimitError
-if errors.As(err, &limit) {
-	fmt.Printf("%s: %d exceeds %d\n", limit.Resource, limit.Count, limit.Max)
-}
-```
-
-The package also returns `ErrNoContent`, `ErrInvalidURL`, and
-`ErrInvalidOption`. Output truncation is nonfatal. If no selected substantive
-content block fits within the output limit, the package returns a `Document`
-with bounded empty output and `Truncated` set to true.
-
-## URL and content safety
-
-The Markdown has no raw HTML. The default URL policy permits only HTTP and HTTPS links and images. For these URLs, Pagemark rejects credentials, control characters, unsafe schemes, and values longer than 4,096 bytes.
-
-`URLPolicy` applies to Markdown links and images. It also applies to `Document.Links` and `Document.Images`. It does not apply to `Document.URL` or `Document.CanonicalURL`.
-
-`Document.URL` and `Document.CanonicalURL` permit HTTP and HTTPS and always
-remove credentials. These two fields do not use the policy scheme list or
-length limit.
-
-Use `DefaultURLPolicy` to safely modify the default Markdown URL policy:
-
-```go
-policy := pagemark.DefaultURLPolicy()
-policy.AllowedSchemes = []string{"https"}
-policy.MaxLength = 2048
-policy.StripTracking = true
-
-doc, err := pagemark.ExtractBytes(source, pageURL, pagemark.WithURLPolicy(policy))
-```
-
-Pagemark copies `AllowedSchemes`, so a reusable option is safe for concurrent
-extraction. Scheme names are normalized to lowercase and duplicates are
-removed. An invalid scheme or a `MaxLength` below `-1` returns
-`ErrInvalidOption`. The defaults remain HTTP and HTTPS only; add `"mailto"`
-explicitly if needed.
-
-Limit resources are typed. Compare `LimitError.Resource` with constants such
-as `LimitInputBytes`.
-
-The extracted words are untrusted data. A hostile page can contain prompt injection. Do not use extracted content as system instructions or developer instructions. See the [Pagemark contract](docs/contract.md).
-
-## Command-line tool
-
-The optional command fetches one page. It writes YAML metadata and Markdown to standard output.
-
-```sh
-go install github.com/ryanfowler/pagemark/cmd/pagemark@latest
-pagemark https://example.com/page > page.md
-```
-
-Run `pagemark -help` to list the options.
-
-The command accepts HTTP and HTTPS URLs without credentials. It rejects nonpublic destination addresses, non-HTML responses, redirects to unsafe addresses, and unsuccessful HTTP status codes. It does not use environment proxies.
-
-Fetching is not part of the library API.
-
-## Comparison with Readability
-
-Readability usually selects one prose article. Pagemark can also keep distributed sections, discussion posts, code, tables, specifications, and linked records.
-
-The project has a [Mozilla Readability compatibility test](testdata/mozilla/README.md). It also has a [real-world regression corpus](testdata/real-world/README.md).
+Pagemark removes scripts, forms, widgets, and raw HTML from generated content.
+It does not make extracted words safe or true. Treat extracted content as
+untrusted data; hostile pages can contain prompt injection.
 
 ## Development
 
-Initialize the optional test corpus:
+Initialize the optional Readability corpus:
 
 ```sh
 git submodule update --init --recursive
@@ -200,13 +100,11 @@ git submodule update --init --recursive
 Run the checks:
 
 ```sh
-gofmt -w .
-go test ./...
-go test -race ./...
-staticcheck ./...
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+cargo doc --no-deps
 ```
 
-Normal tests do not use the external network. The package has no mutable global extraction state. Concurrent extraction calls are safe.
-
-See the [v0.2 migration guide](docs/migration-v0.2.md) for the public API
-simplification.
+See [the extraction contract](docs/contract.md) for the stable behavior and
+safety guarantees.

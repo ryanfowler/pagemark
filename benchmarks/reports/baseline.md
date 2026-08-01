@@ -9,6 +9,6 @@ The WCXB project reports these multiset word scores:
 | Readability | 0.685 | 0.713 | 0.675 |
 | Pagemark initial profile | 0.725 | 0.893 | 0.760 |
 
-The Pagemark run used Go 1.26.5 on Apple arm64. The full run took approximately 15 seconds. The report is a development measurement, not a held-out release result.
+The Pagemark run was a historical development measurement on Apple arm64. The full run took approximately 15 seconds. The report is not a held-out release result.
 
 The principal initial failure modes are forum content in fallback `noscript` elements, product facts in nonparagraph structures, absent SPA content, linked collection cards, repeated forum controls, short service sections, specification tables, duplicated mobile markup, side navigation, and content in generic containers.

@@ -6,3 +6,6 @@ benchmarks/reports/*.csv
 *.cpu
 *.mem
 .audit/
+/target/
+/fuzz/target/
+__pycache__/

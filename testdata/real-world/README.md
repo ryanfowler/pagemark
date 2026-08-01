@@ -33,7 +33,7 @@ Refresh snapshots deliberately, one at a time:
 2. Inspect the HTML for personal data, authentication state, challenge pages, and unexpectedly embedded content.
 3. Update `captured_at` and `sha256` in `fixtures.json`.
 4. Review required and forbidden snippets against the intended primary content; do not merely change expectations to match a regression.
-5. Run `go test ./...`.
+5. Run `cargo test --all-features`.
 
 For example:
 

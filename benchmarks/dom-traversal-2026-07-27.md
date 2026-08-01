@@ -1,4 +1,4 @@
-# Extraction performance results (2026-07-27)
+# Historical extraction performance results (2026-07-27)
 
 Machine: Apple M2 Pro, Darwin/arm64. Go version: 1.26.5. Results are the median of three runs.
 
@@ -22,7 +22,7 @@ go test ./internal/engine -run '^$' -bench '^BenchmarkExtractRealWorld$' -benchm
 | Wikibooks recipe | 3,997,266 | 732,946 | 13,572 |
 | Stack Overflow | 9,761,217 | 2,092,390 | 35,077 |
 
-The following comparison uses the reported pre-fix rerun on the same machine and Go version.
+The following comparison uses the reported pre-fix rerun on the same machine.
 
 | Fixture | Pre-fix time | Fixed time | Change | Pre-fix B/op | Fixed B/op | Change |
 |---|---:|---:|---:|---:|---:|---:|
